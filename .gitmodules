@@ -1,4 +1,4 @@
 [submodule "tailscale"]
 	path = tailscale
-	url = https://github.com/anasfanani/tailscale-android-cli.git
+	url = https://github.com/KyuubiRan/tailscale-android-cli.git
 	branch = main

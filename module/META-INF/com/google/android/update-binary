@@ -1,0 +1,19 @@
+#!/sbin/sh
+# Magisk module installer entry point. Derived from magisk-tailscaled;
+# the original BSD-3-Clause notice is retained in licenses/module-LICENSE.
+
+umask 022
+ui_print() { echo "$1"; }
+
+require_magisk() {
+    ui_print '! Install this ZIP from a current Magisk or KernelSU Manager.'
+    exit 1
+}
+
+OUTFD=$2
+ZIPFILE=$3
+[ -f /data/adb/magisk/util_functions.sh ] || require_magisk
+. /data/adb/magisk/util_functions.sh
+[ "${MAGISK_VER_CODE:-0}" -ge 20400 ] || require_magisk
+install_module
+exit 0

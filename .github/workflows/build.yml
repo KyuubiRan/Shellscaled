@@ -1,0 +1,10 @@
+name: Manual local-build reference
+# Repository Actions remain disabled. This workflow must never run without the owner's approval.
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Build locally with python3 scripts/build.py; hosted compilation is disabled.'

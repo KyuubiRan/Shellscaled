@@ -1,0 +1,27 @@
+#!/system/bin/sh
+
+SC_MODDIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P) || exit 1
+SC_SOCKET=/data/adb/shellscaled/run/tailscaled.sock
+
+# up/login reset unspecified preferences; supply Android-safe defaults while
+# preserving an explicit user choice. No command authenticates on its own.
+case "${1:-}" in
+    up|login)
+        sc_subcommand=$1
+        shift
+        sc_has_dns=false
+        sc_has_netfilter=false
+        for sc_arg in "$@"; do
+            case "$sc_arg" in
+                --accept-dns|--accept-dns=*) sc_has_dns=true ;;
+                --netfilter-mode|--netfilter-mode=*) sc_has_netfilter=true ;;
+            esac
+        done
+        "$sc_has_dns" || set -- --accept-dns=false "$@"
+        "$sc_has_netfilter" || set -- --netfilter-mode=off "$@"
+        set -- "$sc_subcommand" "$@"
+        ;;
+esac
+
+export TS_BE_CLI=1
+exec "$SC_MODDIR/bin/tailscaled" --socket="$SC_SOCKET" "$@"
