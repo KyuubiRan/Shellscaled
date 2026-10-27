@@ -38,3 +38,14 @@ SELinux 全局保持 enforcing。root 进程使用各管理器提供的域；Ker
 实际 Tailnet IPv4 / IPv6 双向数据传输、现有 VPN 同时工作的真实连通性、网络切换 / 重连、登录状态的重启和更新保留仍待完成。VPN lockdown、出口节点、子网转发和热点不属于已经验证的能力。
 
 需要账号登录时通知所有者；没有回复则暂停 goal。不得使用已有私人账号状态或凭证代替授权。
+
+## 当前交接点
+
+- 源码提交：`c322e8f5085378be2342f64648382de6dfdd75ad`，主仓库和 submodule 均在 `dev`；源码提交已推送，父仓库固定该提交。
+- 最终构建在 Magisk / 16 KB 和 KernelSU / 4 KB 环境均完成双栈规则恢复与 VpnService 路由复测。
+- 模拟器已切回 KernelSU，服务运行，等待手动账号授权；测试 VPN 已停止。
+- 包：`dist/Shellscaled-1.104.2-r0-arm64.zip`，SHA256 `f29ec3403a0252c6a565975cee17db75c67e7fe496585e96668ca3ff4bef451d`。
+- 两个 GitHub 仓库均为 private，Actions disabled，检查到运行数为 0。`main` 尚未提升到这一候选构建，未创建正式 release。
+- 已删除约 1.4 GB 编译缓存、暂存载荷和一次性负向测试包；保留单份工具链 / 依赖缓存、必要启动覆盖、源码和最终 ZIP，集中于项目忽略目录。
+
+恢复工作时先检查现有模拟器、KernelSU / daemon 状态和认证结果，不重复初始化账号或重新下载整套环境。若登录链接已失效，重新运行模块 CLI 的 `login` 并通知所有者。
