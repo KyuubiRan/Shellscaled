@@ -85,7 +85,7 @@ KernelSU 的 19 组命令拒绝、三语言错误/语言恢复/动态说明/账�
 ## 发布与复现
 
 - 包：`dist/Shellscaled-1.104.2-r2-arm64.zip`，显示版本 `1.104.2`，`versionCode=110400202`。SHA256 见同目录 `.zip.sha256`；构建提交记录在 ZIP 内的 `build-info.json`。
-- 主仓库和 source submodule 使用 `dev` 开发、`main` 发布；源仓库先推送，再推送父仓库引用。仓库保持 private，Actions disabled，编译仅在本机执行。
+- 主仓库和 source submodule 使用 `dev` 开发、`main` 发布；源仓库先推送，再推送父仓库引用。所有者已授权开源主仓库与官方 Tailscale fork，Actions disabled，编译仅在本机执行。
 - 生命周期、双栈规则与实际 VPN 测试分别验证，不能用构建成功或 FIB 查询替代实际报文测试。复现方式见 [模拟器环境](emulator.md)。
 - 旧构建、暂存载荷和一次性测试工具不逐版本保留。保留单份必要工具链 / 依赖缓存、启动覆盖、源码和最终 ZIP，集中于项目忽略目录。
 

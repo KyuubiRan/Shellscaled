@@ -5,7 +5,7 @@ Shellscaled runs Tailscale on rooted Android through a native TUN, without using
 ## Source and branches
 
 - `main` is the release branch; develop on `dev` in both repositories.
-- `tailscale/` is the source dependency, tracked as a private submodule. Commit and push its source before publishing a parent commit that references it. Keep the submodule's tracked release branch as `main`.
+- `tailscale/` is the source dependency, tracked as a submodule of the official Tailscale fork. Commit and push its source before publishing a parent commit that references it. Keep the submodule's tracked release branch as `main` and retain upstream ancestry with separate Android patches.
 - Read the module version from `tailscale/VERSION.txt`. Module revisions affect `versionCode` without inventing an unrelated Tailscale version.
 - Preserve upstream BSD notices and Tailscale's license and patents notice in distributed packages.
 - Use `KyuubiRan` for the module author. Keep Git author, committer, and signing identity inherited from the owner's local Git configuration; do not anonymize or replace them with the module label.
@@ -13,7 +13,7 @@ Shellscaled runs Tailscale on rooted Android through a native TUN, without using
 ## Build and storage
 
 - Compile locally with `python3 scripts/build.py`. Reuse an installed Android NDK; do not automatically download an SDK or NDK.
-- GitHub repositories must remain private. GitHub Actions are disabled. Do not enable or dispatch hosted builds without explicit owner authorization.
+- Both repositories are open source with owner authorization. GitHub Actions remain disabled. Do not enable or dispatch hosted builds without explicit owner authorization.
 - Clone reference projects only into ignored `.reference/`. Never clone AOSP; inspect official documentation and necessary individual source files instead.
 - Keep caches, emulator preparation, transient downloads, and package staging inside ignored `.work/`. Keep final packages in ignored `dist/`. Reuse these locations and remove obsolete task-owned products rather than accumulating backups.
 - Inherit the user's exported proxy variables for network commands. Do not print credentials or add hard-coded proxy settings.

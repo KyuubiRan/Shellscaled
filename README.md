@@ -4,7 +4,7 @@
 
 **简体中文** · [English](README.en.md)
 
-[![Release](docs/images/release.svg)](https://github.com/KyuubiRan/Shellscaled/releases/latest)
+[![Release](https://img.shields.io/github/v/release/KyuubiRan/Shellscaled?style=flat-square&logo=github&label=Release)](https://github.com/KyuubiRan/Shellscaled/releases/latest)
 
 [下载最新版本](https://github.com/KyuubiRan/Shellscaled/releases/latest) · Magisk / KernelSU · ARM64
 

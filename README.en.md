@@ -4,7 +4,7 @@ Run Tailscale natively on rooted Android without occupying Android’s VPN slot.
 
 [简体中文](README.md) · **English**
 
-[![Release](docs/images/release.svg)](https://github.com/KyuubiRan/Shellscaled/releases/latest)
+[![Release](https://img.shields.io/github/v/release/KyuubiRan/Shellscaled?style=flat-square&logo=github&label=Release)](https://github.com/KyuubiRan/Shellscaled/releases/latest)
 
 [Download the latest release](https://github.com/KyuubiRan/Shellscaled/releases/latest) · Magisk / KernelSU · ARM64
 

@@ -6,7 +6,7 @@ then the parent reference. Preserve the owner's configured Git identity/signing.
 
 ## Source ancestry and updates
 
-The private source mirror retains the real official Tailscale history through
+The official GitHub fork retains the real Tailscale history through
 `v1.104.2` (`e26db7a5797683ec99ad1516c40b628c7f2dfd71`). The Android changes
 are separate commits directly above that release, rather than a disconnected
 snapshot. The original r1 source is retained by `shellscaled-v1.104.2-r1` so
@@ -44,7 +44,7 @@ ignored `dist/`. Reuse them, clean obsolete products, and never clone AOSP.
 
 ## Release and documentation
 
-Repositories remain private and Actions disabled; builds and emulator tests run
+Repositories are public with owner authorization; Actions stay disabled. Builds and emulator tests run
 locally. See [emulator instructions](emulator.md) and [validation](validation.md).
 Tag only the validated commit and upload the offline ZIP plus its checksum.
 
@@ -53,14 +53,5 @@ workflow or owner-specific notes. Screenshots use the real Android WebView with
 synthetic documentation data from [the isolated fixture](../tests/webui/README.md).
 They never contain a real account or Tailnet address.
 
-The version badge is a local SVG so it also works for a private repository.
-Generate it from the authenticated Release API, including a draft when preparing
-a release, then verify it against the published Release:
-
-```sh
-python3 scripts/update-release-badge.py --tag v1.104.2-r2
-python3 scripts/update-release-badge.py
-```
-
-Only the tag is written into the SVG; authentication stays inside `gh`, with no
-token in Markdown, the image, or its URL. No hosted job is used to update it.
+The README version badge reads the latest public GitHub Release. No token is
+embedded in Markdown or its image URL, and no hosted build updates the badge.
