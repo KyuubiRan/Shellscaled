@@ -113,7 +113,7 @@ def main():
         print("PASS: stable/preview channel saves preserve settings and identity; invalid channels rejected")
         check_binary(success("binary-check"), saved_channel)
         print("PASS: binary-check returns bounded version text and typed update flags without inventory")
-        for action in ("devices", "console", "about", "binary-check", "binary-update", "binary-channel"):
+        for action in ("devices", "console", "about", "login", "binary-check", "binary-update", "binary-channel"):
             for fields in ({"command": "id"}, {"settings": {"shieldsUp": True}},
                            {"url": "https://example.invalid/"}, {"args": ["--user", "0"]},
                            {"env": {"PATH": "/other"}}, {"component": "example.invalid/.Activity"},
@@ -121,13 +121,16 @@ def main():
                            {"sha256": "0" * 64}, {"architecture": "example"}):
                 arguments = {"channel": saved_channel} if action == "binary-channel" else {}
                 assert not rpc(action, **arguments, **fields).get("ok"), "Mixed or arbitrary action arguments accepted"
-        for action in ("devices", "console", "about", "binary-check", "binary-update", "status"):
+        for action in ("devices", "console", "about", "login", "binary-check", "binary-update", "status"):
             assert not rpc(action, channel="preview").get("ok"), "Channel override accepted outside channel action"
-        for fields in ({"command": ""}, {"command": None}, {"settings": None}, {"channel": None},
-                       {"url": "https://github.com/KyuubiRan/Shellscaled"}):
-            assert not rpc("about", **fields).get("ok"), "Project-page action accepted an extra field"
-        # Valid console/about/update actions open a browser or replace executables: manual-only.
-        print("PASS: devices/console/about/binary actions reject mixed channel, command, settings, URL, argv, environment and source overrides")
+        for action in ("about", "login"):
+            for fields in ({"command": ""}, {"command": None}, {"settings": None}, {"channel": None},
+                           {"url": "https://github.com/KyuubiRan/Shellscaled"}):
+                assert not rpc(action, **fields).get("ok"), "Fixed browser action accepted an extra field"
+        # Valid login is covered only by synthetic LocalAPI/browser hooks in the
+        # native tests. Never initiate authentication against the real account.
+        # Valid console/about/update actions are likewise manual-only here.
+        print("PASS: devices/console/about/login/binary actions reject mixed channel, command, settings, URL, argv, environment and source overrides")
         for command in ["tailscale version", "tailscaled --version", "tailscale status --json --peers=false", "tailscale ping --help"]:
             assert success("command", command=command).get("exitCode") == 0
         print("PASS: allowed Tailscale and daemon diagnostics execute")

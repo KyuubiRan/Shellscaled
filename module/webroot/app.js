@@ -27,7 +27,8 @@
     addresses: $("addresses"), connection: $("toggle-connection"), connectionLabel: $("connection-label"),
     settingsHint: $("settings-hint"), save: $("save-settings"), exitLan: $("exit-lan"),
     exitLanDescription: $("exit-lan-description"), language: $("language"),
-    loginCard: $("login-card"), loginURL: $("login-url"), command: $("command-input"),
+    loginCard: $("login-card"), loginURL: $("login-url"), login: $("login-tailscale"),
+    loginLabel: $("login-label"), loginMessage: $("login-message"), copyLogin: $("copy-login"), command: $("command-input"),
     output: $("command-output"), exit: $("command-exit"), run: $("run-command"),
     console: $("open-console"), consoleLabel: $("console-label"), consoleMessage: $("console-message"),
     about: $("open-about"), aboutDescription: $("about-description"), aboutMessage: $("about-message"),
@@ -47,6 +48,7 @@
     deviceRefreshPending: false, deviceRequestVersion: 0, deviceRenderSignature: null,
     addressSignature: null, consoleError: null,
     aboutError: null, aboutRequestVersion: 0,
+    loginError: null, loginOpened: false, loginRequestVersion: 0,
     binary: null, binaryFeedback: "", binaryError: null, binaryRequestVersion: 0,
     updateChannel: null, binaryChannelPending: null,
   };
@@ -295,6 +297,32 @@
       requireSuccess(await rpc({ action: "about" }));
     } catch (error) {
       if (state.pageActive && version === state.aboutRequestVersion) state.aboutError = errorView(error);
+    } finally {
+      finishBusy();
+    }
+  }
+
+  async function startLogin() {
+    if (state.busy || !state.available || !state.pageActive || !state.status || state.status.state !== "NeedsLogin") return;
+    state.busy = true;
+    state.busyAction = "login";
+    state.loginError = null;
+    state.loginOpened = false;
+    const version = ++state.loginRequestVersion;
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "login" }));
+      if (!state.pageActive || version !== state.loginRequestVersion) return;
+      state.loginOpened = true;
+      if (typeof result.state === "string") renderStatus(result);
+      try {
+        const status = requireSuccess(await rpc({ action: "status" }));
+        if (state.pageActive && version === state.loginRequestVersion) renderStatus(status);
+      } catch (_) {
+        if (state.pageActive && version === state.loginRequestVersion) markFreshness("verify");
+      }
+    } catch (error) {
+      if (state.pageActive && version === state.loginRequestVersion) state.loginError = errorView(error);
     } finally {
       finishBusy();
     }
@@ -635,6 +663,7 @@
     ui.run.textContent = t(state.busyAction === "command" ? "command.running" : "command.run");
     ui.consoleLabel.textContent = t(state.busyAction === "console" ? "console.opening" : "console.open");
     renderAbout();
+    renderLogin();
     ui.language.disabled = state.busy;
     ui.language.value = I18n.preference();
     ui.main.setAttribute("aria-busy", state.busy ? "true" : "false");
@@ -726,6 +755,28 @@
     }
   }
 
+  function renderLogin() {
+    const needsLogin = state.status && state.status.state === "NeedsLogin";
+    const opening = state.busyAction === "login";
+    const loginURL = needsLogin ? safeLoginURL(state.status.loginURL) : "";
+    ui.loginCard.hidden = !needsLogin;
+    ui.loginURL.value = loginURL;
+    if ((ui.copyLogin.dataset.copy || "") !== loginURL) invalidateCopyControl(ui.copyLogin);
+    if (loginURL) ui.copyLogin.dataset.copy = loginURL;
+    else delete ui.copyLogin.dataset.copy;
+    ui.copyLogin.disabled = !needsLogin || !loginURL || !state.available || state.busy || !state.pageActive || Boolean(ui.copyLogin.dataset.copyPending);
+    updateCopyFeedback(ui.copyLogin);
+    ui.login.disabled = !needsLogin || !state.available || state.busy || !state.pageActive;
+    ui.login.classList.toggle("is-working", opening);
+    ui.login.setAttribute("aria-busy", opening ? "true" : "false");
+    ui.loginLabel.textContent = t(opening ? "login.opening" : "login.action");
+    ui.loginMessage.textContent = state.loginError ? t("login.failed") + " " + viewText(state.loginError) :
+      state.loginOpened ? t("login.opened") : "";
+    ui.loginMessage.hidden = !ui.loginMessage.textContent;
+    ui.loginMessage.dataset.kind = state.loginError ? "error" : "info";
+    ui.loginMessage.setAttribute("role", state.loginError ? "alert" : "status");
+  }
+
   function renderFreshness() {
     const values = state.lastUpdated ? {
       time: new Intl.DateTimeFormat(I18n.locale(), { hour: "2-digit", minute: "2-digit" }).format(state.lastUpdated),
@@ -768,20 +819,17 @@
       empty.textContent = t(result ? "overview.addressEmpty" : "overview.addressWaiting");
     }
     ui.addresses.querySelectorAll(".copy-control").forEach(updateCopyFeedback);
-    const loginURL = safeLoginURL(result && result.loginURL);
-    ui.loginURL.value = loginURL;
-    ui.loginCard.hidden = !loginURL;
-    const copyLogin = $("copy-login");
-    if ((copyLogin.dataset.copy || "") !== loginURL) invalidateCopyControl(copyLogin);
-    if (loginURL) copyLogin.dataset.copy = loginURL;
-    else delete copyLogin.dataset.copy;
-    updateCopyFeedback(copyLogin);
+    renderLogin();
   }
 
   function renderStatus(result, resetDraft = false) {
     if (!state.pageActive) return;
     if (typeof result.state !== "string" || typeof result.daemonRunning !== "boolean") throw new UIError("error.status");
     state.status = result;
+    if (result.state !== "NeedsLogin") {
+      state.loginError = null;
+      state.loginOpened = false;
+    }
     syncUpdateChannel(result.updateChannel);
     if (state.binary && typeof result.version === "string" && result.version) {
       state.binary.currentVersion = result.version.slice(0, 80);
@@ -982,6 +1030,7 @@
   ui.deviceSearch.addEventListener("input", renderDevices);
   ui.console.addEventListener("click", openConsole);
   ui.about.addEventListener("click", openAbout);
+  ui.login.addEventListener("click", startLogin);
   ui.binaryCheck.addEventListener("click", () => runBinaryAction("binary-check"));
   ui.binaryUpdate.addEventListener("click", () => runBinaryAction("binary-update"));
   ui.binaryChannel.addEventListener("change", () => setBinaryChannel(ui.binaryChannel.value));
@@ -1054,6 +1103,9 @@
     state.consoleError = null;
     state.aboutRequestVersion++;
     state.aboutError = null;
+    state.loginRequestVersion++;
+    state.loginError = null;
+    state.loginOpened = false;
     state.binaryRequestVersion++;
     state.binary = null;
     state.binaryFeedback = "";

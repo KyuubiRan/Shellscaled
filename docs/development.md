@@ -137,3 +137,47 @@ filesystem, and only then stops the owned service. Replacement is atomic, with
 a single temporary rollback link. Restore the prior service state after success
 or rollback and remove all transaction files. Account state and preferences are
 never copied, reset or deleted by the updater.
+
+
+## Root-shell command entries
+
+Enabled modules install exactly two owned links for root `su` shells, without
+editing shared shell profiles. KernelSU's official `su` implementation appends
+its tool directory for interactive shells and `su -c`; module service scripts
+supply the trusted KSU environment used to select it. Magisk inherits the caller's
+PATH. Its verified existing tool-injection tmpfs is accessed through a temporary
+private bind alias: only that alias is made writable, two links are installed,
+and the alias is detached. The original injected mount remains read-only.
+Neither the system partition nor an extra mounting module is required.
+
+`tailscale` resolves through the module's wrapper and fixed LocalAPI socket.
+`tailscaled` without arguments starts the managed service; `start`, `stop`,
+`restart`, `status`, and `logs [daemon|service]` use verified module control.
+`--help`, `-h`, and `--version` invoke the actual core. Other daemon startup
+flags are rejected by the managed entry; advanced raw invocation remains at the
+module-local binary. An ordinary service stop preserves the command links.
+
+Existing unrelated PATH executables are preserved rather than replaced. Only
+links pointing exactly to this module's entry may be removed. Disable/remove
+checks prevent execution and remove owned entries; uninstall serializes cleanup
+and refuses private-data deletion while any mount remains underneath it. A lost
+ownership marker or interrupted alias setup cannot cause recursive deletion to
+cross into a manager tool mount. The anonymous fixture in
+`tests/cli-entry.sh` runs only through the emulator guard and uses mock payloads.
+
+## Interactive sign-in
+
+The unauthenticated WebUI shows a login card immediately after connection status,
+even before an authorization URL exists. The explicit `login` RPC reads the
+current fixed LocalAPI, uses the existing masked connection flow only for
+`NeedsLogin` with no URL, and opens a validated official `/a/<token>` HTTPS
+URL in the system browser. Caller-supplied destinations are never accepted.
+Existing authenticated, starting, stopped or approval-pending states do not
+start a fresh authorization flow. Copying the current link remains available.
+
+Do not sign out the owner's authenticated emulator for regressions. Native
+LocalAPI/browser hooks and the isolated WebView fixture cover unauthenticated
+states, invalid destinations, empty URLs, timeout/failure and double-clicks.
+The real authenticated client can verify that a stale login action preserves its
+state without opening a new authorization flow. Screenshots use empty synthetic
+URLs and never an actual authorization token.

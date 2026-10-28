@@ -16,6 +16,13 @@ Run Tailscale natively on rooted Android without occupying Android’s VPN slot.
   <img src="docs/images/webui-settings-en.png" alt="Preferences" width="240">
 </p>
 
+<details>
+<summary>First-time sign-in</summary>
+
+<p align="center"><img src="docs/images/webui-login-en.png" alt="Sign in to Tailscale" width="280"></p>
+
+</details>
+
 ## Features
 
 - Connect or disconnect from your module manager and see connection status on the module card.
@@ -27,18 +34,20 @@ Run Tailscale natively on rooted Android without occupying Android’s VPN slot.
 
 1. Download the **arm64** ZIP package from [Releases](https://github.com/KyuubiRan/Shellscaled/releases).
 2. In **Magisk** or **KernelSU Manager**, choose **Install from storage** and select the ZIP.
-3. **Reboot**, tap the module action button to connect, and follow the sign-in instructions. KernelSU users can also connect from the settings page and copy the sign-in link.
+3. **Reboot**, tap the module action button to connect, and follow the sign-in instructions. KernelSU users can also open the module page and choose **Sign in to Tailscale**.
 
 <details>
 <summary>Sign in from a terminal</summary>
 
    ```sh
-   su -c '/data/adb/modules/shellscaled/bin/tailscale login'
+   su -c 'tailscale login'
    ```
 
 </details>
 
 ## Usage
+
+After running `su` in `adb shell` or a terminal, use `tailscale` directly. Use `tailscaled` to start, stop, restart or check the service.
 
 Use the module action button in your manager to connect or disconnect. KernelSU users can also open the settings page to manage subnet routes, incoming connections and LAN access when using an exit node.
 

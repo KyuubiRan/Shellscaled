@@ -147,6 +147,9 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .badge[data-tone="error"] { background: var(--danger-soft); color: var(--danger); }
 .login-card p { color: var(--muted); font-size: 12px; }
 .login-card input { margin: 14px 0 12px; }
+.login-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.login-actions > .button { flex: 1 1 180px; min-width: 0; }
+.login-card .local-message { margin-top: 12px; }
 input[type="text"], input[type="search"] { display: block; width: 100%; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text); font-size: 13px; }
 .login-card input { font-size: 11px; }
 .settings-card { margin-top: 0; padding: 0 19px; }

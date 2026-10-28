@@ -112,7 +112,7 @@
     const keys = Object.keys(translations.en).sort();
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "save-settings", "run-command", "command-output",
-      "devices-message", "console-label", "about-description", "binary-check-label", "binary-update-label", "binary-message"]);
+      "devices-message", "console-label", "about-description", "login-label", "binary-check-label", "binary-update-label", "binary-message"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
@@ -310,6 +310,7 @@
     });
 
     await test("copy-lifecycle-rejects-stale-completions", async () => {
+      const original = backend();
       const pending = [];
       let fallbacks = 0;
       const restore = mockClipboard((value) => new Promise((resolve, reject) => {
@@ -334,6 +335,7 @@
       };
       try {
         click("tab-overview");
+        fixture.setState("NeedsLogin");
         fixture.setLoginURL("https://example.test/login/old");
         await refresh();
         const control = $("copy-login");
@@ -370,12 +372,145 @@
       } finally {
         try {
           hide();
-          fixture.setLoginURL("");
+          fixture.setLoginURL(original.loginURL || "");
+          fixture.setState(original.state);
           for (const operation of pending) if (!operation.settled) operation.resolve();
           await wait(25);
           window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
           await idle();
         } finally { restore(); }
+      }
+    });
+
+    await test("login-without-url-busy-errors-and-unsaved-settings", async () => {
+      await idle();
+      const original = backend();
+      const calls = () => requests().filter((request) => request.action === "login");
+      const checkbox = document.querySelector('[data-setting="shieldsUp"]');
+      const edited = !original.settings.shieldsUp;
+      const viewport = document.querySelector('meta[name="viewport"]');
+      const originalViewport = viewport.content;
+      const originalOpen = window.open;
+      const url = location.href;
+      const navigations = fixture.navigationAttempts();
+      let opens = 0;
+      window.open = () => { opens++; return null; };
+      try {
+        fixture.setState("NeedsLogin");
+        fixture.setLoginURL("");
+        fixture.setLoginMode("waiting");
+        await language($("language").value);
+        click("tab-settings");
+        checkbox.checked = edited;
+        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+        click("tab-overview");
+        viewport.content = "width=320";
+        await until(() => Math.abs(window.innerWidth - 320) <= 2);
+        for (const locale of locales) {
+          await language(locale);
+          assert(!$("login-card").hidden && !$("login-tailscale").disabled && $("copy-login").disabled);
+          assert(!$("login-url").value && $("login-label").textContent === ShellscaledI18n.t("login.action"));
+          assert(document.documentElement.scrollWidth <= innerWidth + 1 && document.body.scrollWidth <= innerWidth + 1);
+        }
+        viewport.content = originalViewport;
+        const before = calls().length;
+        const globalNotice = notice();
+        for (const tab of ["devices", "settings", "command", "overview"]) {
+          click("tab-" + tab);
+          await idle();
+        }
+        assert(calls().length === before);
+        const firstRequest = requests().length;
+        const settingsCalls = requests().filter((request) => request.action === "settings").length;
+        fixture.holdNextLogin();
+        click("login-tailscale");
+        await until(() => calls().length === before + 1);
+        assert($("main").getAttribute("aria-busy") === "true" && $("login-tailscale").disabled && $("copy-login").disabled);
+        assert($("login-tailscale").getAttribute("aria-busy") === "true" && $("login-label").textContent === ShellscaledI18n.t("login.opening"));
+        $("login-tailscale").click();
+        click("tab-settings");
+        await wait(50);
+        assert(calls().length === before + 1 && notice() === globalNotice);
+        fixture.releaseLogin();
+        await idle();
+        assert(requests().slice(firstRequest).some((request) => request.action === "status"));
+        assert(!$("login-card").hidden && !$("login-tailscale").disabled && !$("copy-login").disabled);
+        assert($("login-url").value === "https://example.test/login/generated");
+        assert(!$("login-message").hidden && $("login-message").dataset.kind === "info");
+        assert($("login-message").textContent === ShellscaledI18n.t("login.opened"));
+        assert(checkbox.checked === edited && !$("save-settings").disabled);
+        click("tab-overview");
+        fixture.setLoginMode("error");
+        click("login-tailscale");
+        await until(() => calls().length === before + 2);
+        await idle();
+        assert(!$("login-tailscale").disabled && !$("copy-login").disabled && $("login-message").dataset.kind === "error");
+        assert($("login-message").closest("#login-card") && $("login-message").textContent.includes(ShellscaledI18n.t("login.failed")));
+        click("tab-command");
+        click("tab-overview");
+        assert(calls().length === before + 2 && notice() === globalNotice);
+        assert(calls().every((request) => Object.keys(request).sort().join(",") === "action,locale"));
+        assert(requests().filter((request) => request.action === "settings").length === settingsCalls);
+        assert(checkbox.checked === edited && JSON.stringify(backend().settings) === JSON.stringify(original.settings));
+        assert(location.href === url && fixture.navigationAttempts() === navigations && opens === 0 && storageIsLanguageOnly());
+      } finally {
+        fixture.releaseLogin();
+        await idle();
+        viewport.content = originalViewport;
+        window.open = originalOpen;
+        fixture.setState(original.state);
+        fixture.setLoginURL(original.loginURL || "");
+        fixture.setLoginMode("waiting");
+        await language($("language").value);
+        checkbox.checked = original.settings.shieldsUp;
+        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+
+    await test("login-existing-link-running-and-machine-approval", async () => {
+      await idle();
+      const original = backend();
+      const calls = () => requests().filter((request) => request.action === "login");
+      const writes = [];
+      const restore = mockClipboard((value) => { writes.push(value); return Promise.resolve(); });
+      try {
+        fixture.setState("NeedsLogin");
+        fixture.setLoginURL("https://example.test/login/existing");
+        fixture.setLoginMode("running");
+        await language($("language").value);
+        click("tab-overview");
+        assert(!$("login-card").hidden && !$("copy-login").disabled && !$("login-tailscale").disabled);
+        const globalNotice = notice();
+        await copy($("copy-login"), "copied");
+        assert(writes.length === 1 && writes[0] === "https://example.test/login/existing");
+        const before = calls().length;
+        click("login-tailscale");
+        await until(() => calls().length === before + 1);
+        await idle();
+        assert(backend().state === "Running" && $("login-card").hidden && $("login-tailscale").disabled && $("copy-login").disabled);
+        assert(!$("login-url").value && !$("copy-login").dataset.copy);
+        fixture.setLoginURL("https://example.test/login/stale");
+        await language($("language").value);
+        assert($("login-card").hidden && !$("login-url").value);
+        $("login-tailscale").click();
+        assert(calls().length === before + 1);
+        fixture.setState("NeedsMachineAuth");
+        await language($("language").value);
+        assert($("login-card").hidden && $("login-tailscale").disabled && $("copy-login").disabled);
+        assert($("state-title").textContent === ShellscaledI18n.t("state.NeedsMachineAuth.title"));
+        assert($("state-description").textContent === ShellscaledI18n.t("state.NeedsMachineAuth.description"));
+        $("login-tailscale").click();
+        click("tab-settings");
+        click("tab-overview");
+        await idle();
+        assert(calls().length === before + 1 && notice() === globalNotice);
+        assert(JSON.stringify(backend().settings) === JSON.stringify(original.settings) && storageIsLanguageOnly());
+      } finally {
+        restore();
+        fixture.setState(original.state);
+        fixture.setLoginURL(original.loginURL || "");
+        fixture.setLoginMode("waiting");
+        await language($("language").value);
       }
     });
 

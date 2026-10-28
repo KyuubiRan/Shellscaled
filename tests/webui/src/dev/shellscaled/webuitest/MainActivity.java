@@ -39,6 +39,9 @@ public final class MainActivity extends Activity {
     private final JSONArray requests = new JSONArray();
     private String state = "Running";
     private String loginURL = "";
+    private String loginMode = "waiting";
+    private boolean holdNextLogin;
+    private Runnable loginReply;
     private boolean acceptRoutes;
     private boolean shieldsUp;
     private boolean allowLAN;
@@ -69,13 +72,14 @@ public final class MainActivity extends Activity {
         screenshotLocale = getIntent().getStringExtra("locale");
         if (screenshotLocale == null) screenshotLocale = "zh-CN";
         if (screenshotTab != null) {
-            if (!Arrays.asList("overview", "devices", "settings", "command").contains(screenshotTab) ||
+            if (!Arrays.asList("overview", "devices", "settings", "command", "login").contains(screenshotTab) ||
                     !Arrays.asList("zh-CN", "zh-TW", "en").contains(screenshotLocale)) {
                 Log.i(TAG, "SCREENSHOT ERROR invalid-options");
                 finish();
                 return;
             }
             acceptRoutes = true;
+            if ("login".equals(screenshotTab)) state = "NeedsLogin";
             Log.i(TAG, "SCREENSHOT START " + screenshotTab + " " + screenshotLocale);
         } else {
             Log.i(TAG, "START run=" + SystemClock.elapsedRealtime());
@@ -158,10 +162,12 @@ public final class MainActivity extends Activity {
     private JSONObject status() throws JSONException {
         JSONObject settings = new JSONObject().put("acceptRoutes", acceptRoutes).put("shieldsUp", shieldsUp)
                 .put("exitNodeAllowLanAccess", allowLAN);
+        JSONArray addresses = new JSONArray();
+        if (!"login".equals(screenshotTab)) addresses.put("100.64.0.10").put("fd7a:115c:a1e0::10");
         JSONObject result = new JSONObject().put("ok", true).put("state", state)
                 .put("version", binaryVersion)
                 .put("daemonRunning", true).put("exitNodeConfigured", true).put("exitCode", 0)
-                .put("ips", new JSONArray().put("100.64.0.10").put("fd7a:115c:a1e0::10"))
+                .put("ips", addresses)
                 .put("settings", settings).put("updateChannel", updateChannel);
         if (!loginURL.isEmpty()) result.put("loginURL", loginURL);
         return result;
@@ -242,7 +248,7 @@ public final class MainActivity extends Activity {
                 }
                 synchronized (guard) {
                     String action = request.getString("action");
-                    if (Arrays.asList("devices", "console", "about", "binary-check", "binary-update").contains(action) && request.length() != 2) {
+                    if (Arrays.asList("devices", "console", "about", "login", "binary-check", "binary-update").contains(action) && request.length() != 2) {
                         throw new JSONException("extra-fields");
                     }
                     if ("binary-channel".equals(action) && (request.length() != 3 ||
@@ -252,6 +258,19 @@ public final class MainActivity extends Activity {
                     requests.put(request);
                     switch (action) {
                         case "status": break;
+                        case "login":
+                            boolean loginOK = !"error".equals(loginMode);
+                            if (loginOK && "NeedsLogin".equals(state)) {
+                                if ("running".equals(loginMode)) { state = "Running"; loginURL = ""; }
+                                else if (loginURL.isEmpty()) loginURL = "https://example.test/login/generated";
+                            }
+                            JSONObject login = loginOK ? status() : new JSONObject().put("ok", false)
+                                    .put("error", "Fixture sign-in unavailable").put("exitCode", 1);
+                            if (holdNextLogin) {
+                                holdNextLogin = false;
+                                loginReply = () -> reply(callback, login);
+                            } else reply(callback, login);
+                            return;
                         case "about":
                             // Native code owns the fixed project URL. This fixture never opens it.
                             JSONObject about = new JSONObject().put("ok", !nextAboutFails);
@@ -360,8 +379,25 @@ public final class MainActivity extends Activity {
             return readAsset("fixture/translations.json");
         }
         @JavascriptInterface public void setState(String value) {
-            if (!Arrays.asList("Running", "Stopped", "Starting").contains(value)) return;
+            if (!Arrays.asList("Running", "Stopped", "Starting", "NeedsLogin", "NeedsMachineAuth").contains(value)) return;
             synchronized (guard) { state = value; }
+        }
+        @JavascriptInterface public void setLoginMode(String value) {
+            if (!Arrays.asList("waiting", "running", "error").contains(value)) return;
+            synchronized (guard) { loginMode = value; }
+        }
+        @JavascriptInterface public void holdNextLogin() {
+            synchronized (guard) { holdNextLogin = true; }
+        }
+        @JavascriptInterface public void releaseLogin() {
+            synchronized (guard) {
+                if (loginReply != null) {
+                    Runnable reply = loginReply;
+                    loginReply = null;
+                    reply.run();
+                }
+                holdNextLogin = false;
+            }
         }
         @JavascriptInterface public void nextUpStarts() {
             synchronized (guard) { nextUpStarts = true; }

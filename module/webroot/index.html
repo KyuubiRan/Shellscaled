@@ -58,6 +58,18 @@
             <div class="state-meta"><span id="service-status" data-i18n="service.unread"></span><span id="freshness" data-i18n="freshness.waiting"></span></div>
           </article>
 
+          <article class="card login-card" id="login-card" hidden>
+            <div class="card-heading"><h3 data-i18n="login.heading"></h3><span class="badge warning" data-i18n="login.badge"></span></div>
+            <p data-i18n="login.description"></p>
+            <label class="visually-hidden" for="login-url" data-i18n="login.url"></label>
+            <input id="login-url" type="text" readonly spellcheck="false" autocomplete="off" autocapitalize="off" data-i18n-placeholder="login.linkPending">
+            <div class="login-actions">
+              <button class="button primary" id="login-tailscale" type="button" data-requires-bridge disabled><span class="button-spinner" aria-hidden="true"></span><span id="login-label" data-i18n="login.action"></span></button>
+              <button class="button secondary compact copy-control" id="copy-login" type="button" data-copy-kind="login" disabled><span class="copy-feedback" aria-live="polite" data-i18n="login.copy"></span></button>
+            </div>
+            <p id="login-message" class="local-message" role="status" aria-live="polite" hidden></p>
+          </article>
+
           <article class="card address-card">
             <div class="card-heading"><h3 data-i18n="overview.addresses"></h3><span class="small-label" data-i18n="overview.addressType"></span></div>
             <div class="address-list" id="addresses"><p class="empty-copy" data-i18n="overview.addressWaiting"></p></div>
@@ -70,14 +82,6 @@
             </button>
             <p id="console-message" class="local-message" role="alert" hidden></p>
           </div>
-
-          <article class="card login-card" id="login-card" hidden>
-            <div class="card-heading"><h3 data-i18n="login.heading"></h3><span class="badge warning" data-i18n="login.badge"></span></div>
-            <p data-i18n="login.description"></p>
-            <label class="visually-hidden" for="login-url" data-i18n="login.url"></label>
-            <input id="login-url" type="text" readonly spellcheck="false" autocomplete="off" autocapitalize="off">
-            <button class="button secondary compact copy-control" id="copy-login" type="button" data-copy-kind="login"><span class="copy-feedback" aria-live="polite" data-i18n="login.copy"></span></button>
-          </article>
 
           <div class="about-action">
             <button class="card about-link" id="open-about" type="button" aria-labelledby="about-label" aria-describedby="about-description about-message" data-requires-bridge disabled>

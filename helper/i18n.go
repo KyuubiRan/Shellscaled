@@ -82,7 +82,10 @@ func (b *backend) selectLocale(preference string) {
 
 // CLI output remains untouched. Only application messages are translated.
 var messages = map[string][3]string{
-	"无法打开项目主页，请安装或启用浏览器后重试": {"无法打开项目主页，请安装或启用浏览器后重试。", "無法開啟專案首頁，請安裝或啟用瀏覽器後重試。", "Could not open the project page. Install or enable a browser and try again."},
+	"登录链接无效，请刷新后重试":                               {"登录链接无效，请刷新后重试。", "登入連結無效，請重新整理後重試。", "The sign-in link is invalid. Refresh and try again."},
+	"登录链接尚未准备好，请稍后重试":                             {"登录链接尚未准备好，请稍后重试。", "登入連結尚未準備好，請稍後重試。", "The sign-in link is not ready. Try again shortly."},
+	"无法打开登录页面，请安装或启用浏览器后重试":                       {"无法打开登录页面，请安装或启用浏览器后重试。", "無法開啟登入頁面，請安裝或啟用瀏覽器後重試。", "Could not open the sign-in page. Install or enable a browser and try again."},
+	"无法打开项目主页，请安装或启用浏览器后重试":                       {"无法打开项目主页，请安装或启用浏览器后重试。", "無法開啟專案首頁，請安裝或啟用瀏覽器後重試。", "Could not open the project page. Install or enable a browser and try again."},
 	"不支持此更新频道":                                    {"不支持此更新频道。", "不支援此更新頻道。", "This update channel is not supported."},
 	"无法保存更新频道，请重试":                                {"无法保存更新频道，请重试。", "無法儲存更新頻道，請重試。", "Could not save the update channel. Try again."},
 	"二进制更新正在进行，请稍后重试":                             {"二进制更新正在进行，请稍后重试。", "二進位更新正在進行，請稍後重試。", "A binary update is in progress. Try again later."},

@@ -74,6 +74,7 @@ type localStatus struct {
 	Version      string
 	TailscaleIPs []string
 	AuthURL      string
+	controlURL   string // Set only from the same LocalAPI preferences snapshot.
 }
 
 // Keep this projection separate from ordinary status polling, which omits peers.
@@ -140,6 +141,7 @@ type device struct {
 }
 
 type localPrefs struct {
+	ControlURL             string
 	RouteAll               bool
 	ShieldsUp              bool
 	ExitNodeAllowLANAccess bool
@@ -152,6 +154,8 @@ type backend struct {
 	module   string
 	client   *http.Client
 	locale   string
+	// Internal browser test hook; RPC callers cannot configure it.
+	loginBrowser func(context.Context, string) error
 }
 
 func newBackend(module string) *backend {
@@ -201,6 +205,11 @@ func (b *backend) api(ctx context.Context, method, path string, body any, result
 }
 
 func (b *backend) status(ctx context.Context) response {
+	r, _ := b.statusWithLocal(ctx)
+	return r
+}
+
+func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
 	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module)}
 	var st localStatus
 	if err := b.api(ctx, "GET", "status?peers=false", nil, &st); err != nil {
@@ -208,7 +217,7 @@ func (b *backend) status(ctx context.Context) response {
 			r.State = "ServiceError"
 			r.Error = err.Error()
 		}
-		return r
+		return r, st
 	}
 	r.DaemonRunning, r.State, r.IPs = true, st.BackendState, st.TailscaleIPs
 	if st.Version != "" {
@@ -221,11 +230,12 @@ func (b *backend) status(ctx context.Context) response {
 	if err := b.api(ctx, "GET", "prefs", nil, &p); err != nil {
 		r.OK = false
 		r.Error = err.Error()
-		return r
+		return r, st
 	}
+	st.controlURL = p.ControlURL
 	r.Settings = settings{p.RouteAll, p.ShieldsUp, p.ExitNodeAllowLANAccess}
 	r.ExitNodeConfigured = p.ExitNodeID != "" || (p.ExitNodeIP != "" && p.ExitNodeIP != "invalid IP")
-	return r
+	return r, st
 }
 
 func (b *backend) devices(ctx context.Context) response {
@@ -365,6 +375,107 @@ func (b *backend) about(ctx context.Context) response {
 		return failed("无法打开项目主页，请安装或启用浏览器后重试")
 	}
 	return response{OK: true}
+}
+
+var loginTokenPath = regexp.MustCompile(`^/a/[A-Za-z0-9_-]{1,512}$`)
+
+func allowedLoginURL(value, controlURL string) bool {
+	if value == "" || len(value) > 2048 || strings.TrimSpace(value) != value || strings.Contains(value, "#") {
+		return false
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" ||
+		u.Fragment != "" || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" ||
+		(u.Port() != "" && u.Port() != "443") || !loginTokenPath.MatchString(u.Path) {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if !strings.EqualFold(u.Host, host) && !strings.EqualFold(u.Host, host+":443") {
+		return false
+	}
+	switch host {
+	case "login.tailscale.com":
+		// The documented SaaS interactive-login destination.
+		return true
+	case "controlplane.tailscale.com":
+		// Upstream TestValidPopBrowserURL also supports this same-origin SaaS
+		// form. An empty ControlURL selects the official default control plane.
+		if controlURL == "" {
+			return true
+		}
+		control, err := url.Parse(controlURL)
+		return err == nil && control.Scheme == "https" && control.User == nil &&
+			(strings.EqualFold(control.Host, "controlplane.tailscale.com") || strings.EqualFold(control.Host, "controlplane.tailscale.com:443")) &&
+			(control.Path == "" || control.Path == "/") && control.RawQuery == "" &&
+			!control.ForceQuery && control.Fragment == "" && control.Opaque == "" && control.RawPath == ""
+	default:
+		return false
+	}
+}
+
+func loginCommand(ctx context.Context, target, controlURL string) (*exec.Cmd, error) {
+	if !allowedLoginURL(target, controlURL) {
+		return nil, errors.New("登录链接无效，请刷新后重试")
+	}
+	cmd := exec.CommandContext(ctx, "/system/bin/am", "start", "-W", "--user", "current",
+		"-a", "android.intent.action.VIEW", "-c", "android.intent.category.BROWSABLE", "-d", target)
+	cmd.WaitDelay = time.Second
+	return cmd, nil
+}
+
+func (b *backend) login(ctx context.Context) response {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	r, local := b.statusWithLocal(ctx)
+	if !r.OK {
+		return r
+	}
+	// A stale login button must never switch accounts or restart authorization.
+	switch r.State {
+	case "Running", "Stopped", "Starting", "NeedsMachineAuth":
+		return r
+	}
+	if !r.DaemonRunning {
+		return failed("请先启动后台服务")
+	}
+	if r.State != "NeedsLogin" {
+		return failed("登录链接尚未准备好，请稍后重试")
+	}
+	if local.AuthURL == "" {
+		// The ordinary up path changes only WantRunning, then requests an
+		// interactive URL for an unauthenticated backend and polls briefly.
+		r = b.connection(ctx, true)
+		if !r.OK {
+			return r
+		}
+		r, local = b.statusWithLocal(ctx)
+		if !r.OK {
+			return r
+		}
+		if r.State == "Running" || r.State == "NeedsMachineAuth" {
+			return r
+		}
+		if r.State != "NeedsLogin" || local.AuthURL == "" {
+			return failed("登录链接尚未准备好，请稍后重试")
+		}
+	}
+	if !allowedLoginURL(local.AuthURL, local.controlURL) {
+		return failed("登录链接无效，请刷新后重试")
+	}
+	openCtx, cancelOpen := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelOpen()
+	if b.loginBrowser != nil {
+		if err := b.loginBrowser(openCtx, local.AuthURL); err != nil {
+			return failed("无法打开登录页面，请安装或启用浏览器后重试")
+		}
+	} else {
+		cmd, err := loginCommand(openCtx, local.AuthURL, local.controlURL)
+		// ActivityManager output may contain a private login token. Discard it.
+		if err != nil || cmd.Run() != nil {
+			return failed("无法打开登录页面，请安装或启用浏览器后重试")
+		}
+	}
+	return r
 }
 
 func (b *backend) moduleVersion() string {
@@ -636,7 +747,7 @@ func decodeRequest(encoded string) (request, error) {
 		if r.Channel != "stable" && r.Channel != "preview" {
 			return r, errors.New("不支持此更新频道")
 		}
-	case "about", "binary-check", "binary-update":
+	case "about", "login", "binary-check", "binary-update":
 		// These operations have no caller-selectable URL, path, version, or
 		// command, including otherwise-known fields with empty/null values.
 		for key := range inputFields {
@@ -769,6 +880,8 @@ func main() {
 				r = b.console(ctx)
 			case "about":
 				r = b.about(ctx)
+			case "login":
+				r = b.login(ctx)
 			case "binary-check", "binary-update":
 				r = b.binary(ctx, req.Action == "binary-update")
 			case "binary-channel":

@@ -66,7 +66,7 @@ python3 scripts/test-webui.py --manager ksu
 
 `python3 scripts/build-webui-fixture.py` 使用已有 SDK 构建隔离的测试 APK。
 在模拟器安装并启动 `dev.shellscaled.webuitest/.MainActivity`，读取
-`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=11 fail=0`。
+`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=24 fail=0`。
 它在真实 Android WebView 中加载原样资源，使用无 root、无网络权限的
 内存桥验证前端，不访问生产账号或 socket。详见 [夹具说明](../tests/webui/README.md)。
 
@@ -75,3 +75,16 @@ python3 scripts/test-webui.py --manager ksu
 `.work/tests/derphttp.test`，交叉编译后在模拟器以
 `-test.run '^TestAndroidDERP' -test.v` 执行，覆盖坏 IPv6 回退、健康 IPv6、
 证书拒绝及调用方 deadline/连接关闭。
+
+
+全局命令的 root 场景必须从 UID 2000 的普通 adb shell 验证，而不是只检查
+已 `adb root` 的环境。`scripts/emulator.py unroot` 仍会校验 AVD；确认
+`su` 已获模拟器的 root 授权后，分别验证交互式 `su` 与 `su -c` 的
+`tailscale version`、`tailscale status`、`tailscaled --version` 及幂等启动。
+测试完成可通过同一 guard 恢复 `adb root`。授权仅是本地模拟器准备，
+模块本身不会修改任何设备的 superuser 授权策略。
+
+Google API 镜像的 `adb root` 环境可能直接命中镜像自带的调试 `su`，其语法
+与 KernelSU 的 `su -c` 不同。因此 root-shell 入口验收先用 guard `unroot`
+恢复 UID 2000，再调用管理器提供的 `su`。ADB 已为 UID 0 时，设备管理
+操作直接执行即可，不需要再套一层调试 `su`。

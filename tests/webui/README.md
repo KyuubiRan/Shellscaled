@@ -59,6 +59,13 @@ regression case covers tab changes without an automatic action, a held busy
 response, duplicate-click prevention, actual Android WebView Enter-key activation,
 local errors, accessible button labeling, and no browser/WebView navigation.
 The existing translation and narrow-layout checks include the new card.
+Two sign-in cases use only synthetic `NeedsLogin` / `NeedsMachineAuth` states
+and `https://example.test/` links. They cover a missing/existing link, copying,
+one parameter-free native sign-in request, held busy responses and duplicate
+clicks, successful status refresh, local failures, preserved unsaved preferences,
+and a hidden/disabled sign-in panel after connection or while awaiting approval.
+The visible sign-in panel is also checked in all three languages at 320 CSS pixels.
+No case signs out, authenticates, or opens a real account/browser.
 
 This fixture supplements actual KernelSU bridge and native helper acceptance;
 it does not assert that a root manager, Tailscale or networking works.
@@ -80,7 +87,15 @@ Repeat with `devices`, `settings` and `command` for the other tabs. The device
 page uses three harmless documentation examples, excluding the adversarial test
 strings. This mode still has no
 root, networking, real module access, or test overlay. Omit `screenshot` to run
-the normal twenty-two regression cases again.
+the normal twenty-four regression cases again.
+
+For a sign-in preview, use `--es screenshot login --es locale zh-CN` (the other
+two languages also work). This stays on the overview tab with synthetic
+`NeedsLogin`, no addresses and an empty sign-in URL. It never requests login or
+generates an example token. Wait for `SCREENSHOT READY login zh-CN`; the visible
+panel has an enabled sign-in button and a disabled copy button, and is scrolled
+into view only when needed. The ordinary tests and other screenshot modes are
+unchanged.
 
 The separate `ClipboardProbeActivity` is the only optional component that reads
 the real clipboard. After copying in the real KernelSU WebUI, explicitly launch

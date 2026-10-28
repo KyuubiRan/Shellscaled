@@ -16,6 +16,13 @@
   <img src="docs/images/webui-settings.png" alt="常用设置" width="240">
 </p>
 
+<details>
+<summary>首次登录</summary>
+
+<p align="center"><img src="docs/images/webui-login.png" alt="登录 Tailscale" width="280"></p>
+
+</details>
+
 ## 功能
 
 - 在管理器中一键连接或断开，模块卡片显示连接状态。
@@ -27,13 +34,13 @@
 
 1. 从 [Release](https://github.com/KyuubiRan/Shellscaled/releases) 下载 **arm64** ZIP 安装包。
 2. 在 **Magisk** 或 **KernelSU** 管理器中选择「从本地安装」，安装该 ZIP。
-3. **重启设备**，点击模块的运行按钮连接，首次使用时按提示登录。KernelSU 用户也可打开模块页面，点击连接并复制登录链接。
+3. **重启设备**，点击模块的运行按钮连接，首次使用时按提示登录。KernelSU 用户也可打开模块页面，点击「登录 Tailscale」完成登录。
 
 <details>
 <summary>通过终端登录</summary>
 
    ```sh
-   su -c '/data/adb/modules/shellscaled/bin/tailscale login'
+   su -c 'tailscale login'
    ```
 
 </details>
@@ -41,6 +48,8 @@
 ## 使用
 
 管理器中的模块按钮可切换连接状态。KernelSU 用户还可打开设置页面，管理子网路由、入站连接和出口节点的局域网访问。
+
+在 `adb shell` 或终端执行 `su` 后，可直接使用 `tailscale`。`tailscaled` 可启动、停止、重启服务或查看状态。
 
 点击本机地址即可复制；设备页可搜索本机可见的设备，查看在线状态并复制名称或地址。
 

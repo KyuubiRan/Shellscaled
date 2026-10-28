@@ -25,7 +25,7 @@ def main():
         command = command[1:]
     if not command:
         parser.error("provide an adb command")
-    if command[0] not in {"shell", "push", "pull", "install", "uninstall", "root", "wait-for-device", "reboot", "logcat"}:
+    if command[0] not in {"shell", "push", "pull", "install", "uninstall", "root", "unroot", "wait-for-device", "reboot", "logcat"}:
         parser.error("unsupported adb command")
     sys.exit(subprocess.run(prefix + command).returncode)
 

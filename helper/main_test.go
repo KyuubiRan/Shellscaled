@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -330,4 +332,211 @@ func TestAboutRPCIsActionAndLocaleOnly(t *testing.T) {
 			t.Error("mixed project-page request accepted")
 		}
 	}
+}
+
+func TestLoginRPCIsActionAndLocaleOnly(t *testing.T) {
+	encode := func(value any) string { data, _ := json.Marshal(value); return base64.StdEncoding.EncodeToString(data) }
+	for _, locale := range []string{"", "system", "en", "zh-CN", "zh-TW"} {
+		if _, err := decodeRequest(encode(map[string]any{"action": "login", "locale": locale})); err != nil {
+			t.Fatal("valid login action rejected")
+		}
+	}
+	for key, value := range map[string]any{"command": "", "settings": nil, "channel": nil, "url": "https://login.tailscale.com/a/example",
+		"component": "example.invalid/.Activity", "args": []string{"--user", "0"}, "env": map[string]string{"PATH": "/other"},
+		"path": "/other", "controlURL": "https://example.invalid", "loginBrowser": true, "Action": "login"} {
+		if _, err := decodeRequest(encode(map[string]any{"action": "login", key: value})); err == nil {
+			t.Errorf("login action accepted extra field %q", key)
+		}
+	}
+	for _, raw := range []string{`{"action":"login","command":null}`, `{"action":"login","settings":{}}`, `{"action":"login","channel":"stable"}`, `{"action":"login","locale":"../../other"}`} {
+		if _, err := decodeRequest(base64.StdEncoding.EncodeToString([]byte(raw))); err == nil {
+			t.Error("mixed login request accepted")
+		}
+	}
+}
+
+func TestLoginIntentHasOfficialDestination(t *testing.T) {
+	for _, tc := range []struct{ target, control string }{
+		{"https://login.tailscale.com/a/exampleToken_123", ""},
+		{"https://login.tailscale.com:443/a/example-token", ""},
+		{"https://controlplane.tailscale.com/a/example", "https://controlplane.tailscale.com"},
+		{"https://controlplane.tailscale.com/a/example", ""},
+	} {
+		cmd, err := loginCommand(context.Background(), tc.target, tc.control)
+		want := []string{"/system/bin/am", "start", "-W", "--user", "current", "-a", "android.intent.action.VIEW", "-c", "android.intent.category.BROWSABLE", "-d", tc.target}
+		if err != nil || cmd == nil || cmd.Path != want[0] || !reflect.DeepEqual(cmd.Args, want) ||
+			cmd.Stdout != nil || cmd.Stderr != nil || cmd.WaitDelay != time.Second || cmd.Cancel == nil {
+			t.Fatal("login must use a validated, fixed external-browser intent without output")
+		}
+		// Inspect only. Never launch a real browser or initiate authentication.
+	}
+	for _, target := range []string{"", "http://login.tailscale.com/a/example", "https://example.invalid/a/example", "https://login.tailscale.com.example.invalid/a/example",
+		"https://login.tailscale.com./a/example", "https://user@login.tailscale.com/a/example", "https://login.tailscale.com:444/a/example", "https://login.tailscale.com:/a/example",
+		"https://login.tailscale.com/a/example?next=https://example.invalid", "https://login.tailscale.com/a/example?", "https://login.tailscale.com/a/example#fragment", "https://login.tailscale.com/a/example#",
+		"https://login.tailscale.com/", "https://login.tailscale.com/a/", "https://login.tailscale.com/a/../example", "https://login.tailscale.com/a/example/more",
+		"https://login.tailscale.com/a/%65xample", "https://login.tailscale.com/a/example%2fother", "https://login.tailscale.com/a/example\n--user 0", " https://login.tailscale.com/a/example",
+		"intent://login.tailscale.com/a/example", "file:///data/local/tmp/example", "javascript:example()"} {
+		if cmd, err := loginCommand(context.Background(), target, ""); err == nil || cmd != nil {
+			t.Fatal("an unsafe login destination produced a browser command")
+		}
+	}
+	if allowedLoginURL("https://controlplane.tailscale.com/a/example", "https://example.invalid") {
+		t.Fatal("control-plane login URL escaped its official control origin")
+	}
+	for _, locale := range []string{"zh-CN", "zh-TW", "en"} {
+		for _, key := range []string{"登录链接无效，请刷新后重试", "登录链接尚未准备好，请稍后重试", "无法打开登录页面，请安装或启用浏览器后重试"} {
+			if translated := localizedError(key, locale); translated == "" || (locale == "en" && !strings.Contains(translated, "sign-in")) {
+				t.Fatal("login error lacks a native translation")
+			}
+		}
+	}
+}
+
+type loginFixture struct {
+	b                  *backend
+	state, authURL     string
+	controlURL         string
+	patches            []map[string]any
+	interactive, reads int
+	opened             []string
+	onInteractive      func()
+	onStatus           func()
+	browserError       error
+}
+
+func newLoginFixture(t *testing.T, state, authURL string) *loginFixture {
+	t.Helper()
+	root := t.TempDir()
+	f := &loginFixture{state: state, authURL: authURL, controlURL: "https://controlplane.tailscale.com"}
+	f.b = &backend{module: filepath.Join(root, "module"), stateDir: filepath.Join(root, "state"), locale: "en"}
+	f.b.client = &http.Client{Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Scheme != "http" || req.URL.Host != "local-tailscaled.sock" {
+			t.Fatal("login escaped the fake fixed LocalAPI")
+		}
+		var body any = map[string]any{}
+		switch req.Method + " " + req.URL.Path {
+		case "GET /localapi/v0/status":
+			if req.URL.RawQuery != "peers=false" {
+				t.Fatal("login requested peer inventory")
+			}
+			f.reads++
+			if f.onStatus != nil {
+				f.onStatus()
+			}
+			body = localStatus{BackendState: f.state, Version: "1.104.2", AuthURL: f.authURL, TailscaleIPs: []string{}}
+		case "GET /localapi/v0/prefs":
+			body = map[string]any{"ControlURL": f.controlURL, "RouteAll": true, "ShieldsUp": true, "ExitNodeAllowLANAccess": true,
+				"ExitNodeID": "synthetic-exit", "Persist": map[string]string{"PrivateNodeKey": "synthetic-login-private-canary"}}
+		case "PATCH /localapi/v0/prefs":
+			var patch map[string]any
+			if json.NewDecoder(req.Body).Decode(&patch) != nil {
+				t.Fatal("invalid login preference patch")
+			}
+			f.patches = append(f.patches, patch)
+		case "POST /localapi/v0/login-interactive":
+			f.interactive++
+			if f.onInteractive != nil {
+				f.onInteractive()
+			}
+		default:
+			t.Fatal("unexpected fake login LocalAPI action")
+		}
+		encoded, _ := json.Marshal(body)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header), Request: req}, nil
+	})}
+	f.b.loginBrowser = func(ctx context.Context, target string) error {
+		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 10*time.Second {
+			t.Fatal("browser operation has no short deadline")
+		}
+		f.opened = append(f.opened, target)
+		return f.browserError
+	}
+	return f
+}
+
+func (f *loginFixture) assertNoPrivateState(t *testing.T, r response) {
+	t.Helper()
+	encoded, _ := json.Marshal(r)
+	if strings.Contains(string(encoded), "synthetic-login-private-canary") || strings.Contains(string(encoded), "PrivateNodeKey") || strings.Contains(string(encoded), "Persist") {
+		t.Fatal("login response included private preferences")
+	}
+	if r.OK && r.Settings != (settings{true, true, true}) {
+		t.Fatal("login changed unrelated displayed settings")
+	}
+	for _, patch := range f.patches {
+		if !reflect.DeepEqual(patch, map[string]any{"WantRunning": true, "WantRunningSet": true}) {
+			t.Fatal("login modified account data or unrelated preferences")
+		}
+	}
+}
+
+func TestLoginExistingAndPendingStates(t *testing.T) {
+	for _, state := range []string{"NeedsLogin", "Running", "Stopped", "Starting", "NeedsMachineAuth"} {
+		t.Run(state, func(t *testing.T) {
+			f := newLoginFixture(t, state, "https://login.tailscale.com/a/synthetic-existing")
+			r := f.b.login(context.Background())
+			if !r.OK || r.State != state || !r.DaemonRunning || len(f.patches) != 0 || f.interactive != 0 {
+				t.Fatal("existing or approved account state was mutated")
+			}
+			wantOpen := 0
+			if state == "NeedsLogin" {
+				wantOpen = 1
+			}
+			if len(f.opened) != wantOpen || (wantOpen == 1 && f.opened[0] != f.authURL) {
+				t.Fatal("login opened a browser for an authenticated or approval-pending device")
+			}
+			f.assertNoPrivateState(t, r)
+		})
+	}
+}
+
+func TestLoginGeneratesMissingURL(t *testing.T) {
+	f := newLoginFixture(t, "NeedsLogin", "")
+	f.onInteractive = func() { f.authURL = "https://login.tailscale.com/a/synthetic-generated" }
+	r := f.b.login(context.Background())
+	if !r.OK || r.State != "NeedsLogin" || r.LoginURL != f.authURL || f.interactive != 1 || len(f.patches) != 1 ||
+		!reflect.DeepEqual(f.opened, []string{f.authURL}) {
+		t.Fatal("one-click login did not generate and open its fake LocalAPI URL")
+	}
+	f.assertNoPrivateState(t, r)
+}
+
+func TestLoginRejectsUnsafeURLsAndBrowserFailures(t *testing.T) {
+	for _, target := range []string{"http://login.tailscale.com/a/synthetic", "https://example.invalid/a/synthetic", "javascript:synthetic", "https://login.tailscale.com/a/synthetic?redirect=example"} {
+		f := newLoginFixture(t, "NeedsLogin", target)
+		r := f.b.login(context.Background())
+		if r.OK || len(f.opened) != 0 || len(f.patches) != 0 || f.interactive != 0 || strings.Contains(r.Error, target) {
+			t.Fatal("unsafe LocalAPI URL opened a browser, restarted authentication, or leaked into errors")
+		}
+		f.assertNoPrivateState(t, r)
+	}
+	f := newLoginFixture(t, "NeedsLogin", "https://login.tailscale.com/a/synthetic-browser-failure")
+	f.browserError = errors.New("synthetic-private-browser-output")
+	r := f.b.login(context.Background())
+	if r.OK || r.Error != "无法打开登录页面，请安装或启用浏览器后重试" || strings.Contains(r.Error, "synthetic") || f.interactive != 0 {
+		t.Fatal("browser failure was not reported privately")
+	}
+	f.assertNoPrivateState(t, r)
+}
+
+func TestLoginGenerationTransitionsAndTimeout(t *testing.T) {
+	for _, state := range []string{"Running", "NeedsMachineAuth"} {
+		t.Run(state, func(t *testing.T) {
+			f := newLoginFixture(t, "NeedsLogin", "")
+			f.onInteractive = func() { f.state = state }
+			r := f.b.login(context.Background())
+			if !r.OK || r.State != state || len(f.opened) != 0 || f.interactive != 1 || len(f.patches) != 1 {
+				t.Fatal("authentication transition triggered another login or browser")
+			}
+			f.assertNoPrivateState(t, r)
+		})
+	}
+	f := newLoginFixture(t, "NeedsLogin", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	r := f.b.login(ctx)
+	if r.OK || len(f.opened) != 0 || f.interactive > 1 {
+		t.Fatal("missing login URL did not stop within the request deadline")
+	}
+	f.assertNoPrivateState(t, r)
 }

@@ -85,7 +85,11 @@ sc_supervisor_running() {
 }
 
 sc_disabled() {
-    [ -e "$SC_MODDIR/disable" ] || [ -e "$SC_MODDIR/remove" ] || [ -e "$SC_STOP" ]
+    if [ -e "$SC_MODDIR/disable" ] || [ -e "$SC_MODDIR/remove" ]; then
+        sc_cli_remove >/dev/null 2>&1 || true
+        return 0
+    fi
+    [ -e "$SC_STOP" ]
 }
 
 sc_legacy_active() {
@@ -202,3 +206,5 @@ sc_start_daemon() {
     sc_stop_daemon
     return 1
 }
+
+. "$SC_MODDIR/cli.sh"
