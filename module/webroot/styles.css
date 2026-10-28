@@ -45,7 +45,8 @@
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.55; }
 button, input, select { font: inherit; }
-button { -webkit-tap-highlight-color: transparent; cursor: pointer; touch-action: manipulation; }
+button, .setting-row, .switch input { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+button { cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
 button, input, select, pre { outline: none; }
 button:focus-visible, input:focus-visible, select:focus-visible, pre:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
