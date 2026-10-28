@@ -101,7 +101,9 @@ The `console` action launches a fixed Android browser Intent for
 `https://console.tailscale.com/admin/machines`, the destination linked by the
 [official device management guide](https://tailscale.com/docs/features/access-control/device-management/how-to/filter).
 It accepts no URL or command arguments and discards ActivityManager output.
-The WebView keeps its navigation and script restrictions; the command panel
+The homepage `about` action similarly opens only
+`https://github.com/KyuubiRan/Shellscaled` in the system browser, with no caller
+URL or component. The WebView keeps its navigation and script restrictions; the command panel
 retains its existing Tailscale-only allowlist.
 
 Copying is initiated by a user click, with feedback on that control. Device

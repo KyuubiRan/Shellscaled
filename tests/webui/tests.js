@@ -6,7 +6,7 @@
   const requests = () => JSON.parse(fixture.requestsJSON());
   const backend = () => JSON.parse(fixture.statusJSON());
   const assert = (value) => { if (!value) throw new Error("assertion"); };
-  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|binary|state|service|freshness|connection|login|settings|language|command|notice|error)\.[A-Za-z0-9.]+$/;
+  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error)\.[A-Za-z0-9.]+$/;
   async function until(predicate) {
     const end = Date.now() + 6000;
     while (!predicate()) {
@@ -112,7 +112,7 @@
     const keys = Object.keys(translations.en).sort();
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "save-settings", "run-command", "command-output",
-      "devices-message", "console-label", "binary-check-label", "binary-update-label", "binary-message"]);
+      "devices-message", "console-label", "about-description", "binary-check-label", "binary-update-label", "binary-message"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
@@ -399,6 +399,64 @@
         assert(location.href === url && fixture.navigationAttempts() === before && opens === 0);
         assert(!$("console-message").hidden && $("console-message").textContent.trim() && notice() === globalNotice);
       } finally { window.open = originalOpen; }
+    });
+
+    await test("about-fixed-rpc-local-feedback-and-keyboard", async () => {
+      await idle();
+      const button = $("open-about");
+      const calls = () => requests().filter((request) => request.action === "about");
+      const globalNotice = notice();
+      const url = location.href;
+      const navigations = fixture.navigationAttempts();
+      const originalOpen = window.open;
+      let opens = 0;
+      window.open = () => { opens++; return null; };
+      try {
+        assert(calls().length === 0);
+        for (const tab of ["devices", "settings", "command", "overview"]) {
+          click("tab-" + tab);
+          await idle();
+        }
+        assert(calls().length === 0);
+        assert(button.tagName === "BUTTON" && button.type === "button" && button.tabIndex === 0);
+        assert(button.getAttribute("aria-labelledby") === "about-label" && $("about-label").textContent.trim());
+        assert(button.getAttribute("aria-describedby").split(/\s+/).includes("about-description"));
+        assert(!button.closest("a") && !button.querySelector("a,[href],[onclick]"));
+        fixture.holdNextAbout();
+        click("open-about");
+        await until(() => calls().length === 1);
+        assert($("main").getAttribute("aria-busy") === "true" && button.disabled && button.getAttribute("aria-busy") === "true");
+        assert($("about-description").textContent === ShellscaledI18n.t("about.opening") && $("about-message").hidden);
+        button.click();
+        click("tab-settings");
+        await wait(50);
+        assert(calls().length === 1 && notice() === globalNotice);
+        fixture.releaseAbout();
+        await idle();
+        assert(!button.disabled && button.getAttribute("aria-busy") === "false" && $("about-message").hidden);
+        click("tab-overview");
+        assert(calls().length === 1);
+        fixture.nextAboutFails();
+        button.focus();
+        assert(document.activeElement === button);
+        fixture.pressEnter();
+        await until(() => calls().length === 2);
+        await idle();
+        assert(!button.disabled && button.getAttribute("aria-busy") === "false");
+        assert(!$("about-message").hidden && $("about-message").dataset.kind === "error");
+        assert($("about-message").closest(".about-action") && $("about-message").textContent.includes(ShellscaledI18n.t("about.failed")));
+        assert($("about-description").textContent === ShellscaledI18n.t("about.description"));
+        click("tab-command");
+        await idle();
+        assert(notice() === globalNotice && calls().length === 2);
+        click("tab-overview");
+        assert(calls().every((request) => Object.keys(request).sort().join(",") === "action,locale"));
+        assert(location.href === url && fixture.navigationAttempts() === navigations && opens === 0 && storageIsLanguageOnly());
+      } finally {
+        fixture.releaseAbout();
+        await idle();
+        window.open = originalOpen;
+      }
     });
 
     await test("binary-check-is-explicit-and-busy", async () => {

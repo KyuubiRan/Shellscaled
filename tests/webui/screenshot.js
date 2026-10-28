@@ -22,6 +22,8 @@
     await idle();
     $("tab-" + config.tab).click();
     await idle();
+    if (config.tab === "overview") await until(() => $("open-about") && !$("open-about").disabled &&
+      $("about-label").textContent === ShellscaledI18n.t("about.title") && $("about-message").hidden);
     if (config.tab === "devices") await until(() => document.querySelector("#device-list .device-card"));
     if (config.tab === "command") {
       $("command-input").value = "tailscale version";

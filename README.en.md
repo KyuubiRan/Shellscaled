@@ -19,7 +19,7 @@ Run Tailscale natively on rooted Android without occupying Android’s VPN slot.
 ## Features
 
 - Connect or disconnect from your module manager and see connection status on the module card.
-- KernelSU pages with address copying, a device list, preferences, Tailscale commands and a link to the admin console.
+- KernelSU pages with address copying, a device list, preferences, Tailscale commands and links to the admin console and project home.
 - Simplified Chinese, Traditional Chinese and English, following your system language or a manual selection.
 - Offline installation, with your account and preferences preserved during updates.
 

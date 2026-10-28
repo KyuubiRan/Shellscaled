@@ -22,7 +22,7 @@ func TestCommandBoundary(t *testing.T) {
 		}
 	}
 	denied := []string{
-		"", "tailscale", "id", "am start https://example.test", "tailscale console", "tailscale devices", "sh -c tailscale", "tailscalex status", "/system/bin/tailscale status", "env tailscale status", "TS_BE_CLI=1 tailscale status",
+		"", "tailscale", "id", "am start https://example.test", "tailscale console", "tailscale devices", "tailscale about", "sh -c tailscale", "tailscalex status", "/system/bin/tailscale status", "env tailscale status", "TS_BE_CLI=1 tailscale status",
 		"tailscale status;id", "tailscale status && id", "tailscale status | cat", "tailscale status > /data/local/tmp/x", "tailscale status < x", "tailscale status\nid", "tailscale status\rid", "tailscale status\x00id", "tailscale status\tid",
 		"tailscale ping $(id)", "tailscale ping `id`", "tailscale ping ${PATH}", "tailscale ping \\host", "tailscale ping 'host'", "tailscale ping \"host\"", "tailscale status *",
 		"tailscale --socket=/other status", "tailscale status --socket=/other", "tailscale ssh example-peer id", "tailscale debug local-creds", "tailscale file get /data/adb", "tailscale configure sysext", "tailscale update", "tailscale logout", "tailscale set --auth-key=file:/data/adb/key", "tailscale set --operator=root", "tailscale up --login-server=http://example.com", "tailscale set --accept-dns=true", "tailscale set --netfilter-mode=on", "tailscale set --hostname=foo/bar",
@@ -37,7 +37,7 @@ func TestCommandBoundary(t *testing.T) {
 
 func TestRPCRejectsUnknownOrMixedRequests(t *testing.T) {
 	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"binary-channel","channel":"stable"}`, `{"action":"binary-channel","channel":"preview","locale":"en"}`, `{"action":"binary-check"}`, `{"action":"binary-update","locale":"en"}`, `{"action":"devices"}`, `{"action":"console","locale":"en"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`} {
+	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"binary-channel","channel":"stable"}`, `{"action":"binary-channel","channel":"preview","locale":"en"}`, `{"action":"binary-check"}`, `{"action":"binary-update","locale":"en"}`, `{"action":"devices"}`, `{"action":"console","locale":"en"}`, `{"action":"about"}`, `{"action":"about","locale":"en"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`} {
 		if _, err := decodeRequest(encode(raw)); err != nil {
 			t.Errorf("valid request rejected: %v", err)
 		}
@@ -294,6 +294,40 @@ func TestConsoleCommandHasFixedIntent(t *testing.T) {
 		message := localizedError("无法打开控制台，请安装或启用浏览器后重试", locale)
 		if message == "" || locale == "en" && !strings.Contains(message, "browser") {
 			t.Error("console error lacks a native translation")
+		}
+	}
+}
+
+func TestAboutCommandHasFixedIntent(t *testing.T) {
+	cmd := aboutCommand(context.Background())
+	want := []string{"/system/bin/am", "start", "-W", "--user", "current", "-a", "android.intent.action.VIEW", "-c", "android.intent.category.BROWSABLE", "-d", "https://github.com/KyuubiRan/Shellscaled"}
+	if cmd.Path != want[0] || !reflect.DeepEqual(cmd.Args, want) || cmd.Stdout != nil || cmd.Stderr != nil || cmd.WaitDelay != time.Second || cmd.Cancel == nil {
+		t.Fatal("project page must use a fixed external-browser intent without shell output")
+	}
+	// Only inspect the command: this test never launches a real browser.
+	for _, locale := range []string{"zh-CN", "zh-TW", "en"} {
+		message := localizedError("无法打开项目主页，请安装或启用浏览器后重试", locale)
+		if message == "" || (locale == "en" && !strings.Contains(message, "project page")) {
+			t.Error("project-page error lacks a native translation")
+		}
+	}
+}
+
+func TestAboutRPCIsActionAndLocaleOnly(t *testing.T) {
+	encode := func(value any) string { data, _ := json.Marshal(value); return base64.StdEncoding.EncodeToString(data) }
+	for _, locale := range []string{"system", "en", "zh-CN", "zh-TW"} {
+		if _, err := decodeRequest(encode(map[string]any{"action": "about", "locale": locale})); err != nil {
+			t.Fatal("valid project-page action rejected")
+		}
+	}
+	for key, value := range map[string]any{"command": "", "settings": nil, "channel": nil, "url": "https://example.invalid/", "component": "example.invalid/.Activity", "args": []string{"--user", "0"}, "env": map[string]string{"PATH": "/other"}, "path": "/other", "localeOverride": "en", "Action": "console"} {
+		if _, err := decodeRequest(encode(map[string]any{"action": "about", key: value})); err == nil {
+			t.Errorf("project-page action accepted extra field %q", key)
+		}
+	}
+	for _, raw := range []string{`{"action":"about","command":"id"}`, `{"action":"about","settings":{"shieldsUp":true}}`, `{"action":"about","channel":"stable"}`, `{"action":"about","locale":"../../other"}`} {
+		if _, err := decodeRequest(base64.StdEncoding.EncodeToString([]byte(raw))); err == nil {
+			t.Error("mixed project-page request accepted")
 		}
 	}
 }

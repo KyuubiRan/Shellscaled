@@ -54,6 +54,11 @@ results, keeps unsaved edits, and restores the saved selection after an error.
 Changing channel never checks or updates binaries, and does not add localStorage
 keys. A status refresh also preserves an available update with the same Tailscale
 version, as a newer module revision may contain a different binary.
+The overview's About card uses a fixed, parameter-free project action. Its single
+regression case covers tab changes without an automatic action, a held busy
+response, duplicate-click prevention, actual Android WebView Enter-key activation,
+local errors, accessible button labeling, and no browser/WebView navigation.
+The existing translation and narrow-layout checks include the new card.
 
 This fixture supplements actual KernelSU bridge and native helper acceptance;
 it does not assert that a root manager, Tailscale or networking works.
@@ -75,7 +80,7 @@ Repeat with `devices`, `settings` and `command` for the other tabs. The device
 page uses three harmless documentation examples, excluding the adversarial test
 strings. This mode still has no
 root, networking, real module access, or test overlay. Omit `screenshot` to run
-the normal twenty-one regression cases again.
+the normal twenty-two regression cases again.
 
 The separate `ClipboardProbeActivity` is the only optional component that reads
 the real clipboard. After copying in the real KernelSU WebUI, explicitly launch
@@ -105,3 +110,5 @@ real updates are a separate integration acceptance step. It saves both supported
 channels, checks status reflects the preference without changing account/settings,
 rejects invalid channels and mixed action fields, and restores the original
 channel in `finally`, including when another native assertion fails.
+The real About link is also manual-only; the native helper fixes its destination
+to `https://github.com/KyuubiRan/Shellscaled`, and the ordinary fixture never opens it.

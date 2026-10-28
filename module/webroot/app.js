@@ -30,6 +30,7 @@
     loginCard: $("login-card"), loginURL: $("login-url"), command: $("command-input"),
     output: $("command-output"), exit: $("command-exit"), run: $("run-command"),
     console: $("open-console"), consoleLabel: $("console-label"), consoleMessage: $("console-message"),
+    about: $("open-about"), aboutDescription: $("about-description"), aboutMessage: $("about-message"),
     deviceSearch: $("device-search"), deviceList: $("device-list"), deviceMessage: $("devices-message"),
     deviceSummary: $("devices-summary"), deviceUpdated: $("devices-updated"),
     binaryCurrent: $("binary-current-version"), binaryLatestRow: $("binary-latest-row"),
@@ -45,6 +46,7 @@
     activeTab: "overview", pageActive: true, devices: null, devicesError: null,
     deviceRefreshPending: false, deviceRequestVersion: 0, deviceRenderSignature: null,
     addressSignature: null, consoleError: null,
+    aboutError: null, aboutRequestVersion: 0,
     binary: null, binaryFeedback: "", binaryError: null, binaryRequestVersion: 0,
     updateChannel: null, binaryChannelPending: null,
   };
@@ -267,6 +269,32 @@
         state.consoleError = errorView(error);
         renderConsoleMessage();
       }
+    } finally {
+      finishBusy();
+    }
+  }
+
+  function renderAbout() {
+    const opening = state.busyAction === "about";
+    ui.aboutDescription.textContent = t(opening ? "about.opening" : "about.description");
+    ui.about.classList.toggle("is-working", opening);
+    ui.about.setAttribute("aria-busy", opening ? "true" : "false");
+    ui.aboutMessage.textContent = state.aboutError ? t("about.failed") + " " + viewText(state.aboutError) : "";
+    ui.aboutMessage.hidden = !state.aboutError;
+    ui.aboutMessage.dataset.kind = "error";
+  }
+
+  async function openAbout() {
+    if (state.busy || !state.available || !state.pageActive) return;
+    state.busy = true;
+    state.busyAction = "about";
+    state.aboutError = null;
+    const version = ++state.aboutRequestVersion;
+    updateControls();
+    try {
+      requireSuccess(await rpc({ action: "about" }));
+    } catch (error) {
+      if (state.pageActive && version === state.aboutRequestVersion) state.aboutError = errorView(error);
     } finally {
       finishBusy();
     }
@@ -606,6 +634,7 @@
     ui.save.textContent = t(state.busyAction === "settings" ? "settings.saving" : "settings.save");
     ui.run.textContent = t(state.busyAction === "command" ? "command.running" : "command.run");
     ui.consoleLabel.textContent = t(state.busyAction === "console" ? "console.opening" : "console.open");
+    renderAbout();
     ui.language.disabled = state.busy;
     ui.language.value = I18n.preference();
     ui.main.setAttribute("aria-busy", state.busy ? "true" : "false");
@@ -952,6 +981,7 @@
   $("refresh-devices").addEventListener("click", () => loadDevices());
   ui.deviceSearch.addEventListener("input", renderDevices);
   ui.console.addEventListener("click", openConsole);
+  ui.about.addEventListener("click", openAbout);
   ui.binaryCheck.addEventListener("click", () => runBinaryAction("binary-check"));
   ui.binaryUpdate.addEventListener("click", () => runBinaryAction("binary-update"));
   ui.binaryChannel.addEventListener("change", () => setBinaryChannel(ui.binaryChannel.value));
@@ -1022,6 +1052,8 @@
     state.devicesError = null;
     state.deviceRenderSignature = null;
     state.consoleError = null;
+    state.aboutRequestVersion++;
+    state.aboutError = null;
     state.binaryRequestVersion++;
     state.binary = null;
     state.binaryFeedback = "";
@@ -1045,6 +1077,7 @@
     renderPresentation();
     renderDevices();
     renderConsoleMessage();
+    renderAbout();
     renderNotice();
     renderOutput();
     renderBinary();

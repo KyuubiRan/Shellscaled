@@ -7,6 +7,7 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Base64;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
@@ -43,6 +44,9 @@ public final class MainActivity extends Activity {
     private boolean allowLAN;
     private boolean nextUpStarts;
     private boolean nextConsoleFails;
+    private boolean nextAboutFails;
+    private boolean holdNextAbout;
+    private Runnable aboutReply;
     private String updateChannel = "stable";
     private boolean nextChannelFails;
     private String binaryMode = "newer";
@@ -238,7 +242,7 @@ public final class MainActivity extends Activity {
                 }
                 synchronized (guard) {
                     String action = request.getString("action");
-                    if (Arrays.asList("devices", "console", "binary-check", "binary-update").contains(action) && request.length() != 2) {
+                    if (Arrays.asList("devices", "console", "about", "binary-check", "binary-update").contains(action) && request.length() != 2) {
                         throw new JSONException("extra-fields");
                     }
                     if ("binary-channel".equals(action) && (request.length() != 3 ||
@@ -248,6 +252,16 @@ public final class MainActivity extends Activity {
                     requests.put(request);
                     switch (action) {
                         case "status": break;
+                        case "about":
+                            // Native code owns the fixed project URL. This fixture never opens it.
+                            JSONObject about = new JSONObject().put("ok", !nextAboutFails);
+                            if (nextAboutFails) about.put("error", "Fixture project home unavailable").put("exitCode", 1);
+                            nextAboutFails = false;
+                            if (holdNextAbout) {
+                                holdNextAbout = false;
+                                aboutReply = () -> reply(callback, about);
+                            } else reply(callback, about);
+                            return;
                         case "binary-channel":
                             boolean channelOK = !nextChannelFails;
                             nextChannelFails = false;
@@ -354,6 +368,29 @@ public final class MainActivity extends Activity {
         }
         @JavascriptInterface public void nextConsoleFails() {
             synchronized (guard) { nextConsoleFails = true; }
+        }
+        @JavascriptInterface public void nextAboutFails() {
+            synchronized (guard) { nextAboutFails = true; }
+        }
+        @JavascriptInterface public void holdNextAbout() {
+            synchronized (guard) { holdNextAbout = true; }
+        }
+        @JavascriptInterface public void releaseAbout() {
+            synchronized (guard) {
+                if (aboutReply != null) {
+                    Runnable reply = aboutReply;
+                    aboutReply = null;
+                    reply.run();
+                }
+                holdNextAbout = false;
+            }
+        }
+        @JavascriptInterface public void pressEnter() {
+            web.post(() -> {
+                web.requestFocus();
+                web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
+                web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+            });
         }
         @JavascriptInterface public void nextChannelFails() {
             synchronized (guard) { nextChannelFails = true; }

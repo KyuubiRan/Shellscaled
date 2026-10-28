@@ -348,6 +348,25 @@ func (b *backend) console(ctx context.Context) response {
 	return response{OK: true}
 }
 
+func aboutCommand(ctx context.Context) *exec.Cmd {
+	// The project link is code-owned; RPC data never selects the destination.
+	cmd := exec.CommandContext(ctx, "/system/bin/am", "start", "-W", "--user", "current",
+		"-a", "android.intent.action.VIEW", "-c", "android.intent.category.BROWSABLE",
+		"-d", "https://github.com/KyuubiRan/Shellscaled")
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
+func (b *backend) about(ctx context.Context) response {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// ActivityManager output is intentionally discarded, as for the console.
+	if err := aboutCommand(ctx).Run(); err != nil {
+		return failed("无法打开项目主页，请安装或启用浏览器后重试")
+	}
+	return response{OK: true}
+}
+
 func (b *backend) moduleVersion() string {
 	if version := runtimeBinaryVersion(b.module); version != "" {
 		return version
@@ -617,7 +636,7 @@ func decodeRequest(encoded string) (request, error) {
 		if r.Channel != "stable" && r.Channel != "preview" {
 			return r, errors.New("不支持此更新频道")
 		}
-	case "binary-check", "binary-update":
+	case "about", "binary-check", "binary-update":
 		// These operations have no caller-selectable URL, path, version, or
 		// command, including otherwise-known fields with empty/null values.
 		for key := range inputFields {
@@ -748,6 +767,8 @@ func main() {
 				r = b.devices(ctx)
 			case "console":
 				r = b.console(ctx)
+			case "about":
+				r = b.about(ctx)
 			case "binary-check", "binary-update":
 				r = b.binary(ctx, req.Action == "binary-update")
 			case "binary-channel":

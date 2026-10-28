@@ -487,7 +487,8 @@ func TestBinaryVersionProbeAndActualHash(t *testing.T) {
 	f := newUpdateFixture(t, false)
 	path := filepath.Join(f.u.module, "bin/tailscaled")
 	expected := f.info.TailscaleVersion + "-shellscaled-" + f.info.SourceCommit[:12]
-	script := "#!/system/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = --version ] && [ \"$TS_BE_CLI\" = 0 ] || exit 1\nprintf '%s\\n' '" + expected + "'\n"
+	versionOutput := f.info.TailscaleVersion + "\n  tailscale commit: " + f.info.SourceCommit + "\n  long version: " + expected + "\n  go version: go1.27.3\n"
+	script := "#!/system/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = --version ] && [ \"$TS_BE_CLI\" = 0 ] || exit 1\nprintf '%s' '" + versionOutput + "'\n"
 	mustWrite(t, path, []byte(script), 0755)
 	if err := checkBinaryVersion(context.Background(), path, f.info); err != nil {
 		t.Fatal("fixed candidate version probe failed")
@@ -505,6 +506,59 @@ func TestBinaryVersionProbeAndActualHash(t *testing.T) {
 	bad.TailscaleVersion = "1.2.3"
 	if checkBinaryVersion(context.Background(), path, bad) == nil {
 		t.Fatal("wrong candidate version accepted")
+	}
+}
+
+func TestBinaryVersionProbeBindsStandardOutput(t *testing.T) {
+	metadata := binaryMetadata{TailscaleVersion: "1.104.2", SourceCommit: "d49e009b3f1fe2c20451b19580d39e4cef7a24e1"}
+	short := metadata.TailscaleVersion
+	commit := "  tailscale commit: " + metadata.SourceCommit
+	long := "  long version: " + short + "-shellscaled-" + metadata.SourceCommit[:12]
+	goVersion := "  go version: go1.27.3"
+	actual := strings.Join([]string{short, commit, long, goVersion, ""}, "\n")
+	for _, tc := range []struct {
+		name, output string
+		valid        bool
+	}{
+		{"actual four-line CI output", actual, true},
+		{"indentation and CRLF", " \t" + strings.ReplaceAll(actual, "\n", "\r\n\t"), true},
+		{"other upstream diagnostics", actual + "  other commit: " + strings.Repeat("c", 40) + "\n", true},
+		{"binding fields without Go diagnostic", strings.Join([]string{short, commit, long, ""}, "\n"), true},
+		{"wrong short version", strings.Replace(actual, short, "1.104.3", 1), false},
+		{"short line with extra text", strings.Replace(actual, short, short+" extra", 1), false},
+		{"long stamp instead of short line", strings.Replace(actual, short, short+"-shellscaled-"+metadata.SourceCommit[:12], 1), false},
+		{"wrong full commit with same stamp prefix", strings.Replace(actual, metadata.SourceCommit, metadata.SourceCommit[:12]+strings.Repeat("a", 28), 1), false},
+		{"abbreviated full commit", strings.Replace(actual, metadata.SourceCommit, metadata.SourceCommit[:12], 1), false},
+		{"dirty full commit", strings.Replace(actual, metadata.SourceCommit, metadata.SourceCommit+"-dirty", 1), false},
+		{"wrong long stamp", strings.Replace(actual, "-shellscaled-"+metadata.SourceCommit[:12], "-shellscaled-"+strings.Repeat("e", 12), 1), false},
+		{"long stamp suffix", strings.Replace(actual, long, long+"-dirty", 1), false},
+		{"missing short line", strings.TrimPrefix(actual, short+"\n"), false},
+		{"missing full commit", strings.Replace(actual, commit+"\n", "", 1), false},
+		{"missing long stamp", strings.Replace(actual, long+"\n", "", 1), false},
+		{"empty full commit", strings.Replace(actual, commit, "  tailscale commit:", 1), false},
+		{"empty long stamp", strings.Replace(actual, long, "  long version:", 1), false},
+		{"duplicate short line", actual + short + "\n", false},
+		{"duplicate full commit", actual + commit + "\n", false},
+		{"conflicting full commit", actual + "  tailscale commit: " + strings.Repeat("e", 40) + "\n", false},
+		{"duplicate long stamp", actual + long + "\n", false},
+		{"conflicting long stamp", actual + "  long version: 1.2.3\n", false},
+		{"duplicate Go diagnostic", actual + goVersion + "\n", false},
+		{"unknown field", actual + "  unknown field: value\n", false},
+		{"short-only output", short + "\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "tailscaled")
+			quoted := "'" + strings.ReplaceAll(tc.output, "'", "'\\''") + "'"
+			script := "#!/system/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = --version ] && [ \"$TS_BE_CLI\" = 0 ] || exit 1\nprintf '%s' " + quoted + "\n"
+			mustWrite(t, path, []byte(script), 0755)
+			err := checkBinaryVersion(context.Background(), path, metadata)
+			if tc.valid && err != nil {
+				t.Fatalf("standard version output was rejected: %v", err)
+			}
+			if !tc.valid && !errors.Is(err, errUpdateInvalid) {
+				t.Fatalf("unbound or contradictory version output was accepted: %v", err)
+			}
+		})
 	}
 }
 

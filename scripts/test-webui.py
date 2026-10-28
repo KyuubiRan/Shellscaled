@@ -113,7 +113,7 @@ def main():
         print("PASS: stable/preview channel saves preserve settings and identity; invalid channels rejected")
         check_binary(success("binary-check"), saved_channel)
         print("PASS: binary-check returns bounded version text and typed update flags without inventory")
-        for action in ("devices", "console", "binary-check", "binary-update", "binary-channel"):
+        for action in ("devices", "console", "about", "binary-check", "binary-update", "binary-channel"):
             for fields in ({"command": "id"}, {"settings": {"shieldsUp": True}},
                            {"url": "https://example.invalid/"}, {"args": ["--user", "0"]},
                            {"env": {"PATH": "/other"}}, {"component": "example.invalid/.Activity"},
@@ -121,14 +121,17 @@ def main():
                            {"sha256": "0" * 64}, {"architecture": "example"}):
                 arguments = {"channel": saved_channel} if action == "binary-channel" else {}
                 assert not rpc(action, **arguments, **fields).get("ok"), "Mixed or arbitrary action arguments accepted"
-        for action in ("devices", "console", "binary-check", "binary-update", "status"):
+        for action in ("devices", "console", "about", "binary-check", "binary-update", "status"):
             assert not rpc(action, channel="preview").get("ok"), "Channel override accepted outside channel action"
-        # Valid console/update actions open a browser or replace executables: manual-only.
-        print("PASS: devices/console/binary actions reject mixed channel, command, settings, URL, argv, environment and source overrides")
+        for fields in ({"command": ""}, {"command": None}, {"settings": None}, {"channel": None},
+                       {"url": "https://github.com/KyuubiRan/Shellscaled"}):
+            assert not rpc("about", **fields).get("ok"), "Project-page action accepted an extra field"
+        # Valid console/about/update actions open a browser or replace executables: manual-only.
+        print("PASS: devices/console/about/binary actions reject mixed channel, command, settings, URL, argv, environment and source overrides")
         for command in ["tailscale version", "tailscaled --version", "tailscale status --json --peers=false", "tailscale ping --help"]:
             assert success("command", command=command).get("exitCode") == 0
         print("PASS: allowed Tailscale and daemon diagnostics execute")
-        attacks = ["id", "sh -c id", "tailscalex status", "tailscale status; touch /data/local/tmp/shellscaled-escape", "tailscale status | id", "tailscale status && id", "tailscale status > /data/local/tmp/shellscaled-escape", "tailscale status\nid", "tailscale status $(id)", "tailscale status `id`", "tailscale --socket=/other status", "tailscale status --socket=/other", "tailscale ssh localhost id", "tailscale debug local-creds", "tailscale file get /data/adb", "tailscale update", "tailscale set --auth-key=file:/data/adb/key", "tailscaled --cleanup", "tailscaled --state=/other", "tailscale console", "tailscale devices", "am start -a android.intent.action.VIEW -d https://example.invalid/"]
+        attacks = ["id", "sh -c id", "tailscalex status", "tailscale status; touch /data/local/tmp/shellscaled-escape", "tailscale status | id", "tailscale status && id", "tailscale status > /data/local/tmp/shellscaled-escape", "tailscale status\nid", "tailscale status $(id)", "tailscale status `id`", "tailscale --socket=/other status", "tailscale status --socket=/other", "tailscale ssh localhost id", "tailscale debug local-creds", "tailscale file get /data/adb", "tailscale update", "tailscale set --auth-key=file:/data/adb/key", "tailscaled --cleanup", "tailscaled --state=/other", "tailscale console", "tailscale devices", "tailscale about", "am start -a android.intent.action.VIEW -d https://example.invalid/"]
         assert shell("test ! -e /data/local/tmp/shellscaled-escape").returncode == 0
         for command in attacks:
             assert not rpc("command", command=command).get("ok"), "unsafe input was accepted"

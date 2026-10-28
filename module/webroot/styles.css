@@ -103,10 +103,20 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .console-action { margin: 16px 1px 0; }
 .console-action > .button { width: 100%; }
 .console-action svg { width: 16px; height: 16px; }
+.about-action { margin-top: 16px; }
+.about-link { display: flex; align-items: center; gap: 13px; width: 100%; min-width: 0; margin: 0; padding: 16px; color: var(--text); text-align: start; }
+.about-symbol { display: grid; place-items: center; flex: 0 0 38px; height: 38px; border-radius: 12px; color: var(--accent); background: var(--accent-soft); }
+.about-symbol svg { width: 22px; height: 22px; }
+.about-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.about-copy strong { font-size: 14px; font-weight: 650; }
+.about-copy > span { color: var(--muted); font-size: 11px; line-height: 1.65; }
+.about-external { flex: 0 0 18px; width: 18px; height: 18px; color: var(--muted); }
+.about-link.is-working .about-external { display: none; }
+.about-link .button-spinner { flex-shrink: 0; }
 .local-message { font-size: 12px; color: var(--muted); line-height: 1.75; overflow-wrap: anywhere; }
 .local-message[data-kind="error"] { color: var(--danger); }
 .local-message[data-kind="warning"] { color: var(--warning); }
-.console-action .local-message { margin: 10px 3px 0; }
+.console-action .local-message, .about-action .local-message { margin: 10px 3px 0; }
 .devices-description { margin: -3px 2px 15px; color: var(--muted); font-size: 12px; }
 .device-search { margin-bottom: 14px; }
 .devices-meta { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 5px 12px; margin: 0 2px 12px; font-size: 10px; color: var(--muted); }

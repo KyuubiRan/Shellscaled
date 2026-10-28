@@ -740,15 +740,49 @@ func readBinaryVersion(ctx context.Context, path string) (string, error) {
 }
 
 func checkBinaryVersion(ctx context.Context, path string, metadata binaryMetadata) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	out, _, truncated, err := run(ctx, path, "--version")
 	if !commitPattern.MatchString(metadata.SourceCommit) || !stableVersionPattern.MatchString(metadata.TailscaleVersion) {
 		return errUpdateInvalid
 	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, _, truncated, err := run(ctx, path, "--version")
+	if err != nil || truncated {
+		return errUpdateInvalid
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 3 || strings.TrimSpace(lines[0]) != metadata.TailscaleVersion {
+		return errUpdateInvalid
+	}
 	expected := metadata.TailscaleVersion + "-shellscaled-" + metadata.SourceCommit[:12]
-	fields := strings.Fields(out)
-	if err != nil || truncated || len(fields) == 0 || fields[0] != expected {
+	seen := make(map[string]bool)
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, found := strings.Cut(line, ":")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if !found || value == "" || seen[key] {
+			return errUpdateInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "tailscale commit":
+			if value != metadata.SourceCommit {
+				return errUpdateInvalid
+			}
+		case "long version":
+			if value != expected {
+				return errUpdateInvalid
+			}
+		case "go version", "track", "other commit":
+			// Upstream diagnostics are not identity bindings. Still reject
+			// duplicate labels rather than accepting contradictory output.
+		default:
+			return errUpdateInvalid
+		}
+	}
+	if !seen["tailscale commit"] || !seen["long version"] {
 		return errUpdateInvalid
 	}
 	return nil
