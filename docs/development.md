@@ -88,6 +88,40 @@ The README version badge includes public GitHub Pre-releases and links to the
 Release list, since GitHub’s `/releases/latest` excludes Pre-releases. No token is
 embedded in Markdown or its image URL; the badge reads public release metadata.
 
+## KernelSU Modules catalog
+
+[`module.yaml`](../module.yaml) supplies the catalog metadata and points to the
+English README. Keep it and the referenced documentation on the registered
+branch (`main`, the repository default). The module ID stays `shellscaled`,
+matching the packaged `module.prop`; version and versionCode come from the ZIP.
+The catalog currently describes the published ARM64 package only.
+
+One-time setup in the [KernelSU Developer Portal](https://developers.kernelsu.org)
+requires installing the KernelSU Modules GitHub App for this repository,
+enabling **Settings → General → Releases → Enable release immutability**, and
+submitting the repository for maintainer review. Older mutable releases cannot
+be used: enabling the setting only locks newly published releases. Submit an
+immutable stable release with a new module revision; do not republish an old tag
+or promote development code just to establish the listing.
+
+After approval, the App indexes releases automatically through GitHub webhooks
+and a fallback sync, so the existing CLI → module build → GitHub Release flow
+also updates the catalog. No catalog API token or additional publisher is needed.
+The workflow uses the pinned official release action in **dry-run** mode to
+check metadata, ZIP structure and versionCode before the existing draft/upload/
+publish steps. It verifies that exactly one ZIP was uploaded and that GitHub
+reports the published release as immutable. SHA256 and JSON sidecars remain
+attached to the same release.
+
+Keep `dev` releases marked as Pre-releases. KernelSU Modules currently records
+them for the versionCode high-water mark but offers stable releases in its
+catalog; a subsequent stable release needs a higher module revision. The shared
+tag reservation queue already enforces increasing revisions across branches.
+Check the **KernelSU Modules** check on the tagged commit or the Portal for the
+indexer's validation result; a successful build alone does not establish a
+listing. See the official [release requirements](https://developers.kernelsu.org/docs/releasing)
+and [check results](https://developers.kernelsu.org/docs/checks).
+
 ## Device view and external console
 
 Ordinary status polls continue to request `peers=false`. The explicit `devices`
