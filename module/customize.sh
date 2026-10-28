@@ -36,7 +36,7 @@ for sc_item in "$MODPATH"/*; do
         set_perm "$sc_item" 0 0 0644
     fi
 done
-for sc_executable in service.sh action.sh ctl.sh uninstall.sh bin/tailscaled bin/tailscale bin/shellscaled-web; do
+for sc_executable in service.sh action.sh ctl.sh uninstall.sh cli-entry.sh bin/tailscaled bin/tailscale bin/shellscaled-web; do
     set_perm "$MODPATH/$sc_executable" 0 0 0755
 done
 touch "$MODPATH/skip_mount"

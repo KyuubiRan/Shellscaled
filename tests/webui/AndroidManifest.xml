@@ -7,5 +7,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".ClipboardProbeActivity" android:exported="true" android:permission="android.permission.DUMP" android:excludeFromRecents="true" android:noHistory="true" />
     </application>
 </manifest>

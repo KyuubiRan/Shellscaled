@@ -31,6 +31,7 @@
 
       <nav class="tabs" role="tablist" data-i18n-aria="app.navigation">
         <button class="tab active" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview" data-i18n="tab.overview" type="button"></button>
+        <button class="tab" id="tab-devices" role="tab" aria-selected="false" aria-controls="panel-devices" data-tab="devices" data-i18n="tab.devices" tabindex="-1" type="button"></button>
         <button class="tab" id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings" data-tab="settings" data-i18n="tab.settings" tabindex="-1" type="button"></button>
         <button class="tab" id="tab-command" role="tab" aria-selected="false" aria-controls="panel-command" data-tab="command" data-i18n="tab.command" tabindex="-1" type="button"></button>
       </nav>
@@ -57,21 +58,67 @@
             <div class="state-meta"><span id="service-status" data-i18n="service.unread"></span><span id="freshness" data-i18n="freshness.waiting"></span></div>
           </article>
 
+          <article class="card login-card" id="login-card" hidden>
+            <div class="card-heading"><h3 data-i18n="login.heading"></h3><span class="badge warning" data-i18n="login.badge"></span></div>
+            <p data-i18n="login.description"></p>
+            <label class="visually-hidden" for="login-url" data-i18n="login.url"></label>
+            <input id="login-url" type="text" readonly spellcheck="false" autocomplete="off" autocapitalize="off" data-i18n-placeholder="login.linkPending">
+            <div class="login-actions">
+              <button class="button primary" id="login-tailscale" type="button" data-requires-bridge disabled><span class="button-spinner" aria-hidden="true"></span><span id="login-label" data-i18n="login.action"></span></button>
+              <button class="button secondary compact copy-control" id="copy-login" type="button" data-copy-kind="login" disabled><span class="copy-feedback" aria-live="polite" data-i18n="login.copy"></span></button>
+            </div>
+            <p id="login-message" class="local-message" role="status" aria-live="polite" hidden></p>
+          </article>
+
           <article class="card address-card">
             <div class="card-heading"><h3 data-i18n="overview.addresses"></h3><span class="small-label" data-i18n="overview.addressType"></span></div>
             <div class="address-list" id="addresses"><p class="empty-copy" data-i18n="overview.addressWaiting"></p></div>
           </article>
 
-          <article class="card login-card" id="login-card" hidden>
-            <div class="card-heading"><h3 data-i18n="login.heading"></h3><span class="badge warning" data-i18n="login.badge"></span></div>
-            <p data-i18n="login.description"></p>
-            <label class="visually-hidden" for="login-url" data-i18n="login.url"></label>
-            <input id="login-url" type="text" readonly spellcheck="false" autocomplete="off" autocapitalize="off">
-            <button class="button secondary compact" id="copy-login" type="button" data-i18n="login.copy"></button>
-          </article>
+          <div class="console-action">
+            <button class="button secondary" id="open-console" type="button" data-requires-bridge disabled>
+              <span id="console-label" data-i18n="console.open"></span>
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M10 5H5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-5"/></svg>
+            </button>
+            <p id="console-message" class="local-message" role="alert" hidden></p>
+          </div>
+
+          <div class="about-action">
+            <button class="card about-link" id="open-about" type="button" aria-labelledby="about-label" aria-describedby="about-description about-message" data-requires-bridge disabled>
+              <span class="about-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg></span>
+              <span class="about-copy"><strong id="about-label" data-i18n="about.title"></strong><span id="about-description" data-i18n="about.description"></span></span>
+              <span class="button-spinner" aria-hidden="true"></span>
+              <svg class="about-external" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M10 5H5a1 1 0 0 0-1 1v13a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-5"/></svg>
+            </button>
+            <p id="about-message" class="local-message" role="alert" aria-live="polite" hidden></p>
+          </div>
+        </section>
+
+        <section class="panel" id="panel-devices" role="tabpanel" aria-labelledby="tab-devices" hidden>
+          <div class="section-heading">
+            <h2 data-i18n="devices.heading"></h2>
+            <button class="icon-button" id="refresh-devices" type="button" data-i18n-aria="devices.refresh" data-requires-bridge disabled>
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 8a7 7 0 0 1 11.6-2L20 9M4 15l2.3 3A7 7 0 0 0 17.9 16"/></svg>
+            </button>
+          </div>
+          <p class="devices-description" data-i18n="devices.description"></p>
+          <label class="visually-hidden" for="device-search" data-i18n="devices.search"></label>
+          <input id="device-search" class="device-search" type="search" data-i18n-placeholder="devices.search" autocomplete="off" spellcheck="false" autocorrect="off" autocapitalize="off">
+          <div class="devices-meta"><span id="devices-summary" role="status"></span><span id="devices-updated"></span></div>
+          <p class="local-message" id="devices-message" role="status" aria-live="polite" data-i18n="devices.notLoaded"></p>
+          <div id="device-list" class="device-list" role="list"></div>
         </section>
 
         <section class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+          <div class="card language-card">
+            <label for="language" data-i18n="language.label"></label>
+            <select id="language" data-i18n-aria="language.label">
+              <option value="system" data-i18n="language.system"></option>
+              <option value="zh-CN" data-i18n="language.zhCN"></option>
+              <option value="zh-TW" data-i18n="language.zhTW"></option>
+              <option value="en" data-i18n="language.en"></option>
+            </select>
+          </div>
           <div class="section-heading"><h2 data-i18n="settings.heading"></h2></div>
           <div class="card settings-card">
             <label class="setting-row" for="accept-routes">
@@ -87,16 +134,29 @@
               <span class="switch"><input id="exit-lan" type="checkbox" role="switch" data-setting="exitNodeAllowLanAccess" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
             </label>
           </div>
-          <div class="save-row"><span id="settings-hint" data-i18n="settings.unread"></span><button class="button primary compact" id="save-settings" type="button" data-i18n="settings.save" data-requires-bridge disabled></button></div>
-          <div class="card language-card">
-            <label for="language" data-i18n="language.label"></label>
-            <select id="language" data-i18n-aria="language.label">
-              <option value="system" data-i18n="language.system"></option>
-              <option value="zh-CN" data-i18n="language.zhCN"></option>
-              <option value="zh-TW" data-i18n="language.zhTW"></option>
-              <option value="en" data-i18n="language.en"></option>
-            </select>
-          </div>
+          <p class="settings-feedback" id="settings-hint" role="status" aria-live="polite" data-i18n="settings.unread"></p>
+          <article class="card binary-update-card" id="binary-update-card">
+            <h3 data-i18n="binary.heading"></h3>
+            <p class="binary-description" data-i18n="binary.description"></p>
+            <div class="binary-channel-row">
+              <label for="binary-channel" data-i18n="binary.channel"></label>
+              <select id="binary-channel" data-i18n-aria="binary.channel" data-requires-bridge disabled>
+                <option value="" disabled hidden>—</option>
+                <option value="stable" data-i18n="binary.stable"></option>
+                <option value="preview" data-i18n="binary.preview"></option>
+              </select>
+            </div>
+            <p class="binary-channel-hint" data-i18n="binary.channelHint"></p>
+            <dl class="binary-versions">
+              <div><dt data-i18n="binary.current"></dt><dd id="binary-current-version">—</dd></div>
+              <div id="binary-latest-row" hidden><dt data-i18n="binary.latest"></dt><dd id="binary-latest-version">—</dd></div>
+            </dl>
+            <div class="binary-actions">
+              <button class="button secondary compact" id="binary-check" type="button" data-requires-bridge disabled><span id="binary-check-label" data-i18n="binary.check"></span></button>
+              <button class="button primary compact" id="binary-update" type="button" data-requires-bridge disabled><span class="button-spinner" aria-hidden="true"></span><span id="binary-update-label" data-i18n="binary.update"></span></button>
+            </div>
+            <p class="local-message" id="binary-message" role="status" aria-live="polite" hidden></p>
+          </article>
         </section>
 
         <section class="panel" id="panel-command" role="tabpanel" aria-labelledby="tab-command" hidden>
@@ -113,10 +173,10 @@
             <label class="field-label" for="command-input" data-i18n="command.label"></label>
             <input id="command-input" class="command-input" type="text" data-i18n-placeholder="command.placeholder" maxlength="2048" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" enterkeyhint="go" data-requires-bridge disabled>
             <div class="command-examples" data-i18n-aria="command.examples">
-              <button type="button" data-example="tailscale status" data-i18n="command.exampleStatus" data-requires-bridge disabled></button>
-              <button type="button" data-example="tailscale version" data-i18n="command.exampleVersion" data-requires-bridge disabled></button>
-              <button type="button" data-example="tailscale netcheck" data-i18n="command.exampleNetcheck" data-requires-bridge disabled></button>
-              <button type="button" data-example="tailscaled --version" data-i18n="command.exampleDaemon" data-requires-bridge disabled></button>
+              <button type="button" data-example="tailscale status" data-requires-bridge disabled>tailscale status</button>
+              <button type="button" data-example="tailscale version" data-requires-bridge disabled>tailscale version</button>
+              <button type="button" data-example="tailscale netcheck" data-requires-bridge disabled>tailscale netcheck</button>
+              <button type="button" data-example="tailscaled --version" data-requires-bridge disabled>tailscaled --version</button>
             </div>
             <div class="command-actions"><button class="text-button" id="clear-command" type="button" data-i18n="command.clear"></button><button class="button primary compact" id="run-command" type="submit" data-i18n="command.run" data-requires-bridge disabled></button></div>
           </form>

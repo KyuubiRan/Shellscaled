@@ -12,4 +12,8 @@ done
 # An empty lock can only result from interruption before its owner was
 # recorded. At boot no previous control process can still own it.
 rmdir /data/adb/shellscaled/run/control.lock 2>/dev/null || true
+rmdir /data/adb/shellscaled/run/cli-link.lock 2>/dev/null || true
+. "$SC_MODDIR/common.sh" || exit 1
+sc_prepare || exit 1
+sc_cli_install || sc_error 'Global commands were not installed; module-local commands remain available.'
 exec /system/bin/sh "$SC_MODDIR/ctl.sh" start

@@ -12,15 +12,18 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const dataDir = "/data/adb/shellscaled"
@@ -40,36 +43,105 @@ type settingsPatch struct {
 
 type request struct {
 	Action   string         `json:"action"`
+	Channel  string         `json:"channel,omitempty"`
 	Locale   string         `json:"locale,omitempty"`
 	Command  string         `json:"command,omitempty"`
 	Settings *settingsPatch `json:"settings,omitempty"`
 }
 
 type response struct {
-	OK                 bool     `json:"ok"`
-	State              string   `json:"state,omitempty"`
-	Version            string   `json:"version,omitempty"`
-	IPs                []string `json:"ips,omitempty"`
-	Settings           settings `json:"settings"`
-	DaemonRunning      bool     `json:"daemonRunning"`
-	ExitNodeConfigured bool     `json:"exitNodeConfigured"`
-	LoginURL           string   `json:"loginURL,omitempty"`
-	Error              string   `json:"error,omitempty"`
-	ExitCode           int      `json:"exitCode"`
-	Stdout             string   `json:"stdout,omitempty"`
-	Stderr             string   `json:"stderr,omitempty"`
-	Truncated          bool     `json:"truncated,omitempty"`
+	OK                 bool          `json:"ok"`
+	State              string        `json:"state,omitempty"`
+	Version            string        `json:"version,omitempty"`
+	IPs                []string      `json:"ips,omitempty"`
+	Settings           settings      `json:"settings"`
+	DaemonRunning      bool          `json:"daemonRunning"`
+	ExitNodeConfigured bool          `json:"exitNodeConfigured"`
+	LoginURL           string        `json:"loginURL,omitempty"`
+	Error              string        `json:"error,omitempty"`
+	ExitCode           int           `json:"exitCode"`
+	Stdout             string        `json:"stdout,omitempty"`
+	Stderr             string        `json:"stderr,omitempty"`
+	Truncated          bool          `json:"truncated,omitempty"`
+	Devices            *[]device     `json:"devices,omitempty"`
+	Binary             *binaryStatus `json:"binary,omitempty"`
+	UpdateChannel      string        `json:"updateChannel,omitempty"`
 }
 
-// Deliberately decode only UI fields. Never return prefs.Persist or peer/account inventories.
+// Deliberately decode only UI fields. Never return prefs.Persist or account data.
 type localStatus struct {
 	BackendState string
 	Version      string
 	TailscaleIPs []string
 	AuthURL      string
+	controlURL   string // Set only from the same LocalAPI preferences snapshot.
+}
+
+// Keep this projection separate from ordinary status polling, which omits peers.
+// Peer map keys are public node keys; decode only the values and discard the keys.
+type localDevices struct {
+	Self *localDevice
+	Peer localDeviceList
+}
+
+type localDeviceList []*localDevice
+
+func (peers *localDeviceList) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token == nil {
+		*peers = nil
+		return nil
+	}
+	if token != json.Delim('{') {
+		return errors.New("invalid peer list")
+	}
+	var result localDeviceList
+	for decoder.More() {
+		if _, err := decoder.Token(); err != nil { // Discard the public key.
+			return err
+		}
+		var peer *localDevice
+		if err := decoder.Decode(&peer); err != nil {
+			return err
+		}
+		if peer != nil {
+			result = append(result, peer)
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	*peers = result
+	return nil
+}
+
+type localDevice struct {
+	ID           string
+	HostName     string
+	DNSName      string
+	TailscaleIPs []string
+	Online       bool
+	OS           string
+	LastSeen     time.Time
+}
+
+type device struct {
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	DNSName  string     `json:"dnsName"`
+	IPs      []string   `json:"ips"`
+	Online   bool       `json:"online"`
+	OS       string     `json:"os"`
+	Self     bool       `json:"self"`
+	LastSeen *time.Time `json:"lastSeen,omitempty"`
 }
 
 type localPrefs struct {
+	ControlURL             string
 	RouteAll               bool
 	ShieldsUp              bool
 	ExitNodeAllowLANAccess bool
@@ -78,9 +150,12 @@ type localPrefs struct {
 }
 
 type backend struct {
-	module string
-	client *http.Client
-	locale string
+	stateDir string
+	module   string
+	client   *http.Client
+	locale   string
+	// Internal browser test hook; RPC callers cannot configure it.
+	loginBrowser func(context.Context, string) error
 }
 
 func newBackend(module string) *backend {
@@ -130,14 +205,19 @@ func (b *backend) api(ctx context.Context, method, path string, body any, result
 }
 
 func (b *backend) status(ctx context.Context) response {
-	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}}
+	r, _ := b.statusWithLocal(ctx)
+	return r
+}
+
+func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
+	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module)}
 	var st localStatus
 	if err := b.api(ctx, "GET", "status?peers=false", nil, &st); err != nil {
 		if _, statErr := os.Stat(socketPath); statErr == nil {
 			r.State = "ServiceError"
 			r.Error = err.Error()
 		}
-		return r
+		return r, st
 	}
 	r.DaemonRunning, r.State, r.IPs = true, st.BackendState, st.TailscaleIPs
 	if st.Version != "" {
@@ -150,14 +230,258 @@ func (b *backend) status(ctx context.Context) response {
 	if err := b.api(ctx, "GET", "prefs", nil, &p); err != nil {
 		r.OK = false
 		r.Error = err.Error()
-		return r
+		return r, st
 	}
+	st.controlURL = p.ControlURL
 	r.Settings = settings{p.RouteAll, p.ShieldsUp, p.ExitNodeAllowLANAccess}
 	r.ExitNodeConfigured = p.ExitNodeID != "" || (p.ExitNodeIP != "" && p.ExitNodeIP != "invalid IP")
+	return r, st
+}
+
+func (b *backend) devices(ctx context.Context) response {
+	var status localDevices
+	if err := b.api(ctx, "GET", "status?peers=true", nil, &status); err != nil {
+		return failed(err.Error())
+	}
+	devices := make([]device, 0, len(status.Peer)+1)
+	add := func(peer *localDevice, self bool) {
+		if peer == nil {
+			return
+		}
+		dnsName := boundedText(strings.TrimRight(peer.DNSName, "."), 253)
+		name := boundedText(peer.HostName, 128)
+		if dnsName != "" {
+			name, _, _ = strings.Cut(dnsName, ".")
+			name = boundedText(name, 128)
+		}
+		ips := []string{}
+		seen := map[netip.Addr]bool{}
+		for _, value := range peer.TailscaleIPs {
+			if len(value) > 45 || len(ips) == 4 {
+				continue
+			}
+			ip, err := netip.ParseAddr(value)
+			if err != nil || ip.Zone() != "" {
+				continue
+			}
+			ip = ip.Unmap()
+			if !seen[ip] {
+				seen[ip] = true
+				ips = append(ips, ip.String())
+			}
+		}
+		entry := device{ID: boundedText(peer.ID, 128), Name: name, DNSName: dnsName, IPs: ips, Online: peer.Online, OS: boundedText(peer.OS, 32), Self: self}
+		if !peer.Online && !peer.LastSeen.IsZero() {
+			lastSeen := peer.LastSeen
+			entry.LastSeen = &lastSeen
+		}
+		devices = append(devices, entry)
+	}
+	add(status.Self, true)
+	for _, peer := range status.Peer {
+		// The current node normally appears only in Self. Do not duplicate it.
+		if status.Self != nil && status.Self.ID != "" && peer.ID == status.Self.ID {
+			continue
+		}
+		add(peer, false)
+	}
+	sort.Slice(devices, func(i, j int) bool {
+		a, b := devices[i], devices[j]
+		if a.Self != b.Self {
+			return a.Self
+		}
+		if a.Online != b.Online {
+			return a.Online
+		}
+		if x, y := strings.ToLower(a.Name), strings.ToLower(b.Name); x != y {
+			return x < y
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		if a.DNSName != b.DNSName {
+			return a.DNSName < b.DNSName
+		}
+		return a.ID < b.ID
+	})
+	const limit = 1000
+	truncated := len(devices) > limit
+	if truncated {
+		devices = devices[:limit]
+	}
+	// Count actual JSON bytes, including escapes, rather than assuming that
+	// bounded strings imply bounded encoded data. Reserve ample room below
+	// the WebUI's 1.5 MB response limit for the response envelope.
+	const payloadLimit = 1 << 20
+	size := 2 // Array brackets.
+	for i, entry := range devices {
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			return failed("无法读取后台状态")
+		}
+		if size+len(encoded)+1 > payloadLimit {
+			devices, truncated = devices[:i], true
+			break
+		}
+		size += len(encoded) + 1
+	}
+	return response{OK: true, Devices: &devices, Truncated: truncated}
+}
+
+func boundedText(value string, limit int) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if len(value) <= limit {
+		return value
+	}
+	for !utf8.ValidString(value[:limit]) {
+		limit--
+	}
+	return value[:limit]
+}
+
+func consoleCommand(ctx context.Context) *exec.Cmd {
+	// No caller-supplied URL, component, package, user, or command arguments.
+	cmd := exec.CommandContext(ctx, "/system/bin/am", "start", "-W", "--user", "current",
+		"-a", "android.intent.action.VIEW", "-c", "android.intent.category.BROWSABLE",
+		"-d", "https://console.tailscale.com/admin/machines")
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
+func (b *backend) console(ctx context.Context) response {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// Discard ActivityManager output: it is neither shell output nor UI data.
+	if err := consoleCommand(ctx).Run(); err != nil {
+		return failed("无法打开控制台，请安装或启用浏览器后重试")
+	}
+	return response{OK: true}
+}
+
+func aboutCommand(ctx context.Context) *exec.Cmd {
+	// The project link is code-owned; RPC data never selects the destination.
+	cmd := exec.CommandContext(ctx, "/system/bin/am", "start", "-W", "--user", "current",
+		"-a", "android.intent.action.VIEW", "-c", "android.intent.category.BROWSABLE",
+		"-d", "https://github.com/KyuubiRan/Shellscaled")
+	cmd.WaitDelay = time.Second
+	return cmd
+}
+
+func (b *backend) about(ctx context.Context) response {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// ActivityManager output is intentionally discarded, as for the console.
+	if err := aboutCommand(ctx).Run(); err != nil {
+		return failed("无法打开项目主页，请安装或启用浏览器后重试")
+	}
+	return response{OK: true}
+}
+
+var loginTokenPath = regexp.MustCompile(`^/a/[A-Za-z0-9_-]{1,512}$`)
+
+func allowedLoginURL(value, controlURL string) bool {
+	if value == "" || len(value) > 2048 || strings.TrimSpace(value) != value || strings.Contains(value, "#") {
+		return false
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Opaque != "" ||
+		u.Fragment != "" || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" ||
+		(u.Port() != "" && u.Port() != "443") || !loginTokenPath.MatchString(u.Path) {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if !strings.EqualFold(u.Host, host) && !strings.EqualFold(u.Host, host+":443") {
+		return false
+	}
+	switch host {
+	case "login.tailscale.com":
+		// The documented SaaS interactive-login destination.
+		return true
+	case "controlplane.tailscale.com":
+		// Upstream TestValidPopBrowserURL also supports this same-origin SaaS
+		// form. An empty ControlURL selects the official default control plane.
+		if controlURL == "" {
+			return true
+		}
+		control, err := url.Parse(controlURL)
+		return err == nil && control.Scheme == "https" && control.User == nil &&
+			(strings.EqualFold(control.Host, "controlplane.tailscale.com") || strings.EqualFold(control.Host, "controlplane.tailscale.com:443")) &&
+			(control.Path == "" || control.Path == "/") && control.RawQuery == "" &&
+			!control.ForceQuery && control.Fragment == "" && control.Opaque == "" && control.RawPath == ""
+	default:
+		return false
+	}
+}
+
+func loginCommand(ctx context.Context, target, controlURL string) (*exec.Cmd, error) {
+	if !allowedLoginURL(target, controlURL) {
+		return nil, errors.New("登录链接无效，请刷新后重试")
+	}
+	cmd := exec.CommandContext(ctx, "/system/bin/am", "start", "-W", "--user", "current",
+		"-a", "android.intent.action.VIEW", "-c", "android.intent.category.BROWSABLE", "-d", target)
+	cmd.WaitDelay = time.Second
+	return cmd, nil
+}
+
+func (b *backend) login(ctx context.Context) response {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	r, local := b.statusWithLocal(ctx)
+	if !r.OK {
+		return r
+	}
+	// A stale login button must never switch accounts or restart authorization.
+	switch r.State {
+	case "Running", "Stopped", "Starting", "NeedsMachineAuth":
+		return r
+	}
+	if !r.DaemonRunning {
+		return failed("请先启动后台服务")
+	}
+	if r.State != "NeedsLogin" {
+		return failed("登录链接尚未准备好，请稍后重试")
+	}
+	if local.AuthURL == "" {
+		// The ordinary up path changes only WantRunning, then requests an
+		// interactive URL for an unauthenticated backend and polls briefly.
+		r = b.connection(ctx, true)
+		if !r.OK {
+			return r
+		}
+		r, local = b.statusWithLocal(ctx)
+		if !r.OK {
+			return r
+		}
+		if r.State == "Running" || r.State == "NeedsMachineAuth" {
+			return r
+		}
+		if r.State != "NeedsLogin" || local.AuthURL == "" {
+			return failed("登录链接尚未准备好，请稍后重试")
+		}
+	}
+	if !allowedLoginURL(local.AuthURL, local.controlURL) {
+		return failed("登录链接无效，请刷新后重试")
+	}
+	openCtx, cancelOpen := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelOpen()
+	if b.loginBrowser != nil {
+		if err := b.loginBrowser(openCtx, local.AuthURL); err != nil {
+			return failed("无法打开登录页面，请安装或启用浏览器后重试")
+		}
+	} else {
+		cmd, err := loginCommand(openCtx, local.AuthURL, local.controlURL)
+		// ActivityManager output may contain a private login token. Discard it.
+		if err != nil || cmd.Run() != nil {
+			return failed("无法打开登录页面，请安装或启用浏览器后重试")
+		}
+	}
 	return r
 }
 
 func (b *backend) moduleVersion() string {
+	if version := runtimeBinaryVersion(b.module); version != "" {
+		return version
+	}
 	data, _ := os.ReadFile(filepath.Join(b.module, "module.prop"))
 	for _, line := range strings.Split(string(data), "\n") {
 		if v, ok := strings.CutPrefix(line, "version="); ok {
@@ -404,8 +728,34 @@ func decodeRequest(encoded string) (request, error) {
 	default:
 		return r, errors.New("不支持此语言")
 	}
+	var inputFields map[string]json.RawMessage
+	if json.Unmarshal(data, &inputFields) != nil {
+		return r, errors.New("请求格式无效")
+	}
+	for key := range inputFields {
+		if strings.EqualFold(key, "channel") && r.Action != "binary-channel" {
+			return r, errors.New("请求参数不匹配")
+		}
+	}
 	switch r.Action {
-	case "status", "up", "down":
+	case "binary-channel":
+		for key := range inputFields {
+			if key != "action" && key != "locale" && key != "channel" {
+				return r, errors.New("请求参数不匹配")
+			}
+		}
+		if r.Channel != "stable" && r.Channel != "preview" {
+			return r, errors.New("不支持此更新频道")
+		}
+	case "about", "login", "binary-check", "binary-update":
+		// These operations have no caller-selectable URL, path, version, or
+		// command, including otherwise-known fields with empty/null values.
+		for key := range inputFields {
+			if key != "action" && key != "locale" {
+				return r, errors.New("请求参数不匹配")
+			}
+		}
+	case "status", "devices", "console", "up", "down":
 		if r.Command != "" || r.Settings != nil {
 			return r, errors.New("请求参数不匹配")
 		}
@@ -516,9 +866,26 @@ func main() {
 			r = failed(err.Error())
 		} else {
 			b.selectLocale(req.Locale)
+			if req.Action == "binary-update" {
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), 180*time.Second)
+				defer cancel()
+			}
 			switch req.Action {
 			case "status":
 				r = b.status(ctx)
+			case "devices":
+				r = b.devices(ctx)
+			case "console":
+				r = b.console(ctx)
+			case "about":
+				r = b.about(ctx)
+			case "login":
+				r = b.login(ctx)
+			case "binary-check", "binary-update":
+				r = b.binary(ctx, req.Action == "binary-update")
+			case "binary-channel":
+				r = b.binaryChannel(req.Channel)
 			case "up":
 				r = b.connection(ctx, true)
 			case "down":

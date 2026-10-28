@@ -158,6 +158,21 @@ sc_supervise() {
     done
 }
 
+# A binary update holds the normal control mutex across stop/replace/start.
+# Only a direct child of this module's real helper may reuse its parent's lock;
+# an environment variable alone never grants an unlocked control operation.
+sc_binary_update_lock() {
+    case "${SC_BINARY_UPDATE_OWNER:-}" in
+        ''|*[!0-9.]*|.*|*.) return 1 ;;
+    esac
+    [ -d "$SC_LOCK" ] && [ ! -L "$SC_LOCK" ] || return 1
+    sc_read_pid "$SC_LOCK/$SC_BINARY_UPDATE_OWNER" || return 1
+    [ "$SC_PID" = "$PPID" ] || return 1
+    [ "$SC_BINARY_UPDATE_OWNER" = "$SC_PID.$SC_PID_START" ] || return 1
+    sc_update_parent_exe=$(readlink "/proc/$SC_PID/exe" 2>/dev/null) || return 1
+    [ "$sc_update_parent_exe" = "$SC_MODDIR/bin/shellscaled-web" ]
+}
+
 case "${1:-help}" in
     status)
         sc_status
@@ -175,8 +190,11 @@ case "${1:-help}" in
         sc_prepare && sc_supervise
         ;;
     start|stop|restart)
-        sc_prepare && sc_lock || exit 1
-        trap sc_unlock EXIT
+        sc_prepare || exit 1
+        if ! sc_binary_update_lock; then
+            sc_lock || exit 1
+            trap sc_unlock EXIT
+        fi
         trap 'exit 1' INT TERM HUP
         case "$1" in
             start) sc_start ;;

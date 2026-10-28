@@ -85,7 +85,11 @@ sc_supervisor_running() {
 }
 
 sc_disabled() {
-    [ -e "$SC_MODDIR/disable" ] || [ -e "$SC_MODDIR/remove" ] || [ -e "$SC_STOP" ]
+    if [ -e "$SC_MODDIR/disable" ] || [ -e "$SC_MODDIR/remove" ]; then
+        sc_cli_remove >/dev/null 2>&1 || true
+        return 0
+    fi
+    [ -e "$SC_STOP" ]
 }
 
 sc_legacy_active() {
@@ -94,23 +98,46 @@ sc_legacy_active() {
         [ ! -e /data/adb/modules/magisk-tailscaled/remove ]
 }
 
+# The filename publishes the owner before the record is written. A blank or
+# partial record is not evidence that the owner died: another process may have
+# been scheduled between the shell's redirect and printf.
+sc_stale_lock_owner() {
+    local sc_owner_name sc_owner_pid sc_owner_start sc_owner_current
+    sc_owner_name=${1##*/}
+    sc_owner_pid=${sc_owner_name%%.*}
+    sc_owner_start=${sc_owner_name#*.}
+    case "$sc_owner_pid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$sc_owner_start" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$sc_owner_name" = "$sc_owner_pid.$sc_owner_start" ] && [ "$sc_owner_pid" -gt 1 ] || return 1
+    if sc_owner_current=$(sc_start_time "$sc_owner_pid"); then
+        [ -n "$sc_owner_current" ] && [ "$sc_owner_current" != "$sc_owner_start" ]
+    else
+        # A failed /proc read (for example, a permission error) is ambiguous.
+        # Reclaim only a vanished PID, or a confirmed different start time.
+        [ ! -d "/proc/$sc_owner_pid" ]
+    fi
+}
+
 # Only the process that owns an exact PID/start-time token removes its lock.
-# Empty locks are left in place rather than stealing a lock from a process
-# between mkdir and writing its owner; the next boot clears an empty lock.
+# Empty directories are retained until boot because no owner can be identified.
 sc_lock() {
+    local sc_own_pid sc_own_rest
     sc_lock_attempt=0
-    sc_own_start=$(sc_start_time "$$") || return 1
-    SC_LOCK_OWNER="$$.$sc_own_start"
+    read -r sc_own_pid sc_own_rest < /proc/self/stat || return 1
+    sc_own_start=$(sc_start_time "$sc_own_pid") || return 1
+    SC_LOCK_OWNER="$sc_own_pid.$sc_own_start"
     while [ "$sc_lock_attempt" -lt 15 ]; do
         if mkdir "$SC_LOCK" 2>/dev/null; then
-            printf '%s %s\n' "$$" "$sc_own_start" > "$SC_LOCK/$SC_LOCK_OWNER" || return 1
+            printf '%s %s\n' "$sc_own_pid" "$sc_own_start" > "$SC_LOCK/$SC_LOCK_OWNER" || return 1
             return 0
         fi
+        [ -d "$SC_LOCK" ] && [ ! -L "$SC_LOCK" ] || return 1
         for sc_owner_file in "$SC_LOCK"/*; do
             [ -f "$sc_owner_file" ] && [ ! -L "$sc_owner_file" ] || continue
-            if ! sc_read_pid "$sc_owner_file"; then
-                rm -f "$sc_owner_file"
-                rmdir "$SC_LOCK" 2>/dev/null || true
+            if sc_stale_lock_owner "$sc_owner_file"; then
+                # Only the contender that actually removed the stale token may
+                # remove its directory; another contender may already own it.
+                rm "$sc_owner_file" 2>/dev/null && rmdir "$SC_LOCK" 2>/dev/null || true
             fi
         done
         sc_lock_attempt=$((sc_lock_attempt + 1))
@@ -202,3 +229,5 @@ sc_start_daemon() {
     sc_stop_daemon
     return 1
 }
+
+. "$SC_MODDIR/cli.sh"
