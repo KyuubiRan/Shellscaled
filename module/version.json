@@ -1,9 +1,9 @@
 {
   "tailscaleVersion": "1.104.2",
-  "moduleRevision": 9,
-  "versionCode": 110400209,
+  "moduleRevision": 11,
+  "versionCode": 110400211,
   "sourceCommit": "0d256a1f0ee5f50362f3315de949b4333aca3de9",
-  "cliReleaseTag": "android-v1.104.2-dev.2",
+  "cliReleaseTag": "android-v1.104.2-r3",
   "releaseChannel": "prerelease",
   "pending": false
 }
