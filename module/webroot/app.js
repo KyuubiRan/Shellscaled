@@ -319,9 +319,6 @@
       const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
       renderStatus(status, action === "settings");
       if (action === "settings") message("notice.saved");
-      else if (action === "down") message("notice.disconnected");
-      else if (status.state === "NeedsLogin") message("notice.login", "warning");
-      else message(status.state === "Running" ? "notice.connected" : "notice.connecting");
     } catch (error) {
       showError(error);
       markFreshness("verify");
