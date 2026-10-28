@@ -82,8 +82,15 @@ func (b *backend) selectLocale(preference string) {
 
 // CLI output remains untouched. Only application messages are translated.
 var messages = map[string][3]string{
-	"需要 root 权限": {"请授予 root 权限后重试。", "請授予 root 權限後重試。", "Grant root access and try again."},
-	"无法定位模块":     {"模块不可用，请重新安装。", "模組無法使用，請重新安裝。", "Module unavailable. Reinstall it and try again."},
+	"不支持此更新频道":                                    {"不支持此更新频道。", "不支援此更新頻道。", "This update channel is not supported."},
+	"无法保存更新频道，请重试":                                {"无法保存更新频道，请重试。", "無法儲存更新頻道，請重試。", "Could not save the update channel. Try again."},
+	"二进制更新正在进行，请稍后重试":                             {"二进制更新正在进行，请稍后重试。", "二進位更新正在進行，請稍後重試。", "A binary update is in progress. Try again later."},
+	"无法检查二进制更新，请稍后重试":                             {"无法检查二进制更新，请稍后重试。", "無法檢查二進位更新，請稍後重試。", "Could not check for a binary update. Try again later."},
+	"更新文件校验失败，未替换当前二进制":                           {"更新文件校验失败，未替换当前二进制。", "更新檔案驗證失敗，未替換目前的二進位。", "Update verification failed. The current binary was not replaced."},
+	"二进制更新失败，已尝试恢复原服务":                            {"二进制更新失败，已尝试恢复原服务。", "二進位更新失敗，已嘗試還原原有服務。", "The binary update failed. Recovery of the previous service was attempted."},
+	"二进制恢复失败，请重新安装模块":                             {"二进制恢复失败，请重新安装模块。", "二進位還原失敗，請重新安裝模組。", "Binary recovery failed. Reinstall the module."},
+	"需要 root 权限":                                  {"请授予 root 权限后重试。", "請授予 root 權限後重試。", "Grant root access and try again."},
+	"无法定位模块":                                      {"模块不可用，请重新安装。", "模組無法使用，請重新安裝。", "Module unavailable. Reinstall it and try again."},
 	"后台服务未响应，请先启动或重启 tailscaled":                  {"服务未响应，请重新连接。", "服務未回應，請重新連線。", "Service unavailable. Reconnect and try again."},
 	"无法读取后台状态":                                    {"无法读取状态，请重试。", "無法讀取狀態，請重試。", "Could not read the status. Try again."},
 	"模块已停用":                                       {"请先启用模块。", "請先啟用模組。", "Enable the module first."},
@@ -113,6 +120,7 @@ var messages = map[string][3]string{
 	"服务请求失败":                                      {"服务暂时不可用，请重试。", "服務暫時無法使用，請重試。", "Service temporarily unavailable. Try again."},
 	"未开放参数":                                       {"不支持此选项：", "不支援此選項：", "Unsupported option: "},
 	"操作失败":                                        {"操作失败：", "操作失敗：", "Operation failed: "},
+	"无法打开控制台，请安装或启用浏览器后重试":                        {"无法打开控制台，请安装或启用浏览器后重试。", "無法開啟控制台，請安裝或啟用瀏覽器後重試。", "Could not open the console. Install or enable a browser and try again."},
 	"浏览器授权":                                       {"请在浏览器中登录：", "請在瀏覽器中登入：", "Sign in using your browser:"},
 }
 

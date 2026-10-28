@@ -21,6 +21,8 @@
     await until(() => JSON.parse(fixture.requestsJSON()).length > requestsBefore);
     await idle();
     $("tab-" + config.tab).click();
+    await idle();
+    if (config.tab === "devices") await until(() => document.querySelector("#device-list .device-card"));
     if (config.tab === "command") {
       $("command-input").value = "tailscale version";
       $("command-form").requestSubmit();
@@ -29,6 +31,7 @@
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     window.scrollTo(0, 0);
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await wait(800);
     fixture.screenshotReady();
   } catch (_) {
     fixture.screenshotError();
