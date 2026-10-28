@@ -1,0 +1,9 @@
+{
+  "tailscaleVersion": "1.104.2",
+  "moduleRevision": 4,
+  "versionCode": 110400204,
+  "sourceCommit": "961030f6207dd20b67b18f060673a29d0657ee66",
+  "cliReleaseTag": "",
+  "releaseChannel": "prerelease",
+  "pending": false
+}

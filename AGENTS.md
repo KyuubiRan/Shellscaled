@@ -13,7 +13,8 @@ Shellscaled runs Tailscale on rooted Android through a native TUN, without using
 ## Build and storage
 
 - Compile locally with `python3 scripts/build.py`. Reuse an installed Android NDK; do not automatically download an SDK or NDK.
-- Both repositories are open source with owner authorization. GitHub Actions remain disabled. Do not enable or dispatch hosted builds without explicit owner authorization.
+- Both repositories are open source. The owner authorized their dedicated CI pipelines: `dev` publishes Pre-releases and `main` publishes Releases. CLI releases synchronize the matching module branch, source reference and tracked module version metadata; both pipelines also support manual runs. Disable unrelated inherited workflows. CI builds and static checks are allowed; all runtime tests remain emulator-only.
+- Test and RC releases must be GitHub Pre-releases. The owner authorized automatic stable publication from `main`; do not promote development work to `main` merely to trigger a stable release. Default local builds to the prerelease update channel and verify download links and badges include prereleases.
 - Clone reference projects only into ignored `.reference/`. Never clone AOSP; inspect official documentation and necessary individual source files instead.
 - Keep caches, emulator preparation, transient downloads, and package staging inside ignored `.work/`. Keep final packages in ignored `dist/`. Reuse these locations and remove obsolete task-owned products rather than accumulating backups.
 - Inherit the user's exported proxy variables for network commands. Do not print credentials or add hard-coded proxy settings.
@@ -34,6 +35,10 @@ Shellscaled runs Tailscale on rooted Android through a native TUN, without using
 - Default to `accept-dns=false` and `netfilter-mode=off`. Never silently replace the active Android VPN or take over DNS.
 - Clean up only module-owned processes, interfaces, and policy rules. Avoid global firewall flushes and broad process-name matching.
 - Keep the WebUI command panel limited to the native helper's Tailscale program, subcommand, and flag allowlists. Never pass user input to a shell, expose an unrestricted executor, or load remote scripts in the root WebView.
+- Fetch device details only for the device page, project the selected display fields, and keep device data out of storage, logs and published screenshots. Documentation screenshots must use synthetic devices.
+- Open the console only through the helper's fixed external-browser action and official HTTPS destination. Never accept arbitrary URLs or add browser launch commands to the command panel.
+- Binary updates require an explicit user action, a compatible Android payload from the CLI repository's public release, and verified GitHub asset, manifest and binary hashes. Validate before stopping the service, replace atomically, restore the previous binary on failure, preserve account/preferences and remove transaction files. Never substitute upstream Linux binaries or enable Tailscale's unrestricted self-updater.
+- Preserve the user's stable/preview update-channel preference across module updates. Preview includes newer stable releases. Compare versions before publication dates and never let an older preview override a newer stable version.
 - Update only edited settings through masked LocalAPI preferences. Preserve other settings and unsaved edits across status refreshes.
 - Keep product copy focused on user actions and status. Put implementation and validation details in development documentation, not the WebUI.
 - Localize the interface and native application messages in Simplified Chinese, Traditional Chinese, and English. Follow system language by default, allow a language choice, and keep connection control as one state-dependent button.

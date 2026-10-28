@@ -1,0 +1,222 @@
+name: Release Android module
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      cli_tag:
+        description: Existing CLI tag (empty selects the highest compatible published release)
+        required: false
+        type: string
+
+# Both branches share immutable vX-rN tags and therefore one reservation queue.
+concurrency:
+  group: shellscaled-module-release
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'KyuubiRan/Shellscaled' && (github.ref_name == 'main' || github.ref_name == 'dev')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_AUTHOR_NAME: ${{ vars.RELEASE_AUTHOR_NAME }}
+      RELEASE_AUTHOR_EMAIL: ${{ vars.RELEASE_AUTHOR_EMAIL }}
+      RELEASE_BRANCH: ${{ github.ref_name }}
+      CLI_TAG: ${{ inputs.cli_tag || '' }}
+      EXPECTED_SHA: ${{ github.sha }}
+      GOTOOLCHAIN: local
+    steps:
+      - name: Check out the release branch and module tag reservations
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          submodules: false
+          persist-credentials: true
+
+      - name: Static validation only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/ci-release.py scripts/build.py
+          git diff --check
+          for script in module/*.sh; do bash -n "$script"; done
+
+      - name: Verify the CLI release and prepare clean version metadata
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci-release.py prepare --branch "$RELEASE_BRANCH" \
+            --cli-tag "$CLI_TAG" --expected-head "$EXPECTED_SHA"
+
+      - name: Push version metadata without recursively starting another workflow
+        if: steps.prepare.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This checkout uses GITHUB_TOKEN. Its push does not recursively
+          # dispatch another push workflow; the CLI deploy key intentionally does.
+          git push origin "HEAD:$RELEASE_BRANCH"
+          test "$(git rev-parse HEAD)" = '${{ steps.prepare.outputs.commit }}'
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Set up the source's required Go toolchain
+        if: steps.prepare.outputs.ready == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tailscale/go.mod
+          cache: false
+
+      - name: Select the runner's pinned Android NDK
+        if: steps.prepare.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ndk="$ANDROID_HOME/ndk/30.0.16248370"
+          test -x "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android23-clang"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk" >> "$GITHUB_ENV"
+
+      - name: Build one offline arm64 module using the verified CLI binary
+        if: steps.prepare.outputs.ready == 'true'
+        env:
+          REVISION: ${{ steps.prepare.outputs.revision }}
+          CHANNEL: ${{ steps.prepare.outputs.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/build.py --arch arm64 --package-only --revision "$REVISION" --release-channel "$CHANNEL"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          info = json.loads(Path('.work/package/arm64/build-info.json').read_text())
+          assert info['moduleTreeDirty'] is False
+          assert info['moduleSourceCommit'] == __import__('subprocess').check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert len(list(Path('dist').glob('*.zip'))) == 1
+          PY
+
+      - name: Create an immutable draft release
+        if: steps.prepare.outputs.ready == 'true'
+        id: draft
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.prepare.outputs.commit }}
+          RELEASE_VERSION: ${{ steps.prepare.outputs.version }}
+          CHANNEL: ${{ steps.prepare.outputs.channel }}
+          CLI_RELEASE_TAG: ${{ steps.prepare.outputs.cli_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .work/ci
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish > .work/ci/existing-release.json 2>/dev/null; then
+            python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          existing = json.loads(Path('.work/ci/existing-release.json').read_text())
+          assert existing['isDraft'] is True, 'Published releases are immutable'
+          assert existing['targetCommitish'] == os.environ['RELEASE_COMMIT'], 'Draft belongs to a different commit'
+          PY
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+            echo 'created=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag_refs=$(git ls-remote origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+          extra=()
+          if [ -n "$tag_refs" ]; then
+            resolved=$(printf '%s\n' "$tag_refs" | tail -n 1 | cut -f 1)
+            test "$resolved" = "$RELEASE_COMMIT"
+            extra+=(--verify-tag)
+          fi
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          tag = os.environ['CLI_RELEASE_TAG']
+          Path('.work/ci/notes.md').write_text(
+              f"Tailscale {os.environ['RELEASE_VERSION']} for ARM64 Android (Magisk / KernelSU).\n\n"
+              "Download the ZIP, install it in your root manager, and reboot. Updating preserves your login and settings.\n\n"
+              f"[CLI source: {tag}](https://github.com/KyuubiRan/tailscale-android-cli/releases/tag/{tag})\n")
+          PY
+          title="Shellscaled $RELEASE_VERSION (${RELEASE_TAG##*-})"
+          if [ "$CHANNEL" = prerelease ]; then title="$title RC"; extra+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_COMMIT" \
+            --title "$title" --notes-file .work/ci/notes.md --draft "${extra[@]}"
+          echo 'created=true' >> "$GITHUB_OUTPUT"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Upload all package assets before publishing
+        if: steps.draft.outputs.ready == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_id=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > .work/ci/draft-assets.json
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          release = json.loads(Path('.work/ci/draft-assets.json').read_text())
+          assert release['draft'] is True
+          assets = {a['name']: a for a in release['assets']}
+          missing = []
+          for path in sorted(Path('dist').iterdir()):
+              if path.is_file():
+                  expected = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+                  if path.name in assets:
+                      assert assets[path.name]['digest'] == expected, 'Existing assets are immutable'
+                  else:
+                      missing.append(str(path))
+          Path('.work/ci/missing-assets').write_bytes(b''.join(p.encode() + b'\0' for p in missing))
+          PY
+          mapfile -d '' -t missing < .work/ci/missing-assets
+          if [ "${#missing[@]}" -gt 0 ]; then
+            gh release upload "$RELEASE_TAG" "${missing[@]}" --repo "$GITHUB_REPOSITORY"
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > .work/ci/draft-assets.json
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          release = json.loads(Path('.work/ci/draft-assets.json').read_text())
+          assert release['draft'] is True
+          assets = {a['name']: a for a in release['assets']}
+          for path in Path('dist').iterdir():
+              if path.is_file():
+                  expected = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+                  assert path.name in assets and assets[path.name]['digest'] == expected
+          PY
+
+      - name: Publish dev as Pre-release and main as stable
+        if: steps.draft.outputs.ready == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+          CHANNEL: ${{ steps.prepare.outputs.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$CHANNEL" = prerelease ]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
+          fi
+
+      - name: Remove only this run's incomplete draft
+        if: failure() && steps.draft.outputs.created == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.prepare.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          draft=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          if [ "$draft" = true ]; then
+            gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi

@@ -50,12 +50,23 @@ def compiler(arch):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", choices=["arm64", "arm", "amd64"], default="arm64")
-    parser.add_argument("--revision", type=int, default=0, help="module revision within the same Tailscale version (0..99)")
+    parser.add_argument("--revision", type=int, default=None, help="module revision within the same Tailscale version (0..99)")
     parser.add_argument("--package-only", action="store_true", help="reuse this source revision's existing binary")
+    parser.add_argument("--release-channel", choices=["prerelease", "stable"], default=None, help="binary update channel (default: tracked module channel or prerelease)")
     args = parser.parse_args()
-    if not 0 <= args.revision < 100:
-        parser.error("revision must be 0..99")
+    tracked_file = ROOT / "module/version.json"
+    tracked = json.loads(tracked_file.read_text()) if tracked_file.exists() else {}
     ver = version()
+    if args.revision is None:
+        if tracked and tracked.get("tailscaleVersion") != ver:
+            parser.error("tracked module version differs from VERSION.txt; update version metadata or specify --revision")
+        args.revision = tracked.get("moduleRevision", 0)
+    if args.release_channel is None:
+        args.release_channel = tracked.get("releaseChannel", "prerelease")
+    if args.release_channel not in {"prerelease", "stable"}:
+        parser.error("invalid tracked release channel")
+    if not isinstance(args.revision, int) or isinstance(args.revision, bool) or not 0 <= args.revision < 100:
+        parser.error("revision must be 0..99")
     major, minor, patch = map(int, ver.split("."))
     if minor >= 1000 or patch >= 1000:
         parser.error("version fields exceed versionCode encoding")
@@ -104,7 +115,8 @@ def main():
         shutil.copyfile(SOURCE / filename, stage / "licenses" / f"tailscale-{filename}")
     shutil.copyfile(ROOT / "LICENSE", stage / "licenses/module-LICENSE")
     module_metadata = {"moduleSourceCommit": output(["git", "rev-parse", "HEAD"]), "moduleTreeDirty": bool(output(["git", "status", "--porcelain"]))}
-    (stage / "build-info.json").write_text(json.dumps({**metadata, **module_metadata, "moduleRevision": args.revision, "versionCode": code}, indent=2) + "\n")
+    binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    (stage / "build-info.json").write_text(json.dumps({**metadata, **module_metadata, "moduleRevision": args.revision, "versionCode": code, "binaryCompatibility": 1, "binarySHA256": binary_digest, "releaseChannel": args.release_channel}, indent=2) + "\n")
     checksums = []
     for path in sorted(stage.rglob("*")):
         if path.is_file() and "META-INF" not in path.relative_to(stage).parts:
@@ -122,6 +134,13 @@ def main():
                 archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
     digest = hashlib.sha256(dest.read_bytes()).hexdigest()
     dest.with_suffix(".zip.sha256").write_text(f"{digest}  {dest.name}\n")
+    manifest = {
+        "schema": 1, "compatibility": 1, "releaseChannel": args.release_channel, "tailscaleVersion": ver,
+        "sourceCommit": source_sha, "architecture": args.arch,
+        "binarySHA256": binary_digest, "packageName": dest.name,
+        "packageSHA256": digest,
+    }
+    dest.with_suffix(".binary.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Built {dest.name}: {dest.stat().st_size // 1024 // 1024} MiB, sha256 {digest}")
 
 
