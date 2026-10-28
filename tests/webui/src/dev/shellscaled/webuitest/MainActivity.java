@@ -45,6 +45,11 @@ public final class MainActivity extends Activity {
     private boolean acceptRoutes;
     private boolean shieldsUp;
     private boolean allowLAN;
+    private boolean nextSettingsFails;
+    private boolean holdNextSettings;
+    private Runnable settingsReply;
+    private boolean holdNextStatus;
+    private Runnable statusReply;
     private boolean nextUpStarts;
     private boolean nextConsoleFails;
     private boolean nextAboutFails;
@@ -257,7 +262,13 @@ public final class MainActivity extends Activity {
                     }
                     requests.put(request);
                     switch (action) {
-                        case "status": break;
+                        case "status":
+                            JSONObject snapshot = status();
+                            if (holdNextStatus) {
+                                holdNextStatus = false;
+                                statusReply = () -> reply(callback, snapshot);
+                            } else reply(callback, snapshot);
+                            return;
                         case "login":
                             boolean loginOK = !"error".equals(loginMode);
                             if (loginOK && "NeedsLogin".equals(state)) {
@@ -318,10 +329,23 @@ public final class MainActivity extends Activity {
                         case "up": state = nextUpStarts ? "Starting" : "Running"; nextUpStarts = false; break;
                         case "settings":
                             JSONObject patch = request.getJSONObject("settings");
-                            if (patch.has("acceptRoutes")) acceptRoutes = patch.getBoolean("acceptRoutes");
-                            if (patch.has("shieldsUp")) shieldsUp = patch.getBoolean("shieldsUp");
-                            if (patch.has("exitNodeAllowLanAccess")) allowLAN = patch.getBoolean("exitNodeAllowLanAccess");
-                            break;
+                            if (request.length() != 3 || patch.length() != 1) throw new JSONException("settings-mask");
+                            String settingKey = patch.keys().next();
+                            if (!Arrays.asList("acceptRoutes", "shieldsUp", "exitNodeAllowLanAccess").contains(settingKey)) throw new JSONException("settings-key");
+                            boolean settingsOK = !nextSettingsFails;
+                            nextSettingsFails = false;
+                            if (settingsOK) {
+                                if (patch.has("acceptRoutes")) acceptRoutes = patch.getBoolean("acceptRoutes");
+                                if (patch.has("shieldsUp")) shieldsUp = patch.getBoolean("shieldsUp");
+                                if (patch.has("exitNodeAllowLanAccess")) allowLAN = patch.getBoolean("exitNodeAllowLanAccess");
+                            }
+                            JSONObject settingsResult = settingsOK ? status() : new JSONObject().put("ok", false)
+                                    .put("error", "Fixture settings unavailable").put("exitCode", 1);
+                            if (holdNextSettings) {
+                                holdNextSettings = false;
+                                settingsReply = () -> reply(callback, settingsResult);
+                            } else reply(callback, settingsResult);
+                            return;
                         case "command":
                             result = new JSONObject().put("ok", true).put("exitCode", 0)
                                     .put("stdout", screenshotTab == null ?
@@ -401,6 +425,35 @@ public final class MainActivity extends Activity {
         }
         @JavascriptInterface public void nextUpStarts() {
             synchronized (guard) { nextUpStarts = true; }
+        }
+        @JavascriptInterface public void nextSettingsFails() {
+            synchronized (guard) { nextSettingsFails = true; }
+        }
+        @JavascriptInterface public void holdNextSettings() {
+            synchronized (guard) { holdNextSettings = true; }
+        }
+        @JavascriptInterface public void releaseSettings() {
+            synchronized (guard) {
+                if (settingsReply != null) {
+                    Runnable reply = settingsReply;
+                    settingsReply = null;
+                    reply.run();
+                }
+                holdNextSettings = false;
+            }
+        }
+        @JavascriptInterface public void holdNextStatus() {
+            synchronized (guard) { holdNextStatus = true; }
+        }
+        @JavascriptInterface public void releaseStatus() {
+            synchronized (guard) {
+                if (statusReply != null) {
+                    Runnable reply = statusReply;
+                    statusReply = null;
+                    reply.run();
+                }
+                holdNextStatus = false;
+            }
         }
         @JavascriptInterface public void nextConsoleFails() {
             synchronized (guard) { nextConsoleFails = true; }

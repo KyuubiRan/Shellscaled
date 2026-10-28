@@ -110,6 +110,15 @@
         </section>
 
         <section class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+          <div class="card language-card">
+            <label for="language" data-i18n="language.label"></label>
+            <select id="language" data-i18n-aria="language.label">
+              <option value="system" data-i18n="language.system"></option>
+              <option value="zh-CN" data-i18n="language.zhCN"></option>
+              <option value="zh-TW" data-i18n="language.zhTW"></option>
+              <option value="en" data-i18n="language.en"></option>
+            </select>
+          </div>
           <div class="section-heading"><h2 data-i18n="settings.heading"></h2></div>
           <div class="card settings-card">
             <label class="setting-row" for="accept-routes">
@@ -125,16 +134,7 @@
               <span class="switch"><input id="exit-lan" type="checkbox" role="switch" data-setting="exitNodeAllowLanAccess" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
             </label>
           </div>
-          <div class="save-row"><span id="settings-hint" data-i18n="settings.unread"></span><button class="button primary compact" id="save-settings" type="button" data-i18n="settings.save" data-requires-bridge disabled></button></div>
-          <div class="card language-card">
-            <label for="language" data-i18n="language.label"></label>
-            <select id="language" data-i18n-aria="language.label">
-              <option value="system" data-i18n="language.system"></option>
-              <option value="zh-CN" data-i18n="language.zhCN"></option>
-              <option value="zh-TW" data-i18n="language.zhTW"></option>
-              <option value="en" data-i18n="language.en"></option>
-            </select>
-          </div>
+          <p class="settings-feedback" id="settings-hint" role="status" aria-live="polite" data-i18n="settings.unread"></p>
           <article class="card binary-update-card" id="binary-update-card">
             <h3 data-i18n="binary.heading"></h3>
             <p class="binary-description" data-i18n="binary.description"></p>
@@ -173,10 +173,10 @@
             <label class="field-label" for="command-input" data-i18n="command.label"></label>
             <input id="command-input" class="command-input" type="text" data-i18n-placeholder="command.placeholder" maxlength="2048" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" enterkeyhint="go" data-requires-bridge disabled>
             <div class="command-examples" data-i18n-aria="command.examples">
-              <button type="button" data-example="tailscale status" data-i18n="command.exampleStatus" data-requires-bridge disabled></button>
-              <button type="button" data-example="tailscale version" data-i18n="command.exampleVersion" data-requires-bridge disabled></button>
-              <button type="button" data-example="tailscale netcheck" data-i18n="command.exampleNetcheck" data-requires-bridge disabled></button>
-              <button type="button" data-example="tailscaled --version" data-i18n="command.exampleDaemon" data-requires-bridge disabled></button>
+              <button type="button" data-example="tailscale status" data-requires-bridge disabled>tailscale status</button>
+              <button type="button" data-example="tailscale version" data-requires-bridge disabled>tailscale version</button>
+              <button type="button" data-example="tailscale netcheck" data-requires-bridge disabled>tailscale netcheck</button>
+              <button type="button" data-example="tailscaled --version" data-requires-bridge disabled>tailscaled --version</button>
             </div>
             <div class="command-actions"><button class="text-button" id="clear-command" type="button" data-i18n="command.clear"></button><button class="button primary compact" id="run-command" type="submit" data-i18n="command.run" data-requires-bridge disabled></button></div>
           </form>

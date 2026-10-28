@@ -48,6 +48,23 @@
   }
   const cards = () => [...document.querySelectorAll("#device-list .device-card")];
   const deviceRequests = () => requests().filter((request) => request.action === "devices");
+  const settingsRequests = () => requests().filter((request) => request.action === "settings");
+  const statusRequests = () => requests().filter((request) => request.action === "status");
+  async function applySetting(id, value) {
+    await idle();
+    const control = $(id);
+    if (control.checked === value) {
+      assert(backend().settings[control.dataset.setting] === value);
+      return;
+    }
+    const before = settingsRequests().length;
+    click(id);
+    await until(() => settingsRequests().length > before);
+    await idle();
+    const request = settingsRequests().at(-1);
+    assert(settingsRequests().length === before + 1 && Object.keys(request.settings).join(",") === control.dataset.setting);
+    assert(request.settings[control.dataset.setting] === value && backend().settings[control.dataset.setting] === value && control.checked === value);
+  }
   const binaryRequests = () => requests().filter((request) => request.action.startsWith("binary-"));
   async function checkBinary(mode) {
     fixture.setBinaryMode(mode);
@@ -111,7 +128,7 @@
     const locales = ["zh-CN", "zh-TW", "en"];
     const keys = Object.keys(translations.en).sort();
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
-      "exit-lan-description", "settings-hint", "save-settings", "run-command", "command-output",
+      "exit-lan-description", "settings-hint", "run-command", "command-output",
       "devices-message", "console-label", "about-description", "login-label", "binary-check-label", "binary-update-label", "binary-message"]);
 
     await test("bridge-is-fixture", () => {
@@ -194,32 +211,124 @@
       assert(requests().at(-1).action === "down" && backend().state === "Stopped");
     });
 
-    await test("language-keeps-edits-and-save-is-masked", async () => {
+    await test("settings-apply-immediately-with-single-field-masks", async () => {
       fixture.setState("Running");
       fixture.setAcceptRoutes(false);
-      await refresh();
+      await language($("language").value);
       click("tab-settings");
-      const before = backend().settings.shieldsUp;
-      click("shields-up");
-      assert(!$("save-settings").disabled);
+      const original = backend().settings;
+      const controls = [...document.querySelectorAll("[data-setting]")];
+      const before = settingsRequests().length;
+      const globalNotice = notice();
+      try {
+        fixture.holdNextSettings();
+        click("shields-up");
+        await until(() => settingsRequests().length === before + 1);
+        assert($("main").getAttribute("aria-busy") === "true" && controls.every((control) => control.disabled));
+        assert($("shields-up").checked === !original.shieldsUp && $("settings-hint").textContent === ShellscaledI18n.t("settings.applying"));
+        for (const control of controls) {
+          control.click();
+          control.checked = !control.checked;
+          control.dispatchEvent(new Event("change", { bubbles: true }));
+          assert(control.checked === (control.dataset.setting === "shieldsUp" ? !original.shieldsUp : original[control.dataset.setting]));
+        }
+        document.dispatchEvent(new Event("visibilitychange"));
+        fixture.setAcceptRoutes(true); // A concurrent unrelated native preference edit.
+        await wait(50);
+        assert(settingsRequests().length === before + 1 && $("shields-up").checked === !original.shieldsUp);
+        fixture.releaseSettings();
+        await idle();
+        const request = settingsRequests().at(-1);
+        assert(Object.keys(request.settings).join(",") === "shieldsUp" && request.settings.shieldsUp === !original.shieldsUp);
+        assert(backend().settings.acceptRoutes && backend().settings.shieldsUp === !original.shieldsUp);
+        for (const locale of locales) {
+          await language(locale);
+          assert($("accept-routes").checked && $("shields-up").checked === !original.shieldsUp);
+        }
+        await openDevices(true);
+        assert(settingsRequests().length === before + 1 && notice() === globalNotice);
+        click("tab-settings");
+        await applySetting("accept-routes", original.acceptRoutes);
+        await applySetting("exit-lan", !original.exitNodeAllowLanAccess);
+        await applySetting("exit-lan", original.exitNodeAllowLanAccess);
+        await applySetting("shields-up", original.shieldsUp);
+        assert(!$("save-settings") && $("settings-hint").textContent === ShellscaledI18n.t("settings.automatic"));
+        assert(JSON.stringify(backend().settings) === JSON.stringify(original));
+      } finally {
+        fixture.releaseSettings();
+        await idle();
+        await language($("language").value);
+        for (const control of controls) await applySetting(control.id, original[control.dataset.setting]);
+      }
+    });
+
+    await test("settings-failure-rolls-back-and-serializes-refresh", async () => {
+      await idle();
+      click("tab-settings");
+      const original = backend().settings;
+      const controls = [...document.querySelectorAll("[data-setting]")];
+      const globalNotice = notice();
+      try {
+        const before = settingsRequests().length;
+        const statuses = statusRequests().length;
+        fixture.nextSettingsFails();
+        fixture.holdNextSettings();
+        click("shields-up");
+        await until(() => settingsRequests().length === before + 1);
+        document.dispatchEvent(new Event("visibilitychange"));
+        await wait(50);
+        assert($("shields-up").checked === !original.shieldsUp && controls.every((control) => control.disabled));
+        fixture.releaseSettings();
+        await idle();
+        assert(statusRequests().length > statuses && $("shields-up").checked === original.shieldsUp);
+        assert(JSON.stringify(backend().settings) === JSON.stringify(original));
+        assert($("settings-hint").textContent.includes(ShellscaledI18n.t("settings.failed")) && notice() === globalNotice);
+        await applySetting("shields-up", !original.shieldsUp);
+        assert($("settings-hint").textContent === ShellscaledI18n.t("settings.automatic"));
+
+        fixture.holdNextStatus();
+        const statusCount = statusRequests().length;
+        const settingsCount = settingsRequests().length;
+        const refreshPending = language($("language").value);
+        await until(() => statusRequests().length > statusCount);
+        fixture.setAcceptRoutes(!original.acceptRoutes);
+        for (const control of controls) {
+          assert(control.disabled);
+          control.checked = !control.checked;
+          control.dispatchEvent(new Event("change", { bubbles: true }));
+          assert(control.checked === (control.dataset.setting === "shieldsUp" ? !original.shieldsUp : original[control.dataset.setting]));
+        }
+        assert(settingsRequests().length === settingsCount);
+        fixture.releaseStatus();
+        await refreshPending;
+        await applySetting("shields-up", original.shieldsUp);
+        assert(backend().settings.acceptRoutes === !original.acceptRoutes && $("accept-routes").checked === !original.acceptRoutes);
+      } finally {
+        fixture.releaseSettings();
+        fixture.releaseStatus();
+        await idle();
+        await language($("language").value);
+        for (const control of controls) await applySetting(control.id, original[control.dataset.setting]);
+      }
+    });
+
+    await test("raw-command-examples-and-language-first-settings", async () => {
+      const expected = ["tailscale status", "tailscale version", "tailscale netcheck", "tailscaled --version"].sort();
       for (const locale of locales) {
         await language(locale);
-        assert($("shields-up").checked === !before && !$("save-settings").disabled);
+        click("tab-settings");
+        const firstCard = $("panel-settings").querySelector(".card");
+        assert(firstCard.classList.contains("language-card") && firstCard.contains($("language")));
+        assert(!$("save-settings") && $("settings-hint").textContent === ShellscaledI18n.t("settings.automatic"));
+        click("tab-command");
+        const examples = [...document.querySelectorAll("button[data-example]")];
+        assert(examples.map((button) => button.dataset.example).sort().join("|") === expected.join("|"));
+        for (const button of examples) {
+          assert(button.textContent.trim() === button.dataset.example && !button.hasAttribute("data-i18n"));
+          button.click();
+          assert($("command-input").value === button.dataset.example);
+        }
       }
-      const saves = requests().filter((request) => request.action === "settings").length;
-      await openDevices(true);
-      assert($("shields-up").checked === !before && !$("save-settings").disabled);
-      assert(requests().filter((request) => request.action === "settings").length === saves);
-      fixture.setAcceptRoutes(true); // An unrelated concurrent external preference edit.
-      click("tab-overview");
-      await refresh();
-      click("tab-settings");
-      assert($("accept-routes").checked && $("shields-up").checked === !before);
-      click("save-settings");
-      await idle();
-      const save = requests().filter((request) => request.action === "settings").at(-1);
-      assert(save && Object.keys(save.settings).join(",") === "shieldsUp" && save.settings.shieldsUp === !before);
-      assert(backend().settings.acceptRoutes && $("save-settings").disabled);
     });
 
     await test("device-list-search-and-untrusted-text", async () => {
@@ -382,12 +491,12 @@
       }
     });
 
-    await test("login-without-url-busy-errors-and-unsaved-settings", async () => {
+    await test("login-without-url-busy-errors-and-confirmed-settings", async () => {
       await idle();
       const original = backend();
       const calls = () => requests().filter((request) => request.action === "login");
       const checkbox = document.querySelector('[data-setting="shieldsUp"]');
-      const edited = !original.settings.shieldsUp;
+      const confirmed = original.settings.shieldsUp;
       const viewport = document.querySelector('meta[name="viewport"]');
       const originalViewport = viewport.content;
       const originalOpen = window.open;
@@ -401,8 +510,6 @@
         fixture.setLoginMode("waiting");
         await language($("language").value);
         click("tab-settings");
-        checkbox.checked = edited;
-        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
         click("tab-overview");
         viewport.content = "width=320";
         await until(() => Math.abs(window.innerWidth - 320) <= 2);
@@ -438,7 +545,7 @@
         assert($("login-url").value === "https://example.test/login/generated");
         assert(!$("login-message").hidden && $("login-message").dataset.kind === "info");
         assert($("login-message").textContent === ShellscaledI18n.t("login.opened"));
-        assert(checkbox.checked === edited && !$("save-settings").disabled);
+        assert(checkbox.checked === confirmed && !checkbox.disabled);
         click("tab-overview");
         fixture.setLoginMode("error");
         click("login-tailscale");
@@ -451,7 +558,7 @@
         assert(calls().length === before + 2 && notice() === globalNotice);
         assert(calls().every((request) => Object.keys(request).sort().join(",") === "action,locale"));
         assert(requests().filter((request) => request.action === "settings").length === settingsCalls);
-        assert(checkbox.checked === edited && JSON.stringify(backend().settings) === JSON.stringify(original.settings));
+        assert(checkbox.checked === confirmed && JSON.stringify(backend().settings) === JSON.stringify(original.settings));
         assert(location.href === url && fixture.navigationAttempts() === navigations && opens === 0 && storageIsLanguageOnly());
       } finally {
         fixture.releaseLogin();
@@ -462,8 +569,6 @@
         fixture.setLoginURL(original.loginURL || "");
         fixture.setLoginMode("waiting");
         await language($("language").value);
-        checkbox.checked = original.settings.shieldsUp;
-        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
       }
     });
 
@@ -622,7 +727,7 @@
       assert(notice() === globalNotice);
     });
 
-    await test("binary-channel-saves-without-checking-and-preserves-draft", async () => {
+    await test("binary-channel-saves-without-checking-and-preserves-settings", async () => {
       await idle();
       const original = backend();
       const selected = $("binary-channel");
@@ -633,7 +738,7 @@
       const globalNotice = notice();
       const firstChannelRequest = channelRequests().length;
       const checkbox = document.querySelector('[data-setting="shieldsUp"]');
-      const edited = !original.settings.shieldsUp;
+      const confirmed = original.settings.shieldsUp;
       async function choose(value) {
         assert(!selected.disabled);
         const before = channelRequests().length;
@@ -644,8 +749,6 @@
       }
       assert([...selected.options].map((option) => option.value).filter(Boolean).sort().join(",") === "preview,stable");
       assert(selected.value === original.updateChannel && !$("binary-update").disabled);
-      checkbox.checked = edited;
-      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
       try {
         const before = networkActions();
         fixture.holdNextBinary();
@@ -662,7 +765,7 @@
         assert(!$("binary-update").disabled);
         const revisionChecked = networkActions();
         await language("zh-TW");
-        assert(selected.value === other && checkbox.checked === edited && !$("save-settings").disabled);
+        assert(selected.value === other && checkbox.checked === confirmed && !checkbox.disabled);
         assert(networkActions() === revisionChecked && !$("binary-update").disabled && storageIsLanguageOnly());
 
         await checkBinary("newer");
@@ -674,7 +777,7 @@
         assert(selected.value === other && backend().updateChannel === other);
         assert($("binary-update").disabled && $("binary-latest-row").hidden);
         assert(binaryMessage() && $("binary-message").dataset.kind === "error" && notice() === globalNotice);
-        assert(networkActions() === checked && checkbox.checked === edited && !$("save-settings").disabled);
+        assert(networkActions() === checked && checkbox.checked === confirmed && !checkbox.disabled);
         assert(JSON.stringify(backend().settings) === JSON.stringify(original.settings));
         assert(JSON.stringify(backend().ips) === JSON.stringify(original.ips) && backend().state === original.state);
         assert(requests().filter((request) => request.action === "settings").length === settingsCalls);
@@ -688,8 +791,6 @@
           await choose(original.updateChannel);
           await idle();
         }
-        checkbox.checked = original.settings.shieldsUp;
-        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
       }
     });
 
@@ -722,13 +823,11 @@
       assert(requests().filter((request) => request.action === "settings").length === settingsCalls);
     });
 
-    await test("binary-update-keeps-draft-identity-and-navigation", async () => {
+    await test("binary-update-keeps-settings-identity-and-navigation", async () => {
       await checkBinary("newer");
       const original = backend();
       const checkbox = document.querySelector('[data-setting="shieldsUp"]');
-      const edited = !original.settings.shieldsUp;
-      checkbox.checked = edited;
-      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+      const confirmed = original.settings.shieldsUp;
       const settingsCalls = requests().filter((request) => request.action === "settings").length;
       const globalNotice = notice();
       const url = location.href;
@@ -750,7 +849,7 @@
         await idle();
         assert($("binary-update").disabled && binaryMessage() && notice() === globalNotice);
         assert($("binary-current-version").textContent.includes("1.104.4"));
-        assert(checkbox.checked === edited && !$("save-settings").disabled);
+        assert(checkbox.checked === confirmed && !checkbox.disabled);
         assert(JSON.stringify(backend().settings) === JSON.stringify(original.settings));
         assert(JSON.stringify(backend().ips) === JSON.stringify(original.ips) && backend().state === original.state);
         assert(requests().filter((request) => request.action === "settings").length === settingsCalls);
@@ -761,8 +860,6 @@
         fixture.releaseBinary();
         await idle();
         window.open = originalOpen;
-        checkbox.checked = original.settings.shieldsUp;
-        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
       }
     });
 

@@ -181,3 +181,18 @@ states, invalid destinations, empty URLs, timeout/failure and double-clicks.
 The real authenticated client can verify that a stale login action preserves its
 state without opening a new authorization flow. Screenshots use empty synthetic
 URLs and never an actual authorization token.
+
+
+## Immediate WebUI preferences
+
+Settings puts language first. Each switch submits a single-field masked settings
+RPC immediately, with only that in-flight value displayed optimistically. The
+shared busy state prevents duplicate writes and holds periodic refreshes until
+the request completes. Successful responses replace the confirmed settings; a
+failed or ambiguous response restores the last confirmed UI value and requests
+fresh daemon status before controls become available again. Errors stay beside
+the switches, without a global saved notice or manual save control. Leaving the
+page clears the displayed preferences; returning requests current state.
+
+Command shortcuts show their literal executable and arguments in every locale.
+Only surrounding help, controls and feedback are translated.

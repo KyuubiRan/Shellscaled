@@ -166,10 +166,9 @@ input[type="text"], input[type="search"] { display: block; width: 100%; min-widt
 .switch input:checked + .switch-track::after { transform: translateX(18px); background: var(--accent-text); }
 .switch input:disabled + .switch-track { opacity: .45; }
 .switch input:focus-visible + .switch-track { outline: 3px solid var(--focus); outline-offset: 3px; }
-.save-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 2px 24px; }
-.save-row > span { color: var(--muted); font-size: 11px; }
-.save-row > .button { flex-shrink: 0; }
-.language-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 24px; padding: 17px 19px; }
+.settings-feedback { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 14px 2px 24px; }
+.settings-feedback[data-kind="error"] { color: var(--danger); }
+.language-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 0; margin-bottom: 24px; padding: 17px 19px; }
 .language-card label { min-width: 0; font-size: 14px; font-weight: 650; }
 .language-card select { max-width: 65%; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; color: var(--text); background: var(--surface-muted); font-size: 13px; }
 .language-card select:disabled { opacity: .45; }
@@ -205,4 +204,4 @@ input[type="text"], input[type="search"] { display: block; width: 100%; min-widt
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 380px) { .tab { padding-left: 3px; padding-right: 3px; font-size: 12px; } }
 @media (min-width: 560px) { .app-shell { padding-top: 35px; } .state-card { padding: 30px 27px 19px; } .state-copy h3 { font-size: 31px; } .state-description { font-size: 13px; } .state-meta { font-size: 11px; } .setting-row { padding: 24px 0; } }
-@media (max-width: 340px) { .app-shell { padding-left: 14px; padding-right: 14px; } .state-card { padding-left: 17px; padding-right: 17px; gap: 0 12px; } .state-symbol { width: 46px; height: 46px; } .state-copy h3 { font-size: 24px; } .save-row { align-items: flex-start; } .version { font-size: 10px; } }
+@media (max-width: 340px) { .app-shell { padding-left: 14px; padding-right: 14px; } .state-card { padding-left: 17px; padding-right: 17px; gap: 0 12px; } .state-symbol { width: 46px; height: 46px; } .state-copy h3 { font-size: 24px; } .version { font-size: 10px; } }

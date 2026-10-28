@@ -25,7 +25,7 @@
     card: $("state-card"), title: $("state-title"), description: $("state-description"),
     version: $("version"), service: $("service-status"), freshness: $("freshness"),
     addresses: $("addresses"), connection: $("toggle-connection"), connectionLabel: $("connection-label"),
-    settingsHint: $("settings-hint"), save: $("save-settings"), exitLan: $("exit-lan"),
+    settingsHint: $("settings-hint"), exitLan: $("exit-lan"),
     exitLanDescription: $("exit-lan-description"), language: $("language"),
     loginCard: $("login-card"), loginURL: $("login-url"), login: $("login-tailscale"),
     loginLabel: $("login-label"), loginMessage: $("login-message"), copyLogin: $("copy-login"), command: $("command-input"),
@@ -42,7 +42,7 @@
   };
   const state = {
     available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
-    status: null, settings: null, draft: null, dirtyFields: new Set(),
+    status: null, settings: null, pendingSetting: null, settingsError: null,
     lastUpdated: null, freshness: "waiting", notice: null, output: { kind: "idle" },
     activeTab: "overview", pageActive: true, devices: null, devicesError: null,
     deviceRefreshPending: false, deviceRequestVersion: 0, deviceRenderSignature: null,
@@ -625,19 +625,8 @@
     }
   }
 
-  function pendingSettings() {
-    const patch = {};
-    if (!state.draft) return patch;
-    for (const key of SETTING_KEYS) {
-      if (!state.dirtyFields.has(key)) continue;
-      if (key === "exitNodeAllowLanAccess" && (!state.status || state.status.exitNodeConfigured !== true)) continue;
-      patch[key] = state.draft[key];
-    }
-    return patch;
-  }
-
   function updateControls() {
-    const disabled = !state.available || state.busy;
+    const disabled = !state.available || state.busy || !state.pageActive;
     document.querySelectorAll("[data-requires-bridge]").forEach((control) => {
       control.disabled = disabled;
     });
@@ -658,8 +647,6 @@
     ui.exitLan.disabled = disabled || !state.settings || !exitNodeConfigured;
     ui.exitLanDescription.textContent = t(!state.status ? "settings.exitLanWaiting" :
       exitNodeConfigured ? "settings.exitLanDescription" : "settings.exitLanUnavailable");
-    ui.save.disabled = disabled || !state.settings || Object.keys(pendingSettings()).length === 0;
-    ui.save.textContent = t(state.busyAction === "settings" ? "settings.saving" : "settings.save");
     ui.run.textContent = t(state.busyAction === "command" ? "command.running" : "command.run");
     ui.consoleLabel.textContent = t(state.busyAction === "console" ? "console.opening" : "console.open");
     renderAbout();
@@ -667,8 +654,10 @@
     ui.language.disabled = state.busy;
     ui.language.value = I18n.preference();
     ui.main.setAttribute("aria-busy", state.busy ? "true" : "false");
-    ui.settingsHint.textContent = t(!state.settings ? "settings.unread" :
-      state.dirtyFields.size > 0 ? "settings.unsaved" : "settings.saved");
+    ui.settingsHint.textContent = state.settingsError ? t("settings.failed") + " " + viewText(state.settingsError) :
+      t(!state.settings ? "settings.unread" : state.busyAction === "settings" ? "settings.applying" : "settings.automatic");
+    ui.settingsHint.dataset.kind = state.settingsError ? "error" : "info";
+    ui.settingsHint.setAttribute("role", state.settingsError ? "alert" : "status");
     if (!state.status) ui.description.textContent = state.busy ? t("state.reading") : "";
     renderBinary();
   }
@@ -738,10 +727,11 @@
     return value && typeof value === "object" && SETTING_KEYS.every((key) => typeof value[key] === "boolean");
   }
 
-  function syncDraft() {
-    if (!state.draft) return;
+  function syncSettings() {
     document.querySelectorAll("[data-setting]").forEach((control) => {
-      control.checked = state.draft[control.dataset.setting];
+      const key = control.dataset.setting;
+      control.checked = state.pendingSetting && state.pendingSetting.key === key ? state.pendingSetting.value :
+        Boolean(state.settings && state.settings[key]);
     });
   }
 
@@ -822,7 +812,7 @@
     renderLogin();
   }
 
-  function renderStatus(result, resetDraft = false) {
+  function renderStatus(result) {
     if (!state.pageActive) return;
     if (typeof result.state !== "string" || typeof result.daemonRunning !== "boolean") throw new UIError("error.status");
     state.status = result;
@@ -838,17 +828,7 @@
     state.freshness = "updated";
     if (validSettings(result.settings)) {
       state.settings = Object.fromEntries(SETTING_KEYS.map((key) => [key, result.settings[key]]));
-      if (!state.draft || resetDraft) {
-        state.draft = { ...state.settings };
-        state.dirtyFields.clear();
-      } else {
-        // Synchronize untouched fields without overwriting the user's edits.
-        for (const key of SETTING_KEYS) {
-          if (!state.dirtyFields.has(key)) state.draft[key] = state.settings[key];
-          else if (state.draft[key] === state.settings[key]) state.dirtyFields.delete(key);
-        }
-      }
-      syncDraft();
+      syncSettings();
     }
     renderPresentation();
     updateControls();
@@ -900,12 +880,46 @@
     try {
       const result = requireSuccess(await rpc({ action, ...extra }));
       const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
-      renderStatus(status, action === "settings");
-      if (action === "settings") message("notice.saved");
+      renderStatus(status);
     } catch (error) {
       showError(error);
       markFreshness("verify");
     } finally {
+      finishBusy();
+    }
+  }
+
+  async function applySetting(control) {
+    const key = control.dataset.setting;
+    if (control.disabled || state.busy || !state.available || !state.pageActive || !state.settings ||
+        !SETTING_KEYS.includes(key) || (key === "exitNodeAllowLanAccess" && state.status?.exitNodeConfigured !== true)) {
+      syncSettings();
+      return;
+    }
+    const value = control.checked;
+    if (value === state.settings[key]) return;
+    state.pendingSetting = { key, value };
+    state.settingsError = null;
+    state.busy = true;
+    state.busyAction = "settings";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "settings", settings: { [key]: value } }));
+      const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
+      if (!validSettings(status.settings)) throw new UIError("error.status");
+      state.pendingSetting = null;
+      renderStatus(status);
+    } catch (error) {
+      if (state.pageActive) {
+        state.settingsError = errorView(error);
+        markFreshness("verify");
+        // A timeout can occur after the daemon applied the edit. Re-read its
+        // state rather than leaving an unconfirmed optimistic switch value.
+        state.refreshAfterBusy = true;
+      }
+    } finally {
+      state.pendingSetting = null;
+      syncSettings();
       finishBusy();
     }
   }
@@ -992,7 +1006,7 @@
     renderDevices();
     renderConsoleMessage();
     document.querySelectorAll(".copy-control[data-copy]").forEach(updateCopyFeedback);
-    syncDraft();
+    syncSettings();
     updateControls();
     if (state.busy) state.refreshAfterBusy = true;
     else refresh(false);
@@ -1045,19 +1059,8 @@
   ui.connection.addEventListener("click", () => {
     if (state.status) change(["Running", "Starting"].includes(state.status.state) ? "down" : "up");
   });
-  ui.save.addEventListener("click", () => {
-    const settings = pendingSettings();
-    if (Object.keys(settings).length) change("settings", { settings });
-  });
   document.querySelectorAll("[data-setting]").forEach((control) => {
-    control.addEventListener("change", () => {
-      if (!state.draft || !state.settings) return;
-      const key = control.dataset.setting;
-      state.draft[key] = control.checked;
-      if (state.draft[key] === state.settings[key]) state.dirtyFields.delete(key);
-      else state.dirtyFields.add(key);
-      updateControls();
-    });
+    control.addEventListener("change", () => applySetting(control));
   });
   ui.language.addEventListener("change", () => {
     if (state.busy) {
@@ -1113,6 +1116,10 @@
     state.updateChannel = null;
     state.binaryChannelPending = null;
     state.status = null;
+    state.settings = null;
+    state.pendingSetting = null;
+    state.settingsError = null;
+    syncSettings();
     state.lastUpdated = null;
     state.freshness = "waiting";
     state.addressSignature = null;
@@ -1133,6 +1140,7 @@
     renderNotice();
     renderOutput();
     renderBinary();
+    updateControls();
   });
   window.addEventListener("pageshow", () => {
     if (state.pageActive) return;

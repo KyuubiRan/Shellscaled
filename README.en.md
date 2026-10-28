@@ -49,7 +49,7 @@ Run Tailscale natively on rooted Android without occupying Android’s VPN slot.
 
 After running `su` in `adb shell` or a terminal, use `tailscale` directly. Use `tailscaled` to start, stop, restart or check the service.
 
-Use the module action button in your manager to connect or disconnect. KernelSU users can also open the settings page to manage subnet routes, incoming connections and LAN access when using an exit node.
+Use the module action button in your manager to connect or disconnect. KernelSU users can also open the settings page to manage subnet routes, incoming connections and LAN access when using an exit node. Switch changes take effect immediately.
 
 Tap a local address to copy it. The Devices page lets you search visible devices, check online status and copy names or addresses.
 

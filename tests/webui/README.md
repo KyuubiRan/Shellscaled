@@ -31,8 +31,12 @@ No fixture files enter the module package.
 Coverage includes all translation keys and static DOM text/aria/placeholders in
 Simplified Chinese, Traditional Chinese and English, system-locale propagation,
 language-only storage, one connection button, cancellation while connecting,
-preservation of dirty fields across language switches and device refreshes,
-masked saves alongside an external preference change, text-only command output,
+immediate single-field switch requests, serialized busy interactions, failure
+rollback with a fresh status, and preservation of unrelated external preference
+changes. Delayed status snapshots exercise the same global serialization boundary.
+Confirmed settings survive language switches and device refreshes. Command
+examples display the four literal commands in every language, the language card
+comes first, and manual saving is absent. Coverage also includes text-only output,
 all four tabs in three languages at 320/360 CSS-pixel viewport widths, and removal
 of compatibility/developer copy. The device fixture includes online/offline,
 unnamed, addressless, long-name, dual-stack and HTML-shaped synthetic examples.
@@ -47,10 +51,10 @@ newer operation's pending/disabled state. All synthetic login URLs use
 Binary checks and updates use only the fixture's memory: newer/current versions,
 unsupported manifests, check/update errors, and deliberately held busy responses
 exercise explicit checks, button gating, card-local feedback, and preservation
-of unsaved settings and synthetic identity. Switching tabs or languages does not
+of confirmed settings and synthetic identity. Switching tabs or languages does not
 start a binary check, and the fake update cannot fetch or replace executables.
 Stable/preview selection uses the fake native channel RPC, clears previous check
-results, keeps unsaved edits, and restores the saved selection after an error.
+results, preserves confirmed preferences, and restores the saved selection after an error.
 Changing channel never checks or updates binaries, and does not add localStorage
 keys. A status refresh also preserves an available update with the same Tailscale
 version, as a newer module revision may contain a different binary.
@@ -62,7 +66,7 @@ The existing translation and narrow-layout checks include the new card.
 Two sign-in cases use only synthetic `NeedsLogin` / `NeedsMachineAuth` states
 and `https://example.test/` links. They cover a missing/existing link, copying,
 one parameter-free native sign-in request, held busy responses and duplicate
-clicks, successful status refresh, local failures, preserved unsaved preferences,
+clicks, successful status refresh, local failures, preserved confirmed preferences,
 and a hidden/disabled sign-in panel after connection or while awaiting approval.
 The visible sign-in panel is also checked in all three languages at 320 CSS pixels.
 No case signs out, authenticates, or opens a real account/browser.
@@ -87,7 +91,7 @@ Repeat with `devices`, `settings` and `command` for the other tabs. The device
 page uses three harmless documentation examples, excluding the adversarial test
 strings. This mode still has no
 root, networking, real module access, or test overlay. Omit `screenshot` to run
-the normal twenty-four regression cases again.
+the normal twenty-six regression cases again.
 
 For a sign-in preview, use `--es screenshot login --es locale zh-CN` (the other
 two languages also work). This stays on the overview tab with synthetic
