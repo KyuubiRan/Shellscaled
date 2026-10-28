@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/KernelSU-Modules/tools/main/schemas/module.schema.json
+schemaVersion: 1
+id: shellscaled
+name: Shellscaled
+summary: Run Tailscale natively on rooted Android, with a KernelSU WebUI and offline installation.
+description: README.en.md
+license: BSD-3-Clause
+homepage: https://github.com/KyuubiRan/Shellscaled
+support: https://github.com/KyuubiRan/Shellscaled/issues
+tags: [network, tailscale, vpn]
+authors:
+  - name: KyuubiRan
+    url: https://github.com/KyuubiRan
+compatibility:
+  architectures: [arm64-v8a]

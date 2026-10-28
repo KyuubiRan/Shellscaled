@@ -45,6 +45,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f module.yaml
           python3 -m py_compile scripts/ci-release.py scripts/build.py
           git diff --check
           for script in module/*.sh; do bash -n "$script"; done
@@ -103,6 +104,15 @@ jobs:
           assert info['moduleSourceCommit'] == __import__('subprocess').check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
           assert len(list(Path('dist').glob('*.zip'))) == 1
           PY
+
+      - name: Precheck the package with the KernelSU Modules validator
+        if: steps.prepare.outputs.ready == 'true'
+        uses: KernelSU-Modules/tools/actions/module-release@606016adfbe4c286507ff6cd9bedaa74e1bff108
+        with:
+          zip: dist/Shellscaled-${{ steps.prepare.outputs.version }}-r${{ steps.prepare.outputs.revision }}-arm64.zip
+          tag: ${{ steps.prepare.outputs.tag }}
+          prerelease: ${{ steps.prepare.outputs.channel == 'prerelease' }}
+          dry-run: true
 
       - name: Create an immutable draft release
         if: steps.prepare.outputs.ready == 'true'
@@ -189,6 +199,7 @@ jobs:
           release = json.loads(Path('.work/ci/draft-assets.json').read_text())
           assert release['draft'] is True
           assets = {a['name']: a for a in release['assets']}
+          assert len([name for name in assets if name.lower().endswith('.zip')]) == 1, 'KernelSU Modules requires exactly one module ZIP'
           for path in Path('dist').iterdir():
               if path.is_file():
                   expected = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
@@ -208,6 +219,14 @@ jobs:
           else
             gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
           fi
+          # GitHub may take a moment to expose the lock after publication.
+          for attempt in 1 2 3 4; do
+            immutable=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .immutable)
+            if [ "$immutable" = true ]; then exit 0; fi
+            if [ "$attempt" -lt 4 ]; then sleep 2; fi
+          done
+          echo '::error::Release is not immutable. Enable release immutability in repository settings, then publish a new revision for KernelSU Modules.'
+          exit 1
 
       - name: Remove only this run's incomplete draft
         if: failure() && steps.draft.outputs.created == 'true'
