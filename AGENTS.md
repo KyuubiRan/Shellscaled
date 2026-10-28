@@ -8,6 +8,7 @@ Shellscaled runs Tailscale on rooted Android through a native TUN, without using
 - `tailscale/` is the source dependency, tracked as a private submodule. Commit and push its source before publishing a parent commit that references it. Keep the submodule's tracked release branch as `main`.
 - Read the module version from `tailscale/VERSION.txt`. Module revisions affect `versionCode` without inventing an unrelated Tailscale version.
 - Preserve upstream BSD notices and Tailscale's license and patents notice in distributed packages.
+- Use `KyuubiRan` for the module author. Keep Git author, committer, and signing identity inherited from the owner's local Git configuration; do not anonymize or replace them with the module label.
 
 ## Build and storage
 

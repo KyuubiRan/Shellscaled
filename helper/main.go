@@ -1,4 +1,4 @@
-// Copyright (c) Shellscaled contributors
+// Copyright (c) 2026 KyuubiRan
 // SPDX-License-Identifier: BSD-3-Clause
 package main
 
