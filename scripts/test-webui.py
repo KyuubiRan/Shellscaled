@@ -64,7 +64,8 @@ def main():
             else:
                 desc = shell("cat /data/adb/modules/shellscaled/module.prop")
             assert desc.returncode == 0
-            assert ("已连接" if state == "Running" else "已断开") in desc.stdout
+            labels = ("已连接", "已連線", "Connected") if state == "Running" else ("已断开", "已中斷連線", "Disconnected")
+            assert any(label in desc.stdout for label in labels)
         print("PASS: up/down preserves preferences and immediately updates module description")
         for expected in ["Stopped", "Running"]:
             assert shell("/data/adb/modules/shellscaled/action.sh").returncode == 0
@@ -72,6 +73,15 @@ def main():
         print("PASS: module card action toggles down/up")
         assert success("status").get("ips", []) == baseline_ips
         print("PASS: account identity preserved")
+        original_locale = shell("cat /data/adb/shellscaled/ui.locale 2>/dev/null").stdout.strip() or "system"
+        try:
+            for locale, expected in [("zh-CN", "请选择"), ("zh-TW", "請選擇"), ("en", "Choose")]:
+                assert expected in rpc("settings", settings={}, locale=locale).get("error", "")
+                assert shell("cat /data/adb/shellscaled/ui.locale").stdout.strip() == locale
+            assert not rpc("status", locale="../../other").get("ok")
+        finally:
+            success("status", locale=original_locale)
+        print("PASS: all three native locales and language preference restoration")
     finally:
         restored = success("settings", settings={"acceptRoutes": saved["acceptRoutes"], "shieldsUp": saved["shieldsUp"]})
         if restored["exitNodeConfigured"]:

@@ -3,5 +3,5 @@ name=Shellscaled
 version=@VERSION@
 versionCode=@VERSION_CODE@
 author=KyuubiRan
-description=Tailscale for rooted Android, without Android VpnService. Manage with /data/adb/modules/shellscaled/ctl.sh.
+description=Tailscale for Android
 architecture=@ARCH@

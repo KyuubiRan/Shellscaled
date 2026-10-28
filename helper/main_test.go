@@ -33,12 +33,12 @@ func TestCommandBoundary(t *testing.T) {
 
 func TestRPCRejectsUnknownOrMixedRequests(t *testing.T) {
 	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	for _, raw := range []string{`{"action":"status"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`} {
+	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`} {
 		if _, err := decodeRequest(encode(raw)); err != nil {
 			t.Errorf("valid request rejected: %v", err)
 		}
 	}
-	for _, raw := range []string{`{"action":"exec","command":"id"}`, `{"action":"status","command":"id"}`, `{"action":"settings","settings":{"acceptDNS":true}}`, `{"action":"settings"}`, `{"action":"command","command":"tailscale status","settings":{"shieldsUp":true}}`, `{"action":"status","env":{"PATH":"/evil"}}`, `{"action":"status"} {"action":"up"}`, `null`, `[]`} {
+	for _, raw := range []string{`{"action":"exec","command":"id"}`, `{"action":"status","locale":"../../other"}`, `{"action":"status","locale":"fr"}`, `{"action":"status","command":"id"}`, `{"action":"settings","settings":{"acceptDNS":true}}`, `{"action":"settings"}`, `{"action":"command","command":"tailscale status","settings":{"shieldsUp":true}}`, `{"action":"status","env":{"PATH":"/evil"}}`, `{"action":"status"} {"action":"up"}`, `null`, `[]`} {
 		if _, err := decodeRequest(encode(raw)); err == nil {
 			t.Errorf("invalid request accepted: %s", raw)
 		}
@@ -47,6 +47,33 @@ func TestRPCRejectsUnknownOrMixedRequests(t *testing.T) {
 		if _, err := decodeRequest(value); err == nil {
 			t.Error("bad encoding accepted")
 		}
+	}
+}
+
+func TestApplicationLocales(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{{"zh-CN", "zh-CN"}, {"zh-Hans-SG", "zh-CN"}, {"zh_Hant_HK", "zh-TW"}, {"zh-TW", "zh-TW"}, {"en-GB", "en"}, {"de-DE", "en"}} {
+		if got := normalizeLocale(tc.input); got != tc.want {
+			t.Errorf("normalizeLocale(%q) = %q", tc.input, got)
+		}
+	}
+	for _, locale := range []string{"zh-CN", "zh-TW", "en"} {
+		for key, values := range messages {
+			if values[0] == "" || values[1] == "" || values[2] == "" || tr(key, locale) == "" {
+				t.Errorf("missing translation for %q", key)
+			}
+		}
+		if description("Running", locale) == description("Stopped", locale) {
+			t.Error("connection descriptions must distinguish up and down")
+		}
+		if !strings.Contains(localizedError("未开放参数 --socket", locale), "--socket") {
+			t.Error("unsupported option must remain identifiable")
+		}
+		if strings.Contains(localizedError("LocalAPI 500: private-marker", locale), "private-marker") {
+			t.Error("raw service error leaked into user-facing message")
+		}
+	}
+	if stateLabel("Running", "en") != "Connected" || stateLabel("Running", "zh-TW") != "已連線" {
+		t.Error("wrong translated state label")
 	}
 }
 

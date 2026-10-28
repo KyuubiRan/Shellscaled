@@ -1,62 +1,49 @@
-/* Shellscaled WebUI. Uses KernelSU's documented exec(command, options, callback)
- * interface: https://github.com/tiann/KernelSU/tree/main/js
- * This narrow adapter is implemented here; the KernelSU SDK is not vendored.
+/* Implements KernelSU's documented exec(command, options, callback) API.
+ * https://github.com/tiann/KernelSU/tree/main/js
+ * No KernelSU SDK code is vendored.
  */
 "use strict";
 
 (() => {
+  const I18n = window.ShellscaledI18n;
+  const t = I18n.t;
   const RPC_COMMAND = "/data/adb/modules/shellscaled/bin/shellscaled-web rpc ";
   const RPC_TIMEOUT_MS = 60000;
   const MAX_COMMAND_LENGTH = 2048;
   const MAX_OUTPUT_LENGTH = 100000;
   const SETTING_KEYS = ["acceptRoutes", "shieldsUp", "exitNodeAllowLanAccess"];
-  const STATES = {
-    Running: { title: "已连接", description: "Tailscale 已连接到你的 tailnet。", tone: "success" },
-    Stopped: { title: "已断开", description: "后台服务已运行，Tailscale 当前未连接。", tone: "neutral" },
-    NeedsLogin: { title: "需要登录", description: "此设备需要完成账号授权。", tone: "warning" },
-    NeedsMachineAuth: { title: "等待批准", description: "请在 Tailscale 管理后台批准此设备。", tone: "warning" },
-    ServiceStopped: { title: "服务未启动", description: "Tailscale 的后台服务当前未运行。", tone: "neutral" },
-    ServiceError: { title: "后台未响应", description: "无法读取后台状态，请稍后刷新或查看模块日志。", tone: "warning" },
-    Starting: { title: "正在连接", description: "Tailscale 正在建立连接，请稍候。", tone: "neutral" },
-    NoState: { title: "尚未就绪", description: "等待后台服务提供连接状态。", tone: "neutral" },
+  const STATE_TONES = {
+    Running: "success", Stopped: "neutral", NeedsLogin: "warning",
+    NeedsMachineAuth: "warning", ServiceStopped: "neutral", ServiceError: "warning",
+    Starting: "neutral", NoState: "neutral",
   };
   const $ = (id) => document.getElementById(id);
   const ui = {
-    main: $("main"),
-    notice: $("notice"),
-    preview: $("preview-notice"),
-    card: $("state-card"),
-    title: $("state-title"),
-    description: $("state-description"),
-    version: $("version"),
-    service: $("service-status"),
-    freshness: $("freshness"),
-    addresses: $("addresses"),
-    connect: $("connect"),
-    connectLabel: $("connect-label"),
-    disconnect: $("disconnect"),
-    settingsHint: $("settings-hint"),
-    save: $("save-settings"),
-    exitLan: $("exit-lan"),
-    exitLanDescription: $("exit-lan-description"),
-    loginCard: $("login-card"),
-    loginURL: $("login-url"),
-    command: $("command-input"),
-    output: $("command-output"),
-    exit: $("command-exit"),
-    run: $("run-command"),
+    main: $("main"), notice: $("notice"), preview: $("preview-notice"),
+    card: $("state-card"), title: $("state-title"), description: $("state-description"),
+    version: $("version"), service: $("service-status"), freshness: $("freshness"),
+    addresses: $("addresses"), connection: $("toggle-connection"), connectionLabel: $("connection-label"),
+    settingsHint: $("settings-hint"), save: $("save-settings"), exitLan: $("exit-lan"),
+    exitLanDescription: $("exit-lan-description"), language: $("language"),
+    loginCard: $("login-card"), loginURL: $("login-url"), command: $("command-input"),
+    output: $("command-output"), exit: $("command-exit"), run: $("run-command"),
   };
   const state = {
-    available: trustedEnvironment(),
-    busy: false,
-    busyAction: "",
-    status: null,
-    settings: null,
-    draft: null,
-    dirtyFields: new Set(),
-    noticeSource: "",
+    available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
+    status: null, settings: null, draft: null, dirtyFields: new Set(),
+    lastUpdated: null, freshness: "waiting", notice: null, output: { kind: "idle" },
   };
   let callbackSequence = 0;
+
+  class UIError extends Error {
+    constructor(key, values = {}) {
+      super(t(key, values));
+      this.key = key;
+      this.values = values;
+    }
+  }
+
+  class NativeError extends Error {}
 
   function trustedEnvironment() {
     try {
@@ -69,16 +56,32 @@
     }
   }
 
-  function message(text, kind = "info", source = "operation") {
-    ui.notice.textContent = text;
-    ui.notice.dataset.kind = kind;
-    ui.notice.hidden = !text;
-    ui.notice.setAttribute("role", kind === "error" ? "alert" : "status");
-    state.noticeSource = source;
+  function errorView(error) {
+    if (error instanceof UIError) return { key: error.key, values: error.values };
+    if (error instanceof NativeError) return { raw: error.message, locale: I18n.locale() };
+    return { key: "error.unknown" };
   }
 
-  function errorText(error) {
-    return error instanceof Error ? error.message : "发生未知错误，请刷新状态后重试。";
+  function viewText(view) {
+    return view.raw !== undefined ? (view.locale === I18n.locale() ? view.raw : t("error.operation")) : t(view.key, view.values);
+  }
+
+  function renderNotice() {
+    const notice = state.notice;
+    ui.notice.textContent = notice ? viewText(notice) : "";
+    ui.notice.dataset.kind = notice ? notice.kind : "info";
+    ui.notice.hidden = !notice;
+    ui.notice.setAttribute("role", notice && notice.kind === "error" ? "alert" : "status");
+  }
+
+  function message(key = "", kind = "info", source = "operation", values = {}) {
+    state.notice = key ? { key, values, kind, source } : null;
+    renderNotice();
+  }
+
+  function showError(error, source = "operation") {
+    state.notice = { ...errorView(error), kind: "error", source };
+    renderNotice();
   }
 
   function pendingSettings() {
@@ -98,24 +101,31 @@
       control.disabled = disabled;
     });
     const current = state.status && state.status.state;
-    ui.connect.disabled = disabled || current === "Running" || current === "Starting";
-    ui.disconnect.disabled = disabled || !state.status || current === "Stopped" || current === "ServiceStopped";
+    const connected = current === "Running";
+    const connecting = state.busyAction === "up" || current === "Starting";
+    ui.connection.disabled = disabled || !state.status;
+    ui.connection.classList.toggle("primary", !connected);
+    ui.connection.classList.toggle("secondary", connected);
+    ui.connection.classList.toggle("is-working", connecting || state.busyAction === "down");
+    ui.connectionLabel.textContent = t(state.busyAction === "down" ? "connection.disconnecting" :
+      state.busyAction === "up" ? "connection.connecting" : current === "Starting" ? "connection.cancel" :
+        connected ? "connection.disconnect" : "connection.connect");
     document.querySelectorAll("[data-setting]").forEach((control) => {
       control.disabled = disabled || !state.settings;
     });
     const exitNodeConfigured = state.status && state.status.exitNodeConfigured === true;
     ui.exitLan.disabled = disabled || !state.settings || !exitNodeConfigured;
-    ui.exitLanDescription.textContent = !state.status ? "选择退出节点后可配置局域网访问。" :
-      exitNodeConfigured ? "使用退出节点时，仍可访问当前局域网。" :
-        "请先在命令页选择退出节点，再启用局域网访问。";
+    ui.exitLanDescription.textContent = t(!state.status ? "settings.exitLanWaiting" :
+      exitNodeConfigured ? "settings.exitLanDescription" : "settings.exitLanUnavailable");
     ui.save.disabled = disabled || !state.settings || Object.keys(pendingSettings()).length === 0;
-    ui.save.textContent = state.busyAction === "settings" ? "正在保存…" : "保存设置";
-    ui.run.textContent = state.busyAction === "command" ? "执行中…" : "运行命令";
-    ui.connectLabel.textContent = state.busyAction === "up" ? "正在连接…" : "连接 Tailscale";
-    ui.connect.classList.toggle("is-connecting", state.busyAction === "up");
+    ui.save.textContent = t(state.busyAction === "settings" ? "settings.saving" : "settings.save");
+    ui.run.textContent = t(state.busyAction === "command" ? "command.running" : "command.run");
+    ui.language.disabled = state.busy;
+    ui.language.value = I18n.preference();
     ui.main.setAttribute("aria-busy", state.busy ? "true" : "false");
-    ui.settingsHint.textContent = !state.settings ? "读取当前设置后可修改。" :
-      state.dirtyFields.size > 0 ? "有未保存的设置" : "已与设备设置同步";
+    ui.settingsHint.textContent = t(!state.settings ? "settings.unread" :
+      state.dirtyFields.size > 0 ? "settings.unsaved" : "settings.saved");
+    if (!state.status) ui.description.textContent = state.busy ? t("state.reading") : "";
   }
 
   function encodeRequest(payload) {
@@ -123,17 +133,15 @@
     let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
     const encoded = btoa(binary);
-    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error("无法编码本地请求。");
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new UIError("error.encode");
     return encoded;
   }
 
   function rpc(payload) {
-    if (!state.available || !trustedEnvironment()) {
-      return Promise.reject(new Error("当前为只读预览，请从 KernelSU 模块页面打开设置。"));
-    }
-    // Only the constant executable, its constant 'rpc' verb and base64 are
-    // passed to the root shell. User text is data parsed by the native bridge.
-    const command = RPC_COMMAND + encodeRequest(payload);
+    if (!state.available || !trustedEnvironment()) return Promise.reject(new UIError("error.preview"));
+    // User text stays inside JSON data; only base64 enters this fixed command.
+    // Keep 'system' as a preference so the native module card also follows Android.
+    const command = RPC_COMMAND + encodeRequest({ ...payload, locale: I18n.preference() });
     const callbackName = "shellscaled_rpc_" + Date.now() + "_" + (++callbackSequence);
     return new Promise((resolve, reject) => {
       const cleanup = () => {
@@ -142,26 +150,23 @@
       };
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("设备响应超时。操作可能已执行，请先刷新状态；请求不会自动重试。"));
+        // A timed-out mutation may already have run. Never automatically resend it.
+        reject(new UIError("error.timeout"));
       }, RPC_TIMEOUT_MS);
       window[callbackName] = (errno, stdout, stderr) => {
         cleanup();
         try {
-          if (typeof stdout !== "string" || stdout.length > 1500000) {
-            throw new Error("设备返回了无法识别的响应。");
-          }
+          if (typeof stdout !== "string" || stdout.length > 1500000) throw new UIError("error.response");
           let result;
           try {
             result = JSON.parse(stdout.trim());
           } catch (_) {
-            throw new Error(Number(errno) !== 0 ? "本地控制程序未能运行，请检查模块安装。" : "设备响应格式无效，请检查模块版本。");
+            throw new UIError(Number(errno) !== 0 ? "error.unavailable" : "error.response");
           }
           if (!result || typeof result !== "object" || Array.isArray(result) || typeof result.ok !== "boolean") {
-            throw new Error("设备响应格式无效，请检查模块版本。");
+            throw new UIError("error.response");
           }
-          if (Number(errno) !== 0 && result.ok) {
-            throw new Error("本地控制程序异常退出，请刷新状态后重试。");
-          }
+          if (Number(errno) !== 0 && result.ok) throw new UIError("error.unexpectedExit");
           resolve(result);
         } catch (error) {
           reject(error);
@@ -171,13 +176,16 @@
         window.ksu.exec(command, "{}", callbackName);
       } catch (_) {
         cleanup();
-        reject(new Error("无法调用 KernelSU 本地接口，请重新打开模块设置。"));
+        reject(new UIError("error.bridge"));
       }
     });
   }
 
   function requireSuccess(result) {
-    if (!result.ok) throw new Error(typeof result.error === "string" ? result.error.slice(0, 2000) : "设备未能完成操作，请刷新状态后检查。");
+    if (!result.ok) {
+      if (typeof result.error === "string" && result.error) throw new NativeError(result.error.slice(0, 2000));
+      throw new UIError("error.operation");
+    }
     return result;
   }
 
@@ -202,20 +210,31 @@
     }
   }
 
-  function renderStatus(result, resetDraft = false) {
-    if (typeof result.state !== "string" || typeof result.daemonRunning !== "boolean") {
-      throw new Error("设备没有返回完整的状态，请刷新后重试。");
+  function renderFreshness() {
+    const values = state.lastUpdated ? {
+      time: new Intl.DateTimeFormat(I18n.locale(), { hour: "2-digit", minute: "2-digit" }).format(state.lastUpdated),
+    } : {};
+    ui.freshness.textContent = t("freshness." + state.freshness, values);
+  }
+
+  function renderPresentation() {
+    const result = state.status;
+    if (result) {
+      const name = Object.prototype.hasOwnProperty.call(STATE_TONES, result.state) ? result.state : "NoState";
+      ui.title.textContent = t("state." + name + ".title");
+      ui.description.textContent = t("state." + name + ".description");
+      ui.card.dataset.tone = STATE_TONES[name];
+      ui.version.textContent = typeof result.version === "string" ? "v" + result.version.replace(/^v/, "").slice(0, 30) : "—";
+      ui.service.textContent = t(result.daemonRunning ? "service.running" : "service.stopped");
+    } else {
+      ui.title.textContent = t("state.unread");
+      ui.description.textContent = state.busy ? t("state.reading") : "";
+      ui.service.textContent = t("service.unread");
     }
-    state.status = result;
-    const view = STATES[result.state] || { title: "等待连接", description: "后台服务正在准备，请稍后刷新状态。", tone: "neutral" };
-    ui.title.textContent = view.title;
-    ui.description.textContent = view.description;
-    ui.card.dataset.tone = view.tone;
-    ui.version.textContent = typeof result.version === "string" ? "v" + result.version.replace(/^v/, "").slice(0, 30) : "—";
-    ui.service.textContent = "后台服务 · " + (result.daemonRunning ? "运行中" : "已停止");
-    ui.freshness.textContent = "更新于 " + new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+    renderFreshness();
     ui.addresses.replaceChildren();
-    const ips = Array.isArray(result.ips) ? result.ips.filter((ip) => typeof ip === "string" && ip.length <= 80).slice(0, 4) : [];
+    const ips = result && Array.isArray(result.ips) ?
+      result.ips.filter((ip) => typeof ip === "string" && ip.length <= 80).slice(0, 4) : [];
     if (ips.length) {
       for (const ip of ips) {
         const address = document.createElement("span");
@@ -226,46 +245,66 @@
     } else {
       const empty = document.createElement("p");
       empty.className = "empty-copy";
-      empty.textContent = "当前没有 Tailscale IP。";
+      empty.textContent = t(result ? "overview.addressEmpty" : "overview.addressWaiting");
       ui.addresses.appendChild(empty);
     }
-    const loginURL = safeLoginURL(result.loginURL);
+    const loginURL = safeLoginURL(result && result.loginURL);
     ui.loginURL.value = loginURL;
     ui.loginCard.hidden = !loginURL;
-    if (result.daemonRunning && validSettings(result.settings)) {
+  }
+
+  function renderStatus(result, resetDraft = false) {
+    if (typeof result.state !== "string" || typeof result.daemonRunning !== "boolean") throw new UIError("error.status");
+    state.status = result;
+    state.lastUpdated = new Date();
+    state.freshness = "updated";
+    if (validSettings(result.settings)) {
       state.settings = Object.fromEntries(SETTING_KEYS.map((key) => [key, result.settings[key]]));
       if (!state.draft || resetDraft) {
         state.draft = { ...state.settings };
         state.dirtyFields.clear();
       } else {
-        // Preserve only fields explicitly edited in this page. An external
-        // command or another client may have changed every other preference.
+        // Synchronize untouched fields without overwriting the user's edits.
         for (const key of SETTING_KEYS) {
           if (!state.dirtyFields.has(key)) state.draft[key] = state.settings[key];
           else if (state.draft[key] === state.settings[key]) state.dirtyFields.delete(key);
         }
       }
       syncDraft();
-    } else {
-      state.settings = null;
     }
+    renderPresentation();
     updateControls();
+  }
+
+  function markFreshness(kind) {
+    state.freshness = kind;
+    renderFreshness();
+  }
+
+  function finishBusy() {
+    state.busy = false;
+    state.busyAction = "";
+    updateControls();
+    if (state.refreshAfterBusy) {
+      state.refreshAfterBusy = false;
+      refresh(false);
+    }
   }
 
   async function refresh(manual = false) {
     if (state.busy || !state.available) return;
     state.busy = true;
+    state.busyAction = "status";
     updateControls();
     try {
       renderStatus(requireSuccess(await rpc({ action: "status" })));
-      if (manual) message("状态已更新。", "info", "status");
-      else if (state.noticeSource === "status") message("", "info", "status");
+      if (manual) message("notice.updated", "info", "status");
+      else if (state.notice && state.notice.source === "status") message("");
     } catch (error) {
-      ui.freshness.textContent = "状态可能已过期";
-      message(errorText(error), "error", "status");
+      markFreshness("stale");
+      showError(error, "status");
     } finally {
-      state.busy = false;
-      updateControls();
+      finishBusy();
     }
   }
 
@@ -279,24 +318,50 @@
       const result = requireSuccess(await rpc({ action, ...extra }));
       const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
       renderStatus(status, action === "settings");
-      if (action === "settings") message("设置已保存。", "info");
-      else if (action === "down") message("Tailscale 已断开。", "info");
-      else if (status.state === "NeedsLogin") message("需要完成账号授权，请按页面提示登录。", "warning");
-      else message(status.state === "Running" ? "Tailscale 已连接。" : "连接请求已提交，请稍候刷新状态。", "info");
+      if (action === "settings") message("notice.saved");
+      else if (action === "down") message("notice.disconnected");
+      else if (status.state === "NeedsLogin") message("notice.login", "warning");
+      else message(status.state === "Running" ? "notice.connected" : "notice.connecting");
     } catch (error) {
-      message(errorText(error), "error");
-      ui.freshness.textContent = "请刷新确认设备状态";
+      showError(error);
+      markFreshness("verify");
     } finally {
-      state.busy = false;
-      state.busyAction = "";
-      updateControls();
+      finishBusy();
     }
   }
 
   function clippedOutput(value) {
     if (typeof value !== "string") return "";
     if (value.length <= MAX_OUTPUT_LENGTH) return value;
-    return value.slice(0, MAX_OUTPUT_LENGTH) + "\n\n[页面仅显示前 " + MAX_OUTPUT_LENGTH + " 个字符]";
+    const count = new Intl.NumberFormat(I18n.locale()).format(MAX_OUTPUT_LENGTH);
+    return value.slice(0, MAX_OUTPUT_LENGTH) + "\n\n" + t("command.clipped", { count });
+  }
+
+  function renderOutput() {
+    const output = state.output;
+    ui.exit.hidden = output.kind !== "result";
+    if (output.kind === "idle") {
+      ui.output.textContent = t("command.waiting");
+    } else if (output.kind === "running") {
+      ui.output.textContent = t("command.running");
+    } else if (output.kind === "error") {
+      ui.output.textContent = viewText(output.error);
+    } else {
+      const result = output.result;
+      const stdout = clippedOutput(result.stdout);
+      const stderr = clippedOutput(result.stderr);
+      const chunks = [];
+      if (stdout) chunks.push(stdout);
+      if (stderr) chunks.push((stdout ? "\n" + t("command.errorOutput") + "\n" : "") + stderr);
+      if (typeof result.error === "string" && result.error) {
+        chunks.push("\n" + (output.locale === I18n.locale() ? result.error.slice(0, 2000) : t("error.operation")));
+      }
+      if (result.truncated) chunks.push("\n" + t("command.truncated"));
+      ui.output.textContent = chunks.join("\n").trim() || t(result.ok ? "command.empty" : "command.incomplete");
+      const exitCode = Number.isInteger(result.exitCode) ? result.exitCode : null;
+      ui.exit.textContent = exitCode === null ? t(result.ok ? "command.complete" : "command.rejected") : t("command.exitCode", { code: exitCode });
+      ui.exit.dataset.tone = result.ok && (exitCode === null || exitCode === 0) ? "success" : "error";
+    }
   }
 
   async function runCommand(event) {
@@ -304,46 +369,48 @@
     if (state.busy || !state.available) return;
     const command = ui.command.value.trim();
     if (!command || command.length > MAX_COMMAND_LENGTH || !/^(tailscale|tailscaled)(?:\s|$)/.test(command)) {
-      message("请输入以 tailscale 或 tailscaled 开头的命令。", "error");
+      message("error.command", "error");
       ui.command.focus();
       return;
     }
-    // This is a usability check, not the permission boundary. The native
-    // executable independently tokenizes and validates every command/flag.
+    // Native validation is the permission boundary; this is only an input hint.
     state.busy = true;
     state.busyAction = "command";
-    ui.output.textContent = "正在执行…";
-    ui.exit.hidden = true;
+    state.output = { kind: "running" };
+    renderOutput();
     message("");
     updateControls();
     try {
       const result = await rpc({ action: "command", command });
-      const stdout = clippedOutput(result.stdout);
-      const stderr = clippedOutput(result.stderr);
-      const chunks = [];
-      if (stdout) chunks.push(stdout);
-      if (stderr) chunks.push((stdout ? "\n标准错误：\n" : "") + stderr);
-      if (typeof result.error === "string" && result.error) chunks.push("\n" + result.error.slice(0, 2000));
-      if (result.truncated) chunks.push("\n输出达到限额，已截断。");
-      ui.output.textContent = chunks.join("\n").trim() || (result.ok ? "命令已完成，没有输出。" : "命令未完成。");
-      const exitCode = Number.isInteger(result.exitCode) ? result.exitCode : null;
-      ui.exit.textContent = exitCode === null ? (result.ok ? "完成" : "被拒绝") : "退出码 " + exitCode;
-      ui.exit.dataset.tone = result.ok && (exitCode === null || exitCode === 0) ? "success" : "error";
-      ui.exit.hidden = false;
-      if (!result.ok) message("命令未完成，请查看执行结果。", "error");
+      state.output = { kind: "result", result, locale: I18n.locale() };
+      renderOutput();
+      if (!result.ok) message("notice.commandFailed", "error");
       try {
         renderStatus(requireSuccess(await rpc({ action: "status" })));
       } catch (_) {
-        ui.freshness.textContent = "请刷新确认设备状态";
+        markFreshness("verify");
       }
     } catch (error) {
-      ui.output.textContent = errorText(error);
-      message("未获得命令结果，请刷新状态后检查。", "error");
+      state.output = { kind: "error", error: errorView(error) };
+      renderOutput();
+      message("notice.commandUnavailable", "error");
     } finally {
-      state.busy = false;
-      state.busyAction = "";
-      updateControls();
+      finishBusy();
     }
+  }
+
+  function applyLanguage() {
+    I18n.applyDocument();
+    // A previous native error belongs to its original language; request a fresh
+    // status instead of trying to translate arbitrary device text in JavaScript.
+    if (state.notice && state.notice.raw !== undefined) state.notice = null;
+    renderPresentation();
+    renderNotice();
+    renderOutput();
+    syncDraft();
+    updateControls();
+    if (state.busy) state.refreshAfterBusy = true;
+    else refresh(false);
   }
 
   function selectTab(name, focus = false) {
@@ -372,12 +439,12 @@
     });
   });
   $("refresh").addEventListener("click", () => refresh(true));
-  ui.connect.addEventListener("click", () => change("up"));
-  ui.disconnect.addEventListener("click", () => change("down"));
+  ui.connection.addEventListener("click", () => {
+    if (state.status) change(["Running", "Starting"].includes(state.status.state) ? "down" : "up");
+  });
   ui.save.addEventListener("click", () => {
     const settings = pendingSettings();
-    if (Object.keys(settings).length === 0) return;
-    change("settings", { settings });
+    if (Object.keys(settings).length) change("settings", { settings });
   });
   document.querySelectorAll("[data-setting]").forEach((control) => {
     control.addEventListener("change", () => {
@@ -389,6 +456,17 @@
       updateControls();
     });
   });
+  ui.language.addEventListener("change", () => {
+    if (state.busy) {
+      ui.language.value = I18n.preference();
+      return;
+    }
+    I18n.setPreference(ui.language.value);
+    applyLanguage();
+  });
+  window.addEventListener("languagechange", () => {
+    if (I18n.preference() === "system") applyLanguage();
+  });
   document.querySelectorAll("[data-example]").forEach((button) => {
     button.addEventListener("click", () => {
       ui.command.value = button.dataset.example;
@@ -399,24 +477,23 @@
   $("clear-command").addEventListener("click", () => {
     if (state.busyAction === "command") return;
     ui.command.value = "";
-    ui.output.textContent = "等待执行命令。";
-    ui.exit.hidden = true;
+    state.output = { kind: "idle" };
+    renderOutput();
   });
   $("copy-login").addEventListener("click", async () => {
     const value = safeLoginURL(ui.loginURL.value);
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
-      message("授权链接已复制，请在外部浏览器中打开。", "info");
+      message("notice.linkCopied");
     } catch (_) {
       ui.loginURL.focus();
       ui.loginURL.select();
-      message("请长按已选中的授权链接，手动复制。", "warning");
+      message("notice.copyManually", "warning");
     }
   });
 
-  // No navigation is required by this UI. In particular, never open an auth
-  // link or command output inside a WebView that has the root bridge attached.
+  // Keep auth links and arbitrary output out of navigation in this root WebView.
   document.addEventListener("click", (event) => {
     if (event.target instanceof Element && event.target.closest("a")) event.preventDefault();
   }, true);
@@ -427,13 +504,16 @@
   window.addEventListener("pagehide", () => {
     ui.loginURL.value = "";
     ui.command.value = "";
-    ui.output.textContent = "等待执行命令。";
+    state.output = { kind: "idle" };
+    renderOutput();
   });
 
   ui.preview.hidden = state.available;
+  I18n.applyDocument();
+  renderPresentation();
+  renderOutput();
   updateControls();
   if (state.available) {
-    ui.description.textContent = "正在读取本机 Tailscale 状态。";
     refresh(false);
     setInterval(() => {
       if (document.visibilityState === "visible") refresh(false);

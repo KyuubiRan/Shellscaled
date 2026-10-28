@@ -61,3 +61,17 @@ python3 scripts/test-webui.py --manager ksu
 真实 KernelSU WebView 还需手动 / UI 自动化验证：从设置页保留一个未保存开关，通过命令页改变另一个字段，再返回保存；已保存字段和后台改变字段都应保留。不要将完整 status / prefs、登录链接或带账号地址的截图纳入版本库。
 
 切换启动环境前先停止模块、停止测试 VPN 并执行 `sync`，再关闭模拟器。共用同一 AVD 和状态目录，不克隆 AVD，不创建数据备份。测试完应删除一次性负向测试 ZIP、device 临时工具和过期构建产物。
+
+## WebView 与三语言回归
+
+`python3 scripts/build-webui-fixture.py` 使用已有 SDK 构建隔离的测试 APK。
+在模拟器安装并启动 `dev.shellscaled.webuitest/.MainActivity`，读取
+`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=11 fail=0`。
+它在真实 Android WebView 中加载原样资源，使用无 root、无网络权限的
+内存桥验证前端，不访问生产账号或 socket。详见 [夹具说明](../tests/webui/README.md)。
+
+这不能代替真实 KernelSU 桥接验收。生产 helper 的 locale、命令边界与
+状态说明由 `scripts/test-webui.py` 在实际模块上验证。DERP TLS 回归程序为
+`.work/tests/derphttp.test`，交叉编译后在模拟器以
+`-test.run '^TestAndroidDERP' -test.v` 执行，覆盖坏 IPv6 回退、健康 IPv6、
+证书拒绝及调用方 deadline/连接关闭。

@@ -1,6 +1,6 @@
 # 验证记录
 
-日期：2026-10-27～28。运行目标仅为 `Medium_Phone` Android Emulator（ARM64）；未触碰实体设备。Tailscale 源码固定为 `c322e8f5085378be2342f64648382de6dfdd75ad`，版本 1.104.2。
+日期：2026-10-27～28。运行目标仅为 `Medium_Phone` Android Emulator（ARM64）；未触碰实体设备。r2 Tailscale 源码固定为 `961030f6207dd20b67b18f060673a29d0657ee66`，版本 1.104.2。
 
 ## 已观察的环境
 
@@ -56,9 +56,35 @@ Wi-Fi 切换中的备用承载由模拟器内核虚拟网络提供，即便 Andr
 - 修复设置页草稿覆盖其他字段：先保留一个未保存开关，通过命令页改变另一个字段，再返回保存；真实 WebView 验证两者都保留。
 - 账号状态在升级与重启后保持；测试未清除或替换登录状态。
 
+## r2：VPN 存在时重启与界面回归
+
+r1 额外冷启动测试复现：保持全路由 VPN 时重启 daemon，Backend 会恢复
+Running，但同一已验证 peer 的双栈 ICMP/TCP 均失败。排查确认 SO_MARK、
+策略路由、控制登录/Map 正常；已知中继的 IPv6 TCP 可建立但 TLS 不通，
+而 IPv4 TLS 正常。原实现只竞争 TCP，坏 IPv6 在此阶段抢先后阻止了工作
+IPv4 的回退。不能把这归结为账号或直接禁用 IPv6。
+
+Android HTTPS DERP 现竞争完整 TLS 握手，保留证书验证、TCP 超时、父
+context 与失败连接清理，其他平台行为不变。模拟器回归验证：停滞 IPv6
+在约 0.2 秒后回退 IPv4、健康 IPv6 仍能获胜、无效证书拒绝、150 ms 父
+deadline 及连接关闭。真实同一 peer 在无 VPN、全 VPN、VPN 中重启三阶段
+共 15 项 ping / 双栈 ICMP / 普通 TCP 检查通过。
+
+WebUI 删除兼容/开发说明，合并连接按钮并支持取消连接。简中、繁中、
+英文及跟随系统已实现；只存语言偏好。真实 Android WebView 的隔离夹具
+11 项回归通过，覆盖字典/DOM/aria、语言透传、状态切换、取消、草稿保留、
+部分保存、纯文本输出与英文三页布局。原生 helper 五组 Go 测试及真实
+KernelSU 的 19 组命令拒绝、三语言错误/语言恢复/动态说明/账号保留通过。
+
+源码历史已经恢复到真实官方 `v1.104.2`，其上只有五个 Android 补丁提交，
+已验证共同祖先及重放前后 tree 完全相同。保留 r1 源标签以复现既有引用。
+11,427 个上游提交的本地 Git 数据约 58 MB，没有另建源码副本或克隆 AOSP。
+六张 README 图片为模拟器中真实 WebView 渲染的合成示例数据，不含实际
+账号、Tailnet 地址或测试覆盖层。
+
 ## 发布与复现
 
-- 包：`dist/Shellscaled-1.104.2-r1-arm64.zip`，显示版本 `1.104.2`，`versionCode=110400201`。SHA256 见同目录 `.zip.sha256`；构建提交记录在 ZIP 内的 `build-info.json`。
+- 包：`dist/Shellscaled-1.104.2-r2-arm64.zip`，显示版本 `1.104.2`，`versionCode=110400202`。SHA256 见同目录 `.zip.sha256`；构建提交记录在 ZIP 内的 `build-info.json`。
 - 主仓库和 source submodule 使用 `dev` 开发、`main` 发布；源仓库先推送，再推送父仓库引用。仓库保持 private，Actions disabled，编译仅在本机执行。
 - 生命周期、双栈规则与实际 VPN 测试分别验证，不能用构建成功或 FIB 查询替代实际报文测试。复现方式见 [模拟器环境](emulator.md)。
 - 旧构建、暂存载荷和一次性测试工具不逐版本保留。保留单份必要工具链 / 依赖缓存、启动覆盖、源码和最终 ZIP，集中于项目忽略目录。

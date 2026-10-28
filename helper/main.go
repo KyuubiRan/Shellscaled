@@ -40,6 +40,7 @@ type settingsPatch struct {
 
 type request struct {
 	Action   string         `json:"action"`
+	Locale   string         `json:"locale,omitempty"`
 	Command  string         `json:"command,omitempty"`
 	Settings *settingsPatch `json:"settings,omitempty"`
 }
@@ -79,10 +80,11 @@ type localPrefs struct {
 type backend struct {
 	module string
 	client *http.Client
+	locale string
 }
 
 func newBackend(module string) *backend {
-	return &backend{module: module, client: &http.Client{
+	return &backend{module: module, locale: savedLocale(), client: &http.Client{
 		Transport: &http.Transport{DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
 			if address != "local-tailscaled.sock:80" {
 				return nil, errors.New("unexpected LocalAPI address")
@@ -347,7 +349,7 @@ func (b *backend) command(ctx context.Context, text string) response {
 	}
 	if args[0] == "tailscale" && len(args) == 2 && (args[1] == "up" || args[1] == "down" || args[1] == "login") {
 		r := b.connection(ctx, args[1] != "down")
-		r.Stdout = "Backend: " + r.State
+		r.Stdout = stateLabel(r.State, b.locale)
 		if r.LoginURL != "" {
 			r.Stdout += "\n" + r.LoginURL
 		}
@@ -397,6 +399,11 @@ func decodeRequest(encoded string) (request, error) {
 	if d.Decode(&extra) != io.EOF {
 		return r, errors.New("仅允许一个请求")
 	}
+	switch r.Locale {
+	case "", "system", "en", "zh-CN", "zh-TW":
+	default:
+		return r, errors.New("不支持此语言")
+	}
 	switch r.Action {
 	case "status", "up", "down":
 		if r.Command != "" || r.Settings != nil {
@@ -414,19 +421,6 @@ func decodeRequest(encoded string) (request, error) {
 		return r, errors.New("不支持此操作")
 	}
 	return r, nil
-}
-
-func description(state string) string {
-	labels := map[string]string{
-		"Running": "已连接", "Stopped": "已断开", "NeedsLogin": "需要登录",
-		"NeedsMachineAuth": "等待设备授权", "Starting": "连接中", "NoState": "初始化中",
-		"ServiceStopped": "服务停止", "ServiceError": "服务异常",
-	}
-	label := labels[state]
-	if label == "" {
-		label = "状态待刷新"
-	}
-	return "状态：" + label + "。点击“运行”快速连接/断开；WebUI 可设置与诊断。"
 }
 
 func (b *backend) refreshDescription(ctx context.Context) {
@@ -448,7 +442,7 @@ func (b *backend) refreshDescription(ctx context.Context) {
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	// UI polls, action presses and the supervisor run in different processes.
 	// Fetch after acquiring the lock so an earlier poll cannot overwrite a later transition.
-	value := description(b.status(ctx).State)
+	value := description(b.status(ctx).State, savedLocale())
 	boot, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	stamp := "dual-description-v1\n" + string(boot) + value
 	cache := dataDir + "/run/description.cache"
@@ -498,12 +492,12 @@ func (b *backend) refreshDescription(ctx context.Context) {
 func main() {
 	var r response
 	if os.Geteuid() != 0 {
-		_ = json.NewEncoder(os.Stdout).Encode(failed("需要 root 权限"))
+		_ = json.NewEncoder(os.Stdout).Encode(failed(tr("需要 root 权限", savedLocale())))
 		os.Exit(1)
 	}
 	executable, err := os.Executable()
 	if err != nil {
-		_ = json.NewEncoder(os.Stdout).Encode(failed("无法定位模块"))
+		_ = json.NewEncoder(os.Stdout).Encode(failed(tr("无法定位模块", savedLocale())))
 		os.Exit(1)
 	}
 	b := newBackend(filepath.Dir(filepath.Dir(executable)))
@@ -521,6 +515,7 @@ func main() {
 		if err != nil {
 			r = failed(err.Error())
 		} else {
+			b.selectLocale(req.Locale)
 			switch req.Action {
 			case "status":
 				r = b.status(ctx)
@@ -540,14 +535,15 @@ func main() {
 	if r.State != "" {
 		b.refreshDescription(ctx)
 	}
+	r.Error = localizedError(r.Error, b.locale)
 	if len(os.Args) == 2 && os.Args[1] == "toggle" {
 		if r.OK {
-			fmt.Println(description(r.State))
+			fmt.Println(description(r.State, b.locale))
 		} else {
-			fmt.Println("操作失败：" + r.Error)
+			fmt.Println(tr("操作失败", b.locale) + r.Error)
 		}
 		if r.LoginURL != "" {
-			fmt.Println("请在外部浏览器授权：\n" + r.LoginURL)
+			fmt.Println(tr("浏览器授权", b.locale) + "\n" + r.LoginURL)
 		}
 		if !r.OK {
 			os.Exit(1)

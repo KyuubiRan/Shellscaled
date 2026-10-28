@@ -44,4 +44,4 @@ touch "$MODPATH/skip_mount"
 ui_print '- Offline payload and architecture verified.'
 ui_print '- Private state is preserved across upgrades.'
 ui_print '- Installation does not start the daemon. Reboot to activate.'
-ui_print '- CLI: su -c "/data/adb/modules/shellscaled/bin/tailscale login"'
+ui_print '- Tap Run in the module list to connect or disconnect.'

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -8,6 +8,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
     <title>Shellscaled</title>
     <link rel="stylesheet" href="./styles.css">
+    <script src="./i18n.js" defer></script>
     <script src="./app.js" defer></script>
   </head>
   <body>
@@ -17,21 +18,21 @@
           <svg viewBox="0 0 32 32" fill="none"><path d="m12 9-7 7 7 7M20 9l7 7-7 7M18 7l-4 18"/></svg>
         </div>
         <div class="brand-text">
-          <h1>Shellscaled</h1>
-          <p>Tailscale 控制面板</p>
+          <h1 data-i18n="app.name"></h1>
+          <p data-i18n="app.subtitle"></p>
         </div>
         <span class="version" id="version">—</span>
       </header>
 
       <div class="preview-notice" id="preview-notice" hidden>
-        <strong>只读预览</strong>
-        <p>请从 KernelSU 的模块页面打开设置。当前页面不会读取或修改设备。</p>
+        <strong data-i18n="preview.title"></strong>
+        <p data-i18n="preview.description"></p>
       </div>
 
-      <nav class="tabs" role="tablist" aria-label="控制面板">
-        <button class="tab active" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview" type="button">概览</button>
-        <button class="tab" id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings" data-tab="settings" tabindex="-1" type="button">设置</button>
-        <button class="tab" id="tab-command" role="tab" aria-selected="false" aria-controls="panel-command" data-tab="command" tabindex="-1" type="button">命令</button>
+      <nav class="tabs" role="tablist" data-i18n-aria="app.navigation">
+        <button class="tab active" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview" data-i18n="tab.overview" type="button"></button>
+        <button class="tab" id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings" data-tab="settings" data-i18n="tab.settings" tabindex="-1" type="button"></button>
+        <button class="tab" id="tab-command" role="tab" aria-selected="false" aria-controls="panel-command" data-tab="command" data-i18n="tab.command" tabindex="-1" type="button"></button>
       </nav>
 
       <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
@@ -39,8 +40,8 @@
       <main id="main">
         <section class="panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
           <div class="section-heading">
-            <h2>连接状态</h2>
-            <button class="icon-button" id="refresh" type="button" aria-label="刷新状态" data-requires-bridge disabled>
+            <h2 data-i18n="overview.heading"></h2>
+            <button class="icon-button" id="refresh" type="button" data-i18n-aria="overview.refresh" data-requires-bridge disabled>
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 8a7 7 0 0 1 11.6-2L20 9M4 15l2.3 3A7 7 0 0 0 17.9 16"/></svg>
             </button>
           </div>
@@ -48,90 +49,81 @@
           <article class="state-card" id="state-card" data-tone="neutral">
             <div class="state-symbol" aria-hidden="true"><span></span></div>
             <div class="state-copy">
-              <p class="eyebrow">TAILSCALE</p>
-              <h3 id="state-title">尚未读取</h3>
-              <p class="state-description" id="state-description">打开模块设置后读取当前状态。</p>
+              <p class="eyebrow" data-i18n="overview.brand"></p>
+              <h3 id="state-title" data-i18n="state.unread"></h3>
+              <p class="state-description" id="state-description"></p>
             </div>
-            <div class="connection-actions">
-              <button class="button primary" id="connect" type="button" data-requires-bridge disabled><span class="button-spinner" aria-hidden="true"></span><span id="connect-label">连接 Tailscale</span></button>
-              <button class="button secondary" id="disconnect" type="button" data-requires-bridge disabled>断开</button>
-            </div>
-            <div class="state-meta"><span id="service-status">后台服务 · 未读取</span><span id="freshness">等待刷新</span></div>
+            <button class="button primary connection-control" id="toggle-connection" type="button" data-requires-bridge disabled><span class="button-spinner" aria-hidden="true"></span><span id="connection-label" data-i18n="connection.connect"></span></button>
+            <div class="state-meta"><span id="service-status" data-i18n="service.unread"></span><span id="freshness" data-i18n="freshness.waiting"></span></div>
           </article>
 
           <article class="card address-card">
-            <div class="card-heading"><h3>本机地址</h3><span class="small-label">TAILNET IP</span></div>
-            <div class="address-list" id="addresses"><p class="empty-copy">读取状态后显示本机地址。</p></div>
+            <div class="card-heading"><h3 data-i18n="overview.addresses"></h3><span class="small-label" data-i18n="overview.addressType"></span></div>
+            <div class="address-list" id="addresses"><p class="empty-copy" data-i18n="overview.addressWaiting"></p></div>
           </article>
 
           <article class="card login-card" id="login-card" hidden>
-            <div class="card-heading"><h3>完成账号授权</h3><span class="badge warning">需要登录</span></div>
-            <p>复制下面的链接，在外部浏览器中完成授权，再返回刷新状态。</p>
-            <label class="visually-hidden" for="login-url">账号授权链接</label>
+            <div class="card-heading"><h3 data-i18n="login.heading"></h3><span class="badge warning" data-i18n="login.badge"></span></div>
+            <p data-i18n="login.description"></p>
+            <label class="visually-hidden" for="login-url" data-i18n="login.url"></label>
             <input id="login-url" type="text" readonly spellcheck="false" autocomplete="off" autocapitalize="off">
-            <button class="button secondary compact" id="copy-login" type="button">复制授权链接</button>
-            <p class="privacy-note">授权链接仅显示在当前页面，请勿分享。</p>
+            <button class="button secondary compact" id="copy-login" type="button" data-i18n="login.copy"></button>
           </article>
-
-          <div class="info-note">
-            <span class="info-icon" aria-hidden="true">i</span>
-            <p>通过独立网络接口连接 tailnet，保留 Android VPN 与系统 DNS 的控制权。</p>
-          </div>
         </section>
 
         <section class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
-          <div class="section-heading"><h2>常用设置</h2><span class="small-label">立即生效</span></div>
+          <div class="section-heading"><h2 data-i18n="settings.heading"></h2></div>
           <div class="card settings-card">
             <label class="setting-row" for="accept-routes">
-              <span class="setting-copy"><strong>接受子网路由</strong><span>访问 tailnet 中其他设备发布的子网。</span></span>
+              <span class="setting-copy"><strong data-i18n="settings.acceptRoutes"></strong><span data-i18n="settings.acceptRoutesDescription"></span></span>
               <span class="switch"><input id="accept-routes" type="checkbox" role="switch" data-setting="acceptRoutes" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
             </label>
             <label class="setting-row" for="shields-up">
-              <span class="setting-copy"><strong>屏蔽入站连接</strong><span>拒绝其他 tailnet 设备主动发起的连接。</span></span>
+              <span class="setting-copy"><strong data-i18n="settings.shieldsUp"></strong><span data-i18n="settings.shieldsUpDescription"></span></span>
               <span class="switch"><input id="shields-up" type="checkbox" role="switch" data-setting="shieldsUp" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
             </label>
             <label class="setting-row" for="exit-lan">
-              <span class="setting-copy"><strong>退出节点保留局域网</strong><span id="exit-lan-description">选择退出节点后可配置局域网访问。</span></span>
+              <span class="setting-copy"><strong data-i18n="settings.exitLan"></strong><span id="exit-lan-description" data-i18n="settings.exitLanWaiting"></span></span>
               <span class="switch"><input id="exit-lan" type="checkbox" role="switch" data-setting="exitNodeAllowLanAccess" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
             </label>
           </div>
-          <div class="save-row"><span id="settings-hint">读取当前设置后可修改。</span><button class="button primary compact" id="save-settings" type="button" data-requires-bridge disabled>保存设置</button></div>
-          <article class="card compatibility-card">
-            <p class="eyebrow">网络兼容</p>
-            <h3>保持现有 VPN 与 DNS 配置</h3>
-            <p>模块默认关闭 DNS 接管和防火墙管理。这些设置不需要开启 Android 的 VPN 权限。</p>
-          </article>
+          <div class="save-row"><span id="settings-hint" data-i18n="settings.unread"></span><button class="button primary compact" id="save-settings" type="button" data-i18n="settings.save" data-requires-bridge disabled></button></div>
+          <div class="card language-card">
+            <label for="language" data-i18n="language.label"></label>
+            <select id="language" data-i18n-aria="language.label">
+              <option value="system" data-i18n="language.system"></option>
+              <option value="zh-CN" data-i18n="language.zhCN"></option>
+              <option value="zh-TW" data-i18n="language.zhTW"></option>
+              <option value="en" data-i18n="language.en"></option>
+            </select>
+          </div>
         </section>
 
         <section class="panel" id="panel-command" role="tabpanel" aria-labelledby="tab-command" hidden>
-          <div class="section-heading"><h2>受限命令</h2><span class="badge">本机执行</span></div>
-          <p class="section-intro">仅允许 <code>tailscale</code> 与 <code>tailscaled</code> 的受限子命令。其他程序、管道、重定向与命令替换会被拒绝。</p>
+          <div class="section-heading"><h2 data-i18n="command.heading"></h2></div>
           <details class="command-help">
-            <summary>支持的命令与参数格式</summary>
+            <summary data-i18n="command.help"></summary>
             <div>
-              <p><code>tailscale</code> 支持 <code>status / ip / version / netcheck / ping / up / down / set / login</code>，以及 <code>--help / --version</code>。<code>tailscaled</code> 仅支持 <code>--help / --version</code>。</p>
-              <p>参数值使用 <code>--flag=value</code>；不支持引号、变量或换行。<code>ping</code> 最多 5 次，每次最多 5 秒。外部 socket、SSH、文件传输、调试、自更新和外部程序配置均不可用。</p>
-              <p>例如选择退出节点：<code>tailscale set --exit-node=设备名称或IP</code>。</p>
+              <p data-i18n="command.helpCommands"></p>
+              <p data-i18n="command.helpArguments"></p>
+              <p data-i18n="command.helpExitNode"></p>
             </div>
           </details>
           <form class="card command-card" id="command-form" autocomplete="off">
-            <label class="field-label" for="command-input">Tailscale 命令</label>
-            <input id="command-input" class="command-input" type="text" placeholder="tailscale status" maxlength="2048" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" enterkeyhint="go" data-requires-bridge disabled>
-            <div class="command-examples" aria-label="填入常用命令">
-              <button type="button" data-example="tailscale status" data-requires-bridge disabled>status</button>
-              <button type="button" data-example="tailscale version" data-requires-bridge disabled>version</button>
-              <button type="button" data-example="tailscale netcheck" data-requires-bridge disabled>netcheck</button>
-              <button type="button" data-example="tailscaled --version" data-requires-bridge disabled>tailscaled --version</button>
+            <label class="field-label" for="command-input" data-i18n="command.label"></label>
+            <input id="command-input" class="command-input" type="text" data-i18n-placeholder="command.placeholder" maxlength="2048" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" enterkeyhint="go" data-requires-bridge disabled>
+            <div class="command-examples" data-i18n-aria="command.examples">
+              <button type="button" data-example="tailscale status" data-i18n="command.exampleStatus" data-requires-bridge disabled></button>
+              <button type="button" data-example="tailscale version" data-i18n="command.exampleVersion" data-requires-bridge disabled></button>
+              <button type="button" data-example="tailscale netcheck" data-i18n="command.exampleNetcheck" data-requires-bridge disabled></button>
+              <button type="button" data-example="tailscaled --version" data-i18n="command.exampleDaemon" data-requires-bridge disabled></button>
             </div>
-            <div class="command-actions"><button class="text-button" id="clear-command" type="button">清空</button><button class="button primary compact" id="run-command" type="submit" data-requires-bridge disabled>运行命令</button></div>
+            <div class="command-actions"><button class="text-button" id="clear-command" type="button" data-i18n="command.clear"></button><button class="button primary compact" id="run-command" type="submit" data-i18n="command.run" data-requires-bridge disabled></button></div>
           </form>
-          <div class="output-heading"><h3>执行结果</h3><span class="badge" id="command-exit" hidden></span></div>
-          <pre class="command-output" id="command-output" role="log" aria-live="polite" tabindex="0">等待执行命令。</pre>
-          <p class="privacy-note">不保存命令历史。输出可能包含设备和账号信息，请谨慎分享。</p>
+          <div class="output-heading"><h3 data-i18n="command.result"></h3><span class="badge" id="command-exit" hidden></span></div>
+          <pre class="command-output" id="command-output" role="log" aria-live="polite" tabindex="0" data-i18n="command.waiting"></pre>
         </section>
       </main>
-      <footer class="app-footer">Shellscaled · 本地控制</footer>
-      <noscript><p class="notice">此设置页需要 JavaScript。请在 KernelSU 管理器中打开。</p></noscript>
     </div>
   </body>
 </html>
