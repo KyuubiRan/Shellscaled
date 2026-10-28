@@ -14,7 +14,10 @@ def main():
     if not args.serial.startswith("emulator-"):
         parser.error("physical/network devices are forbidden")
     prefix = ["adb", "-s", args.serial]
-    avd = subprocess.check_output(prefix + ["emu", "avd", "name"], text=True).splitlines()
+    try:
+        avd = subprocess.check_output(prefix + ["emu", "avd", "name"], text=True, stderr=subprocess.PIPE, timeout=10).splitlines()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        parser.error("Medium_Phone is unavailable; start the test emulator before issuing adb operations")
     if not avd or avd[0].strip() != "Medium_Phone":
         parser.error("selected emulator is not Medium_Phone")
     command = args.args

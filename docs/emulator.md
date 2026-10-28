@@ -45,6 +45,19 @@ python3 scripts/emulator.py push tests/network-policy.sh /data/local/tmp/shellsc
 python3 scripts/emulator.py shell sh /data/local/tmp/shellscaled-network-policy.sh
 ```
 
-路由合成测试只接受 NeedsLogin 且 table 52 为空的环境，避免覆盖实际账号路由；它不提供报文转发能力。两个 Go 测试程序交叉编译到 `.work/tests` 后推入同一模拟器，以 `-test.run '^TestAndroid' -test.v` 执行，不能在主机执行。
+路由合成测试只接受 NeedsLogin 且 table 52 为空的环境，避免覆盖实际账号路由；它不提供报文转发能力。Go 测试程序交叉编译到 `.work/tests` 后推入同一模拟器，不能在主机执行。Android 路由和用户查询以 `-test.run '^TestAndroid' -test.v` 执行，netmon 使用相应双栈 FIB 测试过滤器。
+
+已经登录后可执行 WebUI 后端验收；它恢复原设置并保持连接，不清除账号：
+
+```sh
+python3 scripts/build-device-tests.py --web-only
+python3 scripts/emulator.py push .work/tests/web-control.test /data/local/tmp/shellscaled-web-control.test
+python3 scripts/emulator.py shell chmod 755 /data/local/tmp/shellscaled-web-control.test
+python3 scripts/emulator.py shell /data/local/tmp/shellscaled-web-control.test -test.v
+python3 scripts/test-webui.py --manager ksu
+# 切换到 Magisk 启动环境后使用 --manager magisk
+```
+
+真实 KernelSU WebView 还需手动 / UI 自动化验证：从设置页保留一个未保存开关，通过命令页改变另一个字段，再返回保存；已保存字段和后台改变字段都应保留。不要将完整 status / prefs、登录链接或带账号地址的截图纳入版本库。
 
 切换启动环境前先停止模块、停止测试 VPN 并执行 `sync`，再关闭模拟器。共用同一 AVD 和状态目录，不克隆 AVD，不创建数据备份。测试完应删除一次性负向测试 ZIP、device 临时工具和过期构建产物。

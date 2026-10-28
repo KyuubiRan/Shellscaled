@@ -2,7 +2,7 @@
 
 在 root Android 上直接运行 Tailscale，不申请 Android `VpnService`。目标是让 Tailnet 与已有 Android VPN 共存，同一离线模块兼容 Magisk 和 KernelSU。
 
-当前开发基线为 **Tailscale 1.104.2**。开发分支为 `dev`，`main` 保留发布基线；完成模拟器验收后才提升发布分支。当前还没有经过登录后连通性验收的正式发布。
+当前版本为 **Tailscale 1.104.2**，模块修订 `r1`。主仓库和私有 Tailscale submodule 均使用 `dev` 开发、`main` 发布；submodule 跟踪发布分支 `main`。
 
 ## 安装与操作
 
@@ -17,6 +17,12 @@ su -c '/data/adb/modules/shellscaled/bin/tailscale ip'
 ```
 
 安装过程不联网、不启动服务、不登录。若旧的 `magisk-tailscaled` 已启用，应先停用并重启，再安装本模块；本模块不会擅自移动旧模块账号状态。
+
+管理器模块列表的“运行”按钮可快速连接 / 断开 Tailnet，保留其他连接设置。模块说明显示当前状态，操作完成后立即更新，后台每约 15 秒刷新；管理器列表可能需要重新进入或下拉刷新。
+
+KernelSU 的 WebUI 提供连接状态、up/down、接收子网路由、屏蔽入站连接和出口节点局域网访问开关。最后一个开关仅在已经选择出口节点时可用。Magisk 使用模块按钮和 CLI，不提供 KernelSU 的原生 WebUI 入口。
+
+WebUI 命令页只接受受限的 `tailscale` / `tailscaled` 命令，由原生程序按参数白名单执行，不经过 shell。支持常用状态、IP、版本、netcheck、有限次数 ping、up/down、login 和部分 set 选项；`tailscaled` 只允许帮助和版本查询。禁止管道、重定向、命令替换、任意 socket / 文件路径、密钥参数、SSH、文件传输、debug、升级及自行启动 daemon。后台输出按纯文本显示，执行时间和输出大小均有限额；这是命令页的限制，KernelSU 自身仍是授予 root 权限的管理器。
 
 默认使用原生 `tailscale0`、`accept-dns=false`、`netfilter-mode=off`。Android 的系统 DNS、Private DNS 与当前 VPN 的 DNS 仍由 Android 管理；暂不提供系统 MagicDNS 接管。此构建关闭 Tailscale SSH 服务端与二进制自更新，更新统一通过模块进行。
 
@@ -51,7 +57,7 @@ GitHub 仓库保持 private，Actions 已禁用，预留工作流不执行编译
 
 ## 验证边界
 
-所有运行测试仅限 `Medium_Phone` 模拟器，使用 `scripts/emulator.py` 校验 AVD 名称后再调用 adb。构建不等于运行验收；登录后还需验证 Tailnet IPv4 / IPv6、VPN 共存、网络重连和重启持久性。
+所有运行测试仅限 `Medium_Phone` 模拟器，使用 `scripts/emulator.py` 校验 AVD 名称后再调用 adb。已经使用实际登录节点验证 Tailnet 双栈 ICMP / TCP，以及全流量黑洞 VpnService 同时启用时 Tailnet 仍可通信、普通互联网流量仍受该 VPN 控制。重启和更新保留账号，KernelSU WebView 中完成了真实操作及草稿保存回归。
 
 测试夹具位于 `tests/vpn`，由 `scripts/build-vpn-fixture.py` 使用已有 Android SDK 编译。它是真正的 Android VpnService，但会主动丢弃所声明路由的流量，仅用于模拟器验证策略路由，不能当作日常 VPN 客户端。
 

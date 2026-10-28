@@ -82,6 +82,12 @@ def main():
         metadata_file.write_text(json.dumps(metadata, indent=2) + "\n")
     elif not binary.exists() or not metadata_file.exists() or json.loads(metadata_file.read_text()) != metadata:
         raise SystemExit("No matching binary for this source commit; run a full build first")
+    helper = binary.parent / "shellscaled-web"
+    helper_env = os.environ.copy()
+    helper_env.update({"GOOS": "android", "GOARCH": args.arch, "CGO_ENABLED": "1", "CC": str(compiler(args.arch)), "GOCACHE": str(cache / "go-build"), "GOMODCACHE": str(cache / "gomod"), "GOTOOLCHAIN": "local"})
+    if args.arch == "arm":
+        helper_env["GOARM"] = "7"
+    run([os.environ.get("SHELLSCALED_GO", "go"), "build", "-trimpath", "-buildvcs=false", "-buildmode=pie", "-ldflags=-s -w -extldflags=-Wl,-z,max-page-size=16384", "-o", str(helper), "."], cwd=ROOT / "helper", env=helper_env)
     stage = WORK / "package" / args.arch
     if stage.exists():
         shutil.rmtree(stage)
@@ -92,11 +98,13 @@ def main():
     template.unlink()
     (stage / "bin").mkdir(exist_ok=True)
     shutil.copy2(binary, stage / "bin/tailscaled")
+    shutil.copy2(helper, stage / "bin/shellscaled-web")
     (stage / "licenses").mkdir(exist_ok=True)
     for filename in ["LICENSE", "PATENTS"]:
         shutil.copyfile(SOURCE / filename, stage / "licenses" / f"tailscale-{filename}")
     shutil.copyfile(ROOT / "LICENSE", stage / "licenses/module-LICENSE")
-    (stage / "build-info.json").write_text(json.dumps({**metadata, "moduleRevision": args.revision, "versionCode": code}, indent=2) + "\n")
+    module_metadata = {"moduleSourceCommit": output(["git", "rev-parse", "HEAD"]), "moduleTreeDirty": bool(output(["git", "status", "--porcelain"]))}
+    (stage / "build-info.json").write_text(json.dumps({**metadata, **module_metadata, "moduleRevision": args.revision, "versionCode": code}, indent=2) + "\n")
     checksums = []
     for path in sorted(stage.rglob("*")):
         if path.is_file() and "META-INF" not in path.relative_to(stage).parts:

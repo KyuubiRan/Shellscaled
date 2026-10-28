@@ -32,4 +32,7 @@ Shellscaled runs Tailscale on rooted Android through a native TUN, without using
 - Preserve persistent account state across updates. Use bounded logs and verified process ownership for service control.
 - Default to `accept-dns=false` and `netfilter-mode=off`. Never silently replace the active Android VPN or take over DNS.
 - Clean up only module-owned processes, interfaces, and policy rules. Avoid global firewall flushes and broad process-name matching.
+- Keep the WebUI command panel limited to the native helper's Tailscale program, subcommand, and flag allowlists. Never pass user input to a shell, expose an unrestricted executor, or load remote scripts in the root WebView.
+- Update only edited settings through masked LocalAPI preferences. Preserve other settings and unsaved edits across status refreshes.
+- Refresh the module's own KernelSU description override and module.prop fallback. Do not infer the active manager from hidden kernel sysfs entries or optional environment variables.
 - Document unsupported or unverified features explicitly. Do not claim VPN coexistence, end-to-end connectivity, or reboot persistence from a build-only check.

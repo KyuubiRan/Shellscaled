@@ -27,8 +27,16 @@ esac
 [ "$sc_payload_arch" = "$sc_device_arch" ] || abort '! This ZIP was built for a different architecture.'
 [ -s "$MODPATH/bin/tailscaled" ] && [ -f "$MODPATH/bin/tailscale" ] || abort '! Missing Tailscale payload.'
 
-set_perm_recursive "$MODPATH" 0 0 0755 0644
-for sc_executable in service.sh action.sh ctl.sh uninstall.sh bin/tailscaled bin/tailscale; do
+# KernelSU sets webroot permissions and context itself. Leave that tree alone.
+for sc_item in "$MODPATH"/*; do
+    [ "${sc_item##*/}" = webroot ] && continue
+    if [ -d "$sc_item" ]; then
+        set_perm_recursive "$sc_item" 0 0 0755 0644
+    else
+        set_perm "$sc_item" 0 0 0644
+    fi
+done
+for sc_executable in service.sh action.sh ctl.sh uninstall.sh bin/tailscaled bin/tailscale bin/shellscaled-web; do
     set_perm "$MODPATH/$sc_executable" 0 0 0755
 done
 touch "$MODPATH/skip_mount"

@@ -36,6 +36,11 @@ sc_log() {
     printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$SC_LOGS/service.log"
 }
 
+sc_refresh_description() {
+    [ -x "$SC_MODDIR/bin/shellscaled-web" ] || return 0
+    timeout 8 "$SC_MODDIR/bin/shellscaled-web" refresh-description >/dev/null 2>&1 || true
+}
+
 # Field 22 is the kernel process start time. Removing '(comm)' first also
 # handles spaces in the process name without matching unrelated processes.
 sc_start_time() {

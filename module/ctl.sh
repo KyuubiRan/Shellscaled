@@ -102,6 +102,7 @@ sc_stop() {
     fi
     rm -f "$SC_SUPERVISOR_PID"
     sc_log 'Service stopped.'
+    sc_refresh_description
     printf 'Shellscaled stopped.\n'
 }
 
@@ -112,6 +113,7 @@ sc_supervise_cleanup() {
         rm -f "$SC_SUPERVISOR_PID"
     fi
     sc_log 'Supervisor exited.'
+    sc_refresh_description
 }
 
 sc_supervise() {
@@ -130,6 +132,7 @@ sc_supervise() {
     trap sc_supervise_cleanup EXIT
     sc_log 'Supervisor started.'
     sc_failures=0
+    sc_description_tick=0
     while ! sc_disabled; do
         if sc_legacy_active; then
             sc_log 'Conflicting magisk-tailscaled module is enabled; stopping.'
@@ -147,6 +150,10 @@ sc_supervise() {
             sleep 5
         fi
         sc_bound_logs
+        if [ "$sc_description_tick" -eq 0 ]; then
+            sc_refresh_description
+        fi
+        sc_description_tick=$(((sc_description_tick + 1) % 5))
         sleep 3
     done
 }
