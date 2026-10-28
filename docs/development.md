@@ -113,6 +113,11 @@ publish steps. It verifies that exactly one ZIP was uploaded and that GitHub
 reports the published release as immutable. SHA256 and JSON sidecars remain
 attached to the same release.
 
+The repository's selected-actions allowlist permits the official validator only
+at `KernelSU-Modules/tools/actions/module-release@606016adfbe4c286507ff6cd9bedaa74e1bff108`.
+When updating that pin, review the upstream change and update the allowlist to
+match; keep the remaining Actions restrictions in place.
+
 Keep `dev` releases marked as Pre-releases. KernelSU Modules currently records
 them for the versionCode high-water mark but offers stable releases in its
 catalog; a subsequent stable release needs a higher module revision. The shared
