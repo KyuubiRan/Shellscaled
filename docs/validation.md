@@ -26,6 +26,31 @@ Taildrop 从零重传保留旧文件尾部这五项问题。
 以上包内与夹具验证不代表真实双节点 Taildrop、VPN 共存、端到端连通或重启持久性。
 依赖 SSH 的双节点 Taildrop 集成 harness 未包含在 `ts_omit_ssh` 测试构建中。
 
+## 2026-10-28 r9 实装升级与重启验收
+
+使用公开 `v1.104.2-r9` ARM64 ZIP，在 `Medium_Phone` 的 KernelSU 3.3.1 /
+4 KiB 环境通过管理器的 `ksud module install` 从 r8 升级。ZIP 摘要与公开资产
+一致，安装器离线校验通过；未改动 SDK 镜像、账号或认证流程。
+
+- 安装到待更新目录时，原 r8 服务继续运行。重启后确认新 boot、r9 元数据、
+  CLI source `0d256a1f0ee5f50362f3315de949b4333aca3de9` 和全部持久 payload
+  与发布 ZIP 一致；安装器脚本按 KernelSU 规则移除，module.prop 描述按运行状态更新。
+- 升级前、安装后、首次重启后、回归后及第二次重启完成服务初始化后，均验证
+  `Running`、可信 supervisor/daemon 和 SELinux `Enforcing`。账号标识、地址、
+  全部非账号偏好、WebUI 开关、更新通道与语言逐项匹配；仅在忽略目录保存临时
+  带随机盐的校验值，验收后清理，未保存原始账号或偏好输出。
+- 生产模块的全局 CLI 在普通 adb shell 的 `su -c` 环境可用，重复启动保持幂等。
+  7 组服务 smoke、5 组控制锁和 10 组 CLI 入口回归通过，包括外部 PID 隔离、
+  崩溃恢复、禁用与待移除控制；测试标记及临时文件已清理。
+- 生产 helper 的认证后验收通过：23 种命令逃逸输入全部拒绝，无副作用；
+  单字段设置、通道、语言、上下线与卡片动作均保持账号并恢复原设置。
+- 再次通过 46 项原生 helper、12 项 Taildrop（34 子测试）、8 项 Android 平台
+  测试及 Android WebView 的 29 项回归。WebView APK 资源与 r9 源码逐字节匹配。
+  夹具 APK 已卸载，模拟器保留已验收的 r9 模块和原账号。
+
+此验收确认当前 KernelSU 环境中的升级与重启持久性；未新增真实双节点 Taildrop、
+VPN 共存、端到端连通或 Magisk 环境的实装验证。
+
 ## 先前验证记录
 
 日期：2026-10-27～28。运行目标仅为 `Medium_Phone` Android Emulator（ARM64）；未触碰实体设备。r2 Tailscale 源码固定为 `961030f6207dd20b67b18f060673a29d0657ee66`，版本 1.104.2。
