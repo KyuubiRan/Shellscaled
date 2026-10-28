@@ -34,7 +34,13 @@ language-only storage, one connection button, cancellation while connecting,
 immediate single-field switch requests, serialized busy interactions, failure
 rollback with a fresh status, and preservation of unrelated external preference
 changes. Delayed status snapshots exercise the same global serialization boundary.
-Confirmed settings survive language switches and device refreshes. Command
+Confirmed settings survive language switches and device refreshes.
+Fault cases also apply a setting before returning an error and then fail status
+reads: all setting switches remain disabled until a valid live preferences
+snapshot arrives, with feedback local to Settings in all three languages.
+Unavailable-service default values and malformed preferences cannot confirm
+the displayed settings. A pending change across pagehide/pageshow likewise
+requires a successful fresh read before another edit is allowed. Command
 examples display the four literal commands in every language, the language card
 comes first, and manual saving is absent. Coverage also includes text-only output,
 all four tabs in three languages at 320/360 CSS-pixel viewport widths, and removal
@@ -91,7 +97,7 @@ Repeat with `devices`, `settings` and `command` for the other tabs. The device
 page uses three harmless documentation examples, excluding the adversarial test
 strings. This mode still has no
 root, networking, real module access, or test overlay. Omit `screenshot` to run
-the normal twenty-six regression cases again.
+the normal twenty-nine regression cases again.
 
 For a sign-in preview, use `--es screenshot login --es locale zh-CN` (the other
 two languages also work). This stays on the overview tab with synthetic

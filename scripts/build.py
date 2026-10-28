@@ -115,6 +115,14 @@ def main():
         shutil.copyfile(SOURCE / filename, stage / "licenses" / f"tailscale-{filename}")
     shutil.copyfile(ROOT / "LICENSE", stage / "licenses/module-LICENSE")
     module_metadata = {"moduleSourceCommit": output(["git", "rev-parse", "HEAD"]), "moduleTreeDirty": bool(output(["git", "status", "--porcelain"]))}
+    # A module revision is independent of the CLI workflow run. Carry the
+    # source-bound CLI identity so binary updates can reject older same-version
+    # Android patches, including when changing the selected update channel.
+    cli_tag = tracked.get("cliReleaseTag", "")
+    if (tracked.get("sourceCommit") == source_sha and tracked.get("tailscaleVersion") == ver
+            and isinstance(cli_tag, str)
+            and re.fullmatch(rf"android-v{re.escape(ver)}-(?:dev\.|r)[1-9][0-9]{{0,9}}", cli_tag)):
+        module_metadata["cliReleaseTag"] = cli_tag
     binary_digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     (stage / "build-info.json").write_text(json.dumps({**metadata, **module_metadata, "moduleRevision": args.revision, "versionCode": code, "binaryCompatibility": 1, "binarySHA256": binary_digest, "releaseChannel": args.release_channel}, indent=2) + "\n")
     checksums = []

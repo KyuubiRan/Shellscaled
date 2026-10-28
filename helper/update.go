@@ -58,6 +58,7 @@ type binaryStatus struct {
 
 type binaryMetadata struct {
 	TailscaleVersion string `json:"tailscaleVersion"`
+	CLIReleaseTag    string `json:"cliReleaseTag,omitempty"`
 	SourceCommit     string `json:"sourceCommit"`
 	Architecture     string `json:"architecture"`
 	BinarySHA256     string `json:"binarySHA256"`
@@ -95,6 +96,7 @@ type binaryRelease struct {
 
 type binaryPlan struct {
 	Status      binaryStatus
+	ReleaseTag  string
 	Manifest    binaryManifest
 	Package     releaseAsset
 	CurrentHash string
@@ -293,6 +295,9 @@ func (u *binaryUpdater) current(ctx context.Context) (binaryMetadata, string, er
 	if err != nil || decodeUpdateJSON(data, &installed, false) != nil {
 		return installed, "", errUpdateInvalid
 	}
+	if !validMetadataRelease(installed) {
+		installed.CLIReleaseTag = ""
+	}
 	hash, err := hashFile(filepath.Join(u.module, "bin/tailscaled"))
 	if err != nil {
 		return installed, "", err
@@ -301,10 +306,20 @@ func (u *binaryUpdater) current(ctx context.Context) (binaryMetadata, string, er
 	if err == nil {
 		var updated binaryMetadata
 		if decodeUpdateJSON(runtimeData, &updated, true) == nil && updated.BinarySHA256 == hash && updated.Architecture == installed.Architecture && updated.Compatibility == installed.Compatibility && stableVersionPattern.MatchString(updated.TailscaleVersion) && commitPattern.MatchString(updated.SourceCommit) {
+			if !validMetadataRelease(updated) {
+				updated.CLIReleaseTag = ""
+			}
+			// Installation metadata belongs to this runtime core only when its
+			// hash and source still match. Never lend an old install's run to a
+			// newer core installed by the legacy binary updater.
+			if updated.CLIReleaseTag == "" && installed.BinarySHA256 == hash && installed.SourceCommit == updated.SourceCommit && installed.TailscaleVersion == updated.TailscaleVersion {
+				updated.CLIReleaseTag = u.installationRelease(installed)
+			}
 			return updated, hash, nil
 		}
 	}
 	if installed.BinarySHA256 == hash && stableVersionPattern.MatchString(installed.TailscaleVersion) {
+		installed.CLIReleaseTag = u.installationRelease(installed)
 		return installed, hash, nil
 	}
 	// Old module builds may lack a binary digest. Read the executable's actual
@@ -314,7 +329,27 @@ func (u *binaryUpdater) current(ctx context.Context) (binaryMetadata, string, er
 		return installed, "", errUpdateInvalid
 	}
 	installed.TailscaleVersion = version
+	installed.CLIReleaseTag = ""
 	return installed, hash, nil
+}
+
+func validMetadataRelease(info binaryMetadata) bool {
+	parts := releaseTagPattern.FindStringSubmatch(info.CLIReleaseTag)
+	return len(parts) == 4 && parts[1] == info.TailscaleVersion
+}
+
+// Older module packages already carried their pinned CLI tag in version.json.
+// Bind it to the installed source/version; the caller has verified the core hash.
+func (u *binaryUpdater) installationRelease(installed binaryMetadata) string {
+	if validMetadataRelease(installed) {
+		return installed.CLIReleaseTag
+	}
+	data, err := readSmallFile(filepath.Join(u.module, "version.json"), maxManifestSize)
+	var tracked binaryMetadata
+	if err == nil && decodeUpdateJSON(data, &tracked, false) == nil && validMetadataRelease(tracked) && tracked.SourceCommit == installed.SourceCommit && tracked.TailscaleVersion == installed.TailscaleVersion {
+		return tracked.CLIReleaseTag
+	}
+	return ""
 }
 
 func (b *backend) updateDataDir() string {
@@ -445,6 +480,93 @@ func (u *binaryUpdater) releaseCandidates(ctx context.Context) ([]binaryRelease,
 	return append(merged, stable), nil
 }
 
+// Parse one release using the same authenticity checks for both candidates and
+// legacy installed-core identification. No package is downloaded here.
+func (u *binaryUpdater) releaseManifest(ctx context.Context, release binaryRelease) (binaryManifest, releaseAsset, bool, error) {
+	var m binaryManifest
+	var pack releaseAsset
+	tagParts := releaseTagPattern.FindStringSubmatch(release.Tag)
+	if len(tagParts) != 4 || release.Draft || release.PublishedAt.IsZero() || (tagParts[2] == "dev.") != release.Prerelease {
+		return m, pack, false, errUpdateInvalid
+	}
+	var selected *releaseAsset
+	for _, asset := range release.Assets {
+		parts := binaryAssetPattern.FindStringSubmatch(asset.Name)
+		if parts == nil || parts[3] != u.arch {
+			continue
+		}
+		if selected != nil || !assetMatches(asset, release.Tag, maxManifestSize) {
+			return m, pack, false, errUpdateInvalid
+		}
+		value := asset
+		selected = &value
+	}
+	if selected == nil {
+		return m, pack, false, nil
+	}
+	data, err := u.fetch(ctx, selected.URL, maxManifestSize)
+	if err != nil {
+		return m, pack, false, err
+	}
+	if !verifyAsset(data, *selected) || decodeUpdateJSON(data, &m, true) != nil {
+		return m, pack, false, errUpdateInvalid
+	}
+	channel := "stable"
+	if release.Prerelease {
+		channel = "prerelease"
+	}
+	parts := binaryAssetPattern.FindStringSubmatch(selected.Name)
+	assetRevision, _ := strconv.ParseUint(parts[2], 10, 64)
+	tagRevision, _ := strconv.ParseUint(tagParts[3], 10, 64)
+	if m.ReleaseChannel != channel || m.TailscaleVersion != tagParts[1] || assetRevision != tagRevision ||
+		m.Schema != 1 || m.Architecture != u.arch || m.TailscaleVersion != parts[1] ||
+		!commitPattern.MatchString(m.SourceCommit) || !digestPattern.MatchString(m.BinarySHA256) ||
+		!digestPattern.MatchString(m.PackageSHA256) || m.PackageName != strings.TrimSuffix(selected.Name, ".binary.json")+".zip" {
+		return m, pack, false, errUpdateInvalid
+	}
+	matches := 0
+	for _, asset := range release.Assets {
+		if asset.Name == m.PackageName {
+			if !assetMatches(asset, release.Tag, maxPackageSize) || asset.Digest != "sha256:"+m.PackageSHA256 {
+				return m, pack, false, errUpdateInvalid
+			}
+			pack = asset
+			matches++
+		}
+	}
+	if matches != 1 {
+		return m, pack, false, errUpdateInvalid
+	}
+	return m, pack, true, nil
+}
+
+func (u *binaryUpdater) recoverReleaseIdentity(ctx context.Context, current binaryMetadata, hash string, releases []binaryRelease) (binaryMetadata, error) {
+	var matched binaryRelease
+	for _, release := range releases {
+		parts := releaseTagPattern.FindStringSubmatch(release.Tag)
+		if len(parts) != 4 || parts[1] != current.TailscaleVersion {
+			continue
+		}
+		m, _, found, err := u.releaseManifest(ctx, release)
+		if err != nil || !found || m.BinarySHA256 != hash || m.SourceCommit != current.SourceCommit ||
+			m.Architecture != current.Architecture || m.Compatibility != current.Compatibility {
+			continue
+		}
+		if matched.Tag == "" || newerBinaryRelease(release, matched) {
+			matched = release
+		}
+	}
+	if matched.Tag != "" {
+		current.CLIReleaseTag = matched.Tag
+		current.BinarySHA256 = hash
+		encoded, _ := json.Marshal(current)
+		if err := atomicMetadata(filepath.Join(u.module, "runtime-binary.json"), append(encoded, '\n')); err != nil {
+			return current, errUpdateInstall
+		}
+	}
+	return current, nil
+}
+
 func (u *binaryUpdater) check(ctx context.Context) (binaryPlan, error) {
 	var plan binaryPlan
 	plan.Status.Channel = readUpdateChannel(u.stateDir, u.module)
@@ -475,64 +597,19 @@ func (u *binaryUpdater) check(ctx context.Context) (binaryPlan, error) {
 	if !releaseTagPattern.MatchString(release.Tag) {
 		return plan, errUpdateInvalid
 	}
-	var selected *releaseAsset
-	for _, asset := range release.Assets {
-		parts := binaryAssetPattern.FindStringSubmatch(asset.Name)
-		if parts == nil || parts[3] != u.arch {
-			continue
-		}
-		if selected != nil || !assetMatches(asset, release.Tag, maxManifestSize) {
-			return plan, errUpdateInvalid
-		}
-		value := asset
-		selected = &value
-	}
-	if selected == nil {
-		plan.Status.Reason = "no-compatible-release"
-		return plan, nil
-	}
-	data, err := u.fetch(ctx, selected.URL, maxManifestSize)
+	m, asset, found, err := u.releaseManifest(ctx, release)
 	if err != nil {
 		return plan, err
 	}
-	if !verifyAsset(data, *selected) || decodeUpdateJSON(data, &plan.Manifest, true) != nil {
-		return plan, errUpdateInvalid
+	if !found {
+		plan.Status.Reason = "no-compatible-release"
+		return plan, nil
 	}
-	m := plan.Manifest
-	channel := "stable"
-	if release.Prerelease {
-		channel = "prerelease"
-	}
-	if m.ReleaseChannel != channel {
-		return plan, errUpdateInvalid
-	}
-	parts := binaryAssetPattern.FindStringSubmatch(selected.Name)
-	tagParts := releaseTagPattern.FindStringSubmatch(release.Tag)
-	assetRevision, _ := strconv.ParseUint(parts[2], 10, 64)
-	tagRevision, _ := strconv.ParseUint(tagParts[3], 10, 64)
-	if m.TailscaleVersion != tagParts[1] || assetRevision != tagRevision {
-		return plan, errUpdateInvalid
-	}
-	if m.Schema != 1 || m.Architecture != u.arch || m.TailscaleVersion != parts[1] || !commitPattern.MatchString(m.SourceCommit) || !digestPattern.MatchString(m.BinarySHA256) || !digestPattern.MatchString(m.PackageSHA256) || m.PackageName != strings.TrimSuffix(selected.Name, ".binary.json")+".zip" {
-		return plan, errUpdateInvalid
-	}
+	plan.Manifest, plan.Package, plan.ReleaseTag = m, asset, release.Tag
 	plan.Status.LatestVersion = m.TailscaleVersion
 	if m.Compatibility != binaryCompatibility {
 		plan.Status.Reason = "module-upgrade-required"
 		return plan, nil
-	}
-	matches := 0
-	for _, asset := range release.Assets {
-		if asset.Name == m.PackageName {
-			if !assetMatches(asset, release.Tag, maxPackageSize) || asset.Digest != "sha256:"+m.PackageSHA256 {
-				return plan, errUpdateInvalid
-			}
-			plan.Package = asset
-			matches++
-		}
-	}
-	if matches != 1 {
-		return plan, errUpdateInvalid
 	}
 	plan.Status.Supported = true
 	comparison, err := compareVersions(m.TailscaleVersion, current.TailscaleVersion)
@@ -542,6 +619,31 @@ func (u *binaryUpdater) check(ctx context.Context) (binaryPlan, error) {
 	if comparison < 0 {
 		plan.Status.Reason = "downgrade-blocked"
 		return plan, nil
+	}
+	if comparison == 0 && current.CLIReleaseTag == "" {
+		// Persist a verified identity even when the selected binary is already
+		// installed, before that release can age out of the bounded list.
+		current, err = u.recoverReleaseIdentity(ctx, current, hash, releases)
+		if err != nil {
+			return plan, err
+		}
+	}
+	if comparison == 0 && hash != m.BinarySHA256 {
+		if current.CLIReleaseTag == "" {
+			// Unknown legacy or locally rebuilt cores cannot be ordered safely.
+			// A higher upstream version remains eligible, but a same-version
+			// replacement requires an identifiable installed CLI revision.
+			plan.Status.Supported = false
+			plan.Status.Reason = "module-upgrade-required"
+			return plan, nil
+		}
+		installed := binaryRelease{Tag: current.CLIReleaseTag, Prerelease: strings.Contains(current.CLIReleaseTag, "-dev.")}
+		// Publication dates never authorize replacement of an equal run.
+		release.PublishedAt = time.Time{}
+		if !newerBinaryRelease(release, installed) {
+			plan.Status.Reason = "downgrade-blocked"
+			return plan, nil
+		}
 	}
 	plan.Status.UpdateAvailable = hash != m.BinarySHA256
 	return plan, nil
@@ -604,12 +706,22 @@ func staleControlOwner(path, name string) bool {
 			return false
 		}
 	}
-	data, err := readSmallFile(path, 128)
-	if err != nil || string(data) != pieces[0]+" "+pieces[1]+"\n" {
+	stat, err := os.Lstat(path)
+	if err != nil || !stat.Mode().IsRegular() {
 		return false
 	}
+	// The filename is published before the record is written. A live owner
+	// must retain its lock even when that record is empty or incomplete; a
+	// confirmed dead/reused PID can be reclaimed without trusting its contents.
 	start, err := processStartTime(pieces[0])
-	return os.IsNotExist(err) || (err == nil && start != pieces[1])
+	if err == nil {
+		return start != pieces[1]
+	}
+	if !os.IsNotExist(err) {
+		return false
+	}
+	_, err = os.Stat("/proc/" + pieces[0])
+	return os.IsNotExist(err)
 }
 
 func (u *binaryUpdater) acquireControlLock(ctx context.Context) (*binaryControlLock, error) {
@@ -896,6 +1008,19 @@ func syncDirectory(path string) error {
 
 func atomicMetadata(path string, data []byte) error {
 	temporary := path + ".update"
+	// Callers hold the binary-update flock. A regular staging file therefore
+	// belongs to an interrupted transaction, not a concurrent writer. Never
+	// follow or remove a symlink/directory supplied in place of that file.
+	if stat, err := os.Lstat(temporary); err == nil {
+		if !stat.Mode().IsRegular() {
+			return errUpdateInstall
+		}
+		if err := os.Remove(temporary); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
@@ -959,6 +1084,7 @@ func (u *binaryUpdater) update(ctx context.Context) (binaryPlan, error) {
 	if err := u.version(work, candidate, info); err != nil {
 		return plan, errUpdateInvalid
 	}
+	info.CLIReleaseTag = plan.ReleaseTag
 	if err := os.Chmod(candidate, 0755); err != nil {
 		return plan, errUpdateInstall
 	}

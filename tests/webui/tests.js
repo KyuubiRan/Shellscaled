@@ -312,6 +312,101 @@
       }
     });
 
+    await test("settings-failed-reconciliation-blocks-edits-until-confirmed", async () => {
+      await idle();
+      click("tab-settings");
+      const original = backend().settings.shieldsUp;
+      const controls = [...document.querySelectorAll("[data-setting]")];
+      const globalNotice = notice();
+      const before = settingsRequests().length;
+      const statuses = statusRequests().length;
+      try {
+        fixture.setStatusMode("error");
+        fixture.nextSettingsResponseFails();
+        click("shields-up");
+        await until(() => settingsRequests().length > before && statusRequests().length > statuses);
+        await idle();
+        assert(backend().settings.shieldsUp === !original && $("shields-up").checked === original);
+        assert(controls.every((control) => control.disabled));
+        assert($("settings-hint").textContent.includes(ShellscaledI18n.t("settings.unconfirmed")) && notice() === globalNotice);
+        // Programmatic change events must not bypass disabled controls either.
+        $("shields-up").checked = !original;
+        $("shields-up").dispatchEvent(new Event("change", { bubbles: true }));
+        await wait(50);
+        assert(settingsRequests().length === before + 1 && $("shields-up").checked === original);
+        for (const locale of locales) {
+          await language(locale);
+          assert(controls.every((control) => control.disabled));
+          assert($("settings-hint").textContent.includes(ShellscaledI18n.t("settings.unconfirmed")));
+        }
+        fixture.setStatusMode("normal");
+        await refresh();
+        assert(controls.every((control) => !control.disabled) && $("shields-up").checked === !original);
+      } finally {
+        fixture.setStatusMode("normal");
+        await refresh();
+        await applySetting("shields-up", original);
+      }
+    });
+
+    await test("settings-ignore-unavailable-service-defaults", async () => {
+      await idle();
+      click("tab-settings");
+      const original = backend().settings.shieldsUp;
+      const controls = [...document.querySelectorAll("[data-setting]")];
+      try {
+        await applySetting("shields-up", true);
+        const before = settingsRequests().length;
+        for (const mode of ["stopped", "service-error", "invalid-settings"]) {
+          fixture.setStatusMode(mode);
+          await refresh();
+          assert(controls.every((control) => control.disabled));
+          assert($("shields-up").checked && backend().settings.shieldsUp);
+          assert($("settings-hint").textContent.includes(ShellscaledI18n.t("settings.unconfirmed")));
+        }
+        assert(settingsRequests().length === before);
+        fixture.setStatusMode("normal");
+        await refresh();
+        assert(controls.every((control) => !control.disabled) && $("shields-up").checked);
+      } finally {
+        fixture.setStatusMode("normal");
+        await refresh();
+        await applySetting("shields-up", original);
+      }
+    });
+
+    await test("settings-page-return-waits-for-fresh-preferences", async () => {
+      await idle();
+      click("tab-settings");
+      const original = backend().settings.shieldsUp;
+      const controls = [...document.querySelectorAll("[data-setting]")];
+      const before = settingsRequests().length;
+      const statuses = statusRequests().length;
+      try {
+        fixture.holdNextSettings();
+        click("shields-up");
+        await until(() => settingsRequests().length > before);
+        window.dispatchEvent(new Event("pagehide"));
+        fixture.setStatusMode("error");
+        window.dispatchEvent(new Event("pageshow"));
+        assert(controls.every((control) => control.disabled));
+        fixture.releaseSettings();
+        await until(() => statusRequests().length > statuses);
+        await idle();
+        assert(controls.every((control) => control.disabled));
+        assert(settingsRequests().length === before + 1 && backend().settings.shieldsUp === !original);
+        fixture.setStatusMode("normal");
+        await refresh();
+        assert(controls.every((control) => !control.disabled) && $("shields-up").checked === !original);
+      } finally {
+        fixture.releaseSettings();
+        fixture.setStatusMode("normal");
+        window.dispatchEvent(new Event("pageshow"));
+        await refresh();
+        await applySetting("shields-up", original);
+      }
+    });
+
     await test("raw-command-examples-and-language-first-settings", async () => {
       const expected = ["tailscale status", "tailscale version", "tailscale netcheck", "tailscaled --version"].sort();
       for (const locale of locales) {

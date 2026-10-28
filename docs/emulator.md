@@ -53,12 +53,12 @@ python3 scripts/emulator.py shell sh /data/local/tmp/shellscaled-network-policy.
 python3 scripts/build-device-tests.py --web-only
 python3 scripts/emulator.py push .work/tests/web-control.test /data/local/tmp/shellscaled-web-control.test
 python3 scripts/emulator.py shell chmod 755 /data/local/tmp/shellscaled-web-control.test
-python3 scripts/emulator.py shell /data/local/tmp/shellscaled-web-control.test -test.v
+python3 scripts/emulator.py shell 'su -c "TMPDIR=/data/local/tmp /data/local/tmp/shellscaled-web-control.test -test.v"'
 python3 scripts/test-webui.py --manager ksu
 # 切换到 Magisk 启动环境后使用 --manager magisk
 ```
 
-真实 KernelSU WebView 还需手动 / UI 自动化验证：从设置页保留一个未保存开关，通过命令页改变另一个字段，再返回保存；已保存字段和后台改变字段都应保留。不要将完整 status / prefs、登录链接或带账号地址的截图纳入版本库。
+真实 KernelSU WebView 还需手动 / UI 自动化验证：开关即时写入且保留其他字段；写入及后续状态确认都失败时，开关保持禁用，直到读到有效状态。不要将完整 status / prefs、登录链接或带账号地址的截图纳入版本库。
 
 切换启动环境前先停止模块、停止测试 VPN 并执行 `sync`，再关闭模拟器。共用同一 AVD 和状态目录，不克隆 AVD，不创建数据备份。测试完应删除一次性负向测试 ZIP、device 临时工具和过期构建产物。
 
@@ -66,7 +66,7 @@ python3 scripts/test-webui.py --manager ksu
 
 `python3 scripts/build-webui-fixture.py` 使用已有 SDK 构建隔离的测试 APK。
 在模拟器安装并启动 `dev.shellscaled.webuitest/.MainActivity`，读取
-`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=24 fail=0`。
+`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=29 fail=0`。
 它在真实 Android WebView 中加载原样资源，使用无 root、无网络权限的
 内存桥验证前端，不访问生产账号或 socket。详见 [夹具说明](../tests/webui/README.md)。
 
@@ -75,6 +75,17 @@ python3 scripts/test-webui.py --manager ksu
 `.work/tests/derphttp.test`，交叉编译后在模拟器以
 `-test.run '^TestAndroidDERP' -test.v` 执行，覆盖坏 IPv6 回退、健康 IPv6、
 证书拒绝及调用方 deadline/连接关闭。
+
+完整 `build-device-tests.py` 也生成 `.work/tests/taildrop.test`。推送后以
+`TMPDIR=/data/local/tmp` 在模拟器运行全部包内测试，无需登录或访问真实收件目录。
+构建的 `ts_omit_ssh` 标签排除依赖 SSH 的独立双节点集成 harness，保留
+Taildrop 的接收、恢复、文件校验及并发测试。已有 Go 版本不足时，通过
+`SHELLSCALED_GO` 指向满足 `tailscale/go.mod` 的已安装工具链。
+
+`tests/control-lock.sh <payload-dir>` 与 `tests/cli-entry.sh <payload-dir>`
+使用临时目录验证锁和全局 CLI 行为。通过 guard 推送实际模块脚本及夹具；
+注意把测试的 `cli-entry.sh` 另命名为 `cli-entry-test.sh`，避免覆盖
+payload 中同名的生产入口。它们不操作真实服务、账户、管理器目录或挂载。
 
 
 全局命令的 root 场景必须从 UID 2000 的普通 adb shell 验证，而不是只检查

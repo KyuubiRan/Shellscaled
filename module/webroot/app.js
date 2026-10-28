@@ -42,7 +42,7 @@
   };
   const state = {
     available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
-    status: null, settings: null, pendingSetting: null, settingsError: null,
+    status: null, settings: null, settingsConfirmed: false, pendingSetting: null, settingsError: null,
     lastUpdated: null, freshness: "waiting", notice: null, output: { kind: "idle" },
     activeTab: "overview", pageActive: true, devices: null, devicesError: null,
     deviceRefreshPending: false, deviceRequestVersion: 0, deviceRenderSignature: null,
@@ -641,10 +641,10 @@
       state.busyAction === "up" ? "connection.connecting" : current === "Starting" ? "connection.cancel" :
         connected ? "connection.disconnect" : "connection.connect");
     document.querySelectorAll("[data-setting]").forEach((control) => {
-      control.disabled = disabled || !state.settings;
+      control.disabled = disabled || !state.settingsConfirmed;
     });
     const exitNodeConfigured = state.status && state.status.exitNodeConfigured === true;
-    ui.exitLan.disabled = disabled || !state.settings || !exitNodeConfigured;
+    ui.exitLan.disabled = disabled || !state.settingsConfirmed || !exitNodeConfigured;
     ui.exitLanDescription.textContent = t(!state.status ? "settings.exitLanWaiting" :
       exitNodeConfigured ? "settings.exitLanDescription" : "settings.exitLanUnavailable");
     ui.run.textContent = t(state.busyAction === "command" ? "command.running" : "command.run");
@@ -654,8 +654,10 @@
     ui.language.disabled = state.busy;
     ui.language.value = I18n.preference();
     ui.main.setAttribute("aria-busy", state.busy ? "true" : "false");
-    ui.settingsHint.textContent = state.settingsError ? t("settings.failed") + " " + viewText(state.settingsError) :
-      t(!state.settings ? "settings.unread" : state.busyAction === "settings" ? "settings.applying" : "settings.automatic");
+    const settingsMessage = !state.settingsConfirmed && (state.settings || state.settingsError) ? t("settings.unconfirmed") :
+      state.settingsError ? t("settings.failed") :
+        t(!state.settings ? "settings.unread" : state.busyAction === "settings" ? "settings.applying" : "settings.automatic");
+    ui.settingsHint.textContent = settingsMessage + (state.settingsError ? " " + viewText(state.settingsError) : "");
     ui.settingsHint.dataset.kind = state.settingsError ? "error" : "info";
     ui.settingsHint.setAttribute("role", state.settingsError ? "alert" : "status");
     if (!state.status) ui.description.textContent = state.busy ? t("state.reading") : "";
@@ -725,6 +727,13 @@
 
   function validSettings(value) {
     return value && typeof value === "object" && SETTING_KEYS.every((key) => typeof value[key] === "boolean");
+  }
+
+  function confirmedSettings(result) {
+    // A successful service-status response can contain default false values
+    // when LocalAPI is unavailable. Those are not a preferences snapshot.
+    return result.daemonRunning === true && result.state !== "ServiceStopped" && result.state !== "ServiceError" &&
+      validSettings(result.settings);
   }
 
   function syncSettings() {
@@ -826,16 +835,18 @@
     }
     state.lastUpdated = new Date();
     state.freshness = "updated";
-    if (validSettings(result.settings)) {
+    state.settingsConfirmed = confirmedSettings(result);
+    if (state.settingsConfirmed) {
       state.settings = Object.fromEntries(SETTING_KEYS.map((key) => [key, result.settings[key]]));
-      syncSettings();
     }
+    syncSettings();
     renderPresentation();
     updateControls();
   }
 
   function markFreshness(kind) {
     state.freshness = kind;
+    if (kind === "stale" || kind === "verify") state.settingsConfirmed = false;
     renderFreshness();
   }
 
@@ -856,6 +867,7 @@
 
   async function refresh(manual = false) {
     if (state.busy || !state.available || !state.pageActive) return;
+    const reconcilingSettings = !state.settingsConfirmed && state.settingsError !== null;
     state.busy = true;
     state.busyAction = "status";
     updateControls();
@@ -865,7 +877,8 @@
       else if (state.notice && state.notice.source === "status") message("");
     } catch (error) {
       markFreshness("stale");
-      showError(error, "status");
+      if (reconcilingSettings) state.settingsError = errorView(error);
+      else showError(error, "status");
     } finally {
       finishBusy();
     }
@@ -891,7 +904,7 @@
 
   async function applySetting(control) {
     const key = control.dataset.setting;
-    if (control.disabled || state.busy || !state.available || !state.pageActive || !state.settings ||
+    if (control.disabled || state.busy || !state.available || !state.pageActive || !state.settingsConfirmed ||
         !SETTING_KEYS.includes(key) || (key === "exitNodeAllowLanAccess" && state.status?.exitNodeConfigured !== true)) {
       syncSettings();
       return;
@@ -906,7 +919,7 @@
     try {
       const result = requireSuccess(await rpc({ action: "settings", settings: { [key]: value } }));
       const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
-      if (!validSettings(status.settings)) throw new UIError("error.status");
+      if (!confirmedSettings(status)) throw new UIError("error.status");
       state.pendingSetting = null;
       renderStatus(status);
     } catch (error) {
@@ -1117,6 +1130,7 @@
     state.binaryChannelPending = null;
     state.status = null;
     state.settings = null;
+    state.settingsConfirmed = false;
     state.pendingSetting = null;
     state.settingsError = null;
     syncSettings();

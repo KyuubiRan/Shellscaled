@@ -111,7 +111,7 @@ func newUpdateFixture(t *testing.T, active bool) *updateFixture {
 		t.Fatal(err)
 	}
 	f := &updateFixture{old: append(testAndroidELF("arm64"), 1), new: append(testAndroidELF("arm64"), 2), active: active, routes: map[string][]byte{}}
-	oldInfo := binaryMetadata{TailscaleVersion: "1.104.2", SourceCommit: strings.Repeat("a", 40), Architecture: "arm64", Compatibility: 1, ReleaseChannel: "prerelease", BinarySHA256: testHash(f.old)}
+	oldInfo := binaryMetadata{TailscaleVersion: "1.104.2", CLIReleaseTag: "android-v1.104.2-dev.4", SourceCommit: strings.Repeat("a", 40), Architecture: "arm64", Compatibility: 1, ReleaseChannel: "prerelease", BinarySHA256: testHash(f.old)}
 	encoded, _ := json.Marshal(oldInfo)
 	mustWrite(t, filepath.Join(module, "build-info.json"), encoded, 0600)
 	mustWrite(t, filepath.Join(module, "bin/tailscaled"), f.old, 0755)
@@ -496,8 +496,8 @@ func TestBinaryVersionProbeAndActualHash(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	plan, err := f.u.check(ctx)
-	if err != nil || !plan.Status.UpdateAvailable || plan.CurrentHash != testHash([]byte(script)) {
-		t.Fatal("actual executable hash was ignored")
+	if err != nil || plan.Status.UpdateAvailable || plan.Status.Reason != "module-upgrade-required" || plan.CurrentHash != testHash([]byte(script)) {
+		t.Fatal("an unrecognized replacement core borrowed the installed CLI revision")
 	}
 	if runtimeBinaryVersion(f.u.module) != "" {
 		t.Fatal("missing runtime metadata was trusted")
@@ -1030,4 +1030,267 @@ func TestBinaryLatestStableAuthenticity(t *testing.T) {
 			f.assertClean(t, f.old, false)
 		})
 	}
+}
+
+func TestBinarySameVersionRevisionFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name, installed, candidate string
+		available                  bool
+	}{
+		{"older stable after channel switch", "android-v1.104.2-dev.10", "android-v1.104.2-r5", false},
+		{"older preview", "android-v1.104.2-r10", "android-v1.104.2-dev.5", false},
+		{"same run changed bytes", "android-v1.104.2-dev.5", "android-v1.104.2-dev.5", false},
+		{"same run stable wins", "android-v1.104.2-dev.5", "android-v1.104.2-r5", true},
+		{"newer patch", "android-v1.104.2-dev.4", "android-v1.104.2-dev.5", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newUpdateFixture(t, false)
+			installed, _, err := f.u.current(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			installed.CLIReleaseTag = tc.installed
+			data, _ := json.Marshal(installed)
+			mustWrite(t, filepath.Join(f.u.module, "runtime-binary.json"), data, 0600)
+			f.release.Tag = tc.candidate
+			f.release.Prerelease = strings.Contains(tc.candidate, "-dev.")
+			if !f.release.Prerelease {
+				f.info.ReleaseChannel, f.manifest.ReleaseChannel = "stable", "stable"
+				mustWrite(t, filepath.Join(f.u.stateDir, "ui.update-channel"), []byte("stable\n"), 0600)
+			}
+			f.rebuild(t)
+			plan, err := f.u.update(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.available {
+				f.assertClean(t, f.new, false)
+				current, _, err := f.u.current(context.Background())
+				if err != nil || current.CLIReleaseTag != tc.candidate {
+					t.Fatal("new CLI identity was not persisted")
+				}
+			} else {
+				if plan.Status.UpdateAvailable || plan.Status.Reason != "downgrade-blocked" || len(f.calls) != 0 {
+					t.Fatal("older/equal CLI run reached the service transaction")
+				}
+				f.assertClean(t, f.old, false)
+			}
+		})
+	}
+}
+
+func TestBinaryLegacyInstallationIdentity(t *testing.T) {
+	for _, matching := range []bool{true, false} {
+		t.Run(strconv.FormatBool(matching), func(t *testing.T) {
+			f := newUpdateFixture(t, false)
+			installed, _, _ := f.u.current(context.Background())
+			installed.CLIReleaseTag = ""
+			data, _ := json.Marshal(installed)
+			mustWrite(t, filepath.Join(f.u.module, "build-info.json"), data, 0600)
+			tracked := installed
+			tracked.CLIReleaseTag = "android-v1.104.2-dev.4"
+			if !matching {
+				tracked.SourceCommit = strings.Repeat("c", 40)
+			}
+			data, _ = json.Marshal(tracked)
+			mustWrite(t, filepath.Join(f.u.module, "version.json"), data, 0600)
+			plan, err := f.u.check(context.Background())
+			if err != nil || plan.Status.UpdateAvailable != matching {
+				t.Fatalf("legacy module identity binding failed: status=%+v err=%v", plan.Status, err)
+			}
+			if !matching && plan.Status.Reason != "module-upgrade-required" {
+				t.Fatal("unknown legacy run was not blocked")
+			}
+		})
+	}
+}
+
+// Add an authenticated historical manifest without downloading or executing any
+// binary. Its package hash is still cross-checked against its GitHub asset.
+func historicalFixtureRelease(t *testing.T, f *updateFixture, tag string, info binaryMetadata) binaryRelease {
+	t.Helper()
+	parts := releaseTagPattern.FindStringSubmatch(tag)
+	name := "Tailscale-" + parts[1] + "-r" + parts[3] + "-arm64.zip"
+	channel := "stable"
+	if parts[2] == "dev." {
+		channel = "prerelease"
+	}
+	m := binaryManifest{Schema: 1, Compatibility: info.Compatibility, TailscaleVersion: info.TailscaleVersion,
+		SourceCommit: info.SourceCommit, Architecture: info.Architecture, BinarySHA256: info.BinarySHA256,
+		PackageName: name, PackageSHA256: strings.Repeat("c", 64), ReleaseChannel: channel}
+	data, _ := json.Marshal(m)
+	base := "https://github.com/KyuubiRan/tailscale-android-cli/releases/download/" + tag + "/"
+	manifestName := strings.TrimSuffix(name, ".zip") + ".binary.json"
+	f.routes[base+manifestName] = data
+	return binaryRelease{Tag: tag, Prerelease: channel == "prerelease", PublishedAt: f.release.PublishedAt,
+		Assets: []releaseAsset{
+			{Name: manifestName, URL: base + manifestName, Digest: "sha256:" + testHash(data), Size: int64(len(data))},
+			{Name: name, URL: base + name, Digest: "sha256:" + m.PackageSHA256, Size: 1},
+		}}
+}
+
+func TestBinaryLegacyRuntimeIdentityMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name, oldTag string
+		valid        bool
+		available    bool
+	}{
+		{"verified older run can upgrade", "android-v1.104.2-dev.4", true, true},
+		{"verified newer run cannot downgrade", "android-v1.104.2-dev.10", true, false},
+		{"unverified manifest cannot supply identity", "android-v1.104.2-dev.4", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newUpdateFixture(t, false)
+			installed, _, _ := f.u.current(context.Background())
+			installed.CLIReleaseTag = ""
+			data, _ := json.Marshal(installed)
+			mustWrite(t, filepath.Join(f.u.module, "build-info.json"), data, 0600)
+			mustWrite(t, filepath.Join(f.u.module, "runtime-binary.json"), data, 0600)
+			// Stable channel must still identify an installed legacy preview.
+			f.release.Tag, f.release.Prerelease = "android-v1.104.2-r5", false
+			f.info.ReleaseChannel, f.manifest.ReleaseChannel = "stable", "stable"
+			f.rebuild(t)
+			mustWrite(t, filepath.Join(f.u.stateDir, "ui.update-channel"), []byte("stable\n"), 0600)
+			older := historicalFixtureRelease(t, f, tc.oldTag, installed)
+			if !tc.valid {
+				older.Assets[0].Digest = "sha256:" + strings.Repeat("0", 64)
+			}
+			f.routes[releaseAPI], _ = json.Marshal([]binaryRelease{f.release, older})
+			plan, err := f.u.check(context.Background())
+			if err != nil || plan.Status.UpdateAvailable != tc.available || len(f.calls) != 0 {
+				t.Fatalf("legacy runtime migration failed: status=%+v err=%v", plan.Status, err)
+			}
+			current, _, err := f.u.current(context.Background())
+			if err != nil || tc.valid && current.CLIReleaseTag != tc.oldTag || !tc.valid && current.CLIReleaseTag != "" {
+				t.Fatal("legacy runtime identity was not authenticated and persisted")
+			}
+		})
+	}
+}
+
+func TestBinaryUnknownLegacyRunAllowsNewUpstreamVersion(t *testing.T) {
+	f := newUpdateFixture(t, false)
+	installed, _, _ := f.u.current(context.Background())
+	installed.CLIReleaseTag = ""
+	data, _ := json.Marshal(installed)
+	mustWrite(t, filepath.Join(f.u.module, "build-info.json"), data, 0600)
+	f.info.TailscaleVersion, f.manifest.TailscaleVersion = "1.106.0", "1.106.0"
+	f.release.Tag, f.manifest.PackageName = "android-v1.106.0-dev.5", "Tailscale-1.106.0-r5-arm64.zip"
+	f.rebuild(t)
+	plan, err := f.u.check(context.Background())
+	if err != nil || !plan.Status.UpdateAvailable {
+		t.Fatal("unknown legacy revision blocked a newer upstream version")
+	}
+}
+
+func TestBinaryLegacyRuntimeDoesNotBorrowInstallationRun(t *testing.T) {
+	f := newUpdateFixture(t, false)
+	if _, err := f.u.update(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	current, _, _ := f.u.current(context.Background())
+	current.CLIReleaseTag = ""
+	data, _ := json.Marshal(current)
+	mustWrite(t, filepath.Join(f.u.module, "runtime-binary.json"), data, 0600)
+	// The original module still says dev.4, but the legacy runtime has changed
+	// both source and hash. That old identity must not authorize stable r5.
+	f.new = append([]byte(nil), f.old...)
+	f.info.SourceCommit, f.info.BinarySHA256 = strings.Repeat("a", 40), testHash(f.new)
+	f.manifest.SourceCommit, f.manifest.BinarySHA256 = f.info.SourceCommit, f.info.BinarySHA256
+	f.release.Tag, f.release.Prerelease = "android-v1.104.2-r5", false
+	f.info.ReleaseChannel, f.manifest.ReleaseChannel = "stable", "stable"
+	f.rebuild(t)
+	plan, err := f.u.check(context.Background())
+	if err != nil || plan.Status.UpdateAvailable || plan.Status.Reason != "module-upgrade-required" {
+		t.Fatal("unknown runtime inherited the older installed module's CLI run")
+	}
+}
+
+func TestBinaryLegacyCurrentHashStillMigratesIdentity(t *testing.T) {
+	f := newUpdateFixture(t, false)
+	if _, err := f.u.update(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	current, _, _ := f.u.current(context.Background())
+	current.CLIReleaseTag = ""
+	data, _ := json.Marshal(current)
+	mustWrite(t, filepath.Join(f.u.module, "runtime-binary.json"), data, 0600)
+	plan, err := f.u.check(context.Background())
+	if err != nil || plan.Status.UpdateAvailable {
+		t.Fatal("already installed core should remain current")
+	}
+	current, _, err = f.u.current(context.Background())
+	if err != nil || current.CLIReleaseTag != f.release.Tag {
+		t.Fatal("matching current release did not migrate its legacy identity")
+	}
+}
+
+func TestBinaryMetadataInterruptedWriteRecovery(t *testing.T) {
+	t.Run("channel", func(t *testing.T) {
+		f := newUpdateFixture(t, false)
+		b := &backend{module: f.u.module, stateDir: f.u.stateDir}
+		path := filepath.Join(f.u.stateDir, "ui.update-channel")
+		mustWrite(t, path, []byte("preview\n"), 0600)
+		mustWrite(t, path+".update", []byte("sta"), 0600)
+		if r := b.binaryChannel("stable"); !r.OK || readUpdateChannel(f.u.stateDir, f.u.module) != "stable" {
+			t.Fatal("interrupted channel write did not recover")
+		}
+		if _, err := os.Lstat(path + ".update"); !os.IsNotExist(err) {
+			t.Fatal("channel staging file retained")
+		}
+	})
+	t.Run("runtime", func(t *testing.T) {
+		f := newUpdateFixture(t, true)
+		mustWrite(t, filepath.Join(f.u.module, "runtime-binary.json.update"), []byte("{\"partial\":"), 0600)
+		if _, err := f.u.update(context.Background()); err != nil {
+			t.Fatalf("interrupted runtime metadata blocked update: %v", err)
+		}
+		f.assertClean(t, f.new, true)
+	})
+	for _, directory := range []bool{false, true} {
+		t.Run("unsafe-staging-"+strconv.FormatBool(directory), func(t *testing.T) {
+			root := t.TempDir()
+			path, target := filepath.Join(root, "metadata"), filepath.Join(root, "canary")
+			mustWrite(t, target, []byte("untouched"), 0600)
+			var err error
+			if directory {
+				err = os.Mkdir(path+".update", 0700)
+			} else {
+				err = os.Symlink(target, path+".update")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if atomicMetadata(path, []byte("new")) == nil {
+				t.Fatal("unsafe metadata staging was accepted")
+			}
+			data, _ := os.ReadFile(target)
+			if string(data) != "untouched" {
+				t.Fatal("staging symlink target was modified")
+			}
+		})
+	}
+}
+
+func TestBinaryPartialControlOwnerRecovery(t *testing.T) {
+	f := newUpdateFixture(t, false)
+	owner, err := f.u.acquireControlLock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(owner.directory, owner.owner)
+	for _, content := range []string{"", "partial"} {
+		mustWrite(t, path, []byte(content), 0600)
+		if staleControlOwner(path, owner.owner) {
+			t.Fatal("live partially published owner was reclaimed")
+		}
+	}
+	_ = os.Remove(path)
+	staleName := strings.Split(owner.owner, ".")[0] + ".0"
+	mustWrite(t, filepath.Join(owner.directory, staleName), nil, 0600)
+	next, err := f.u.acquireControlLock(context.Background())
+	if err != nil {
+		t.Fatal("confirmed reused PID with incomplete token was not reclaimed")
+	}
+	next.release()
 }

@@ -46,9 +46,11 @@ public final class MainActivity extends Activity {
     private boolean shieldsUp;
     private boolean allowLAN;
     private boolean nextSettingsFails;
+    private boolean nextSettingsResponseFails;
     private boolean holdNextSettings;
     private Runnable settingsReply;
     private boolean holdNextStatus;
+    private String statusMode = "normal";
     private Runnable statusReply;
     private boolean nextUpStarts;
     private boolean nextConsoleFails;
@@ -264,9 +266,21 @@ public final class MainActivity extends Activity {
                     switch (action) {
                         case "status":
                             JSONObject snapshot = status();
+                            if ("error".equals(statusMode)) {
+                                snapshot = new JSONObject().put("ok", false)
+                                        .put("error", "Fixture status unavailable").put("exitCode", 1);
+                            } else if ("stopped".equals(statusMode) || "service-error".equals(statusMode)) {
+                                snapshot.put("state", "stopped".equals(statusMode) ? "ServiceStopped" : "ServiceError")
+                                        .put("daemonRunning", false).put("settings", new JSONObject()
+                                                .put("acceptRoutes", false).put("shieldsUp", false)
+                                                .put("exitNodeAllowLanAccess", false));
+                            } else if ("invalid-settings".equals(statusMode)) {
+                                snapshot.put("settings", new JSONObject());
+                            }
                             if (holdNextStatus) {
                                 holdNextStatus = false;
-                                statusReply = () -> reply(callback, snapshot);
+                                JSONObject heldSnapshot = snapshot;
+                                statusReply = () -> reply(callback, heldSnapshot);
                             } else reply(callback, snapshot);
                             return;
                         case "login":
@@ -339,6 +353,9 @@ public final class MainActivity extends Activity {
                                 if (patch.has("shieldsUp")) shieldsUp = patch.getBoolean("shieldsUp");
                                 if (patch.has("exitNodeAllowLanAccess")) allowLAN = patch.getBoolean("exitNodeAllowLanAccess");
                             }
+                            // A lost/failed response can occur after the daemon applied the edit.
+                            if (nextSettingsResponseFails) settingsOK = false;
+                            nextSettingsResponseFails = false;
                             JSONObject settingsResult = settingsOK ? status() : new JSONObject().put("ok", false)
                                     .put("error", "Fixture settings unavailable").put("exitCode", 1);
                             if (holdNextSettings) {
@@ -428,6 +445,13 @@ public final class MainActivity extends Activity {
         }
         @JavascriptInterface public void nextSettingsFails() {
             synchronized (guard) { nextSettingsFails = true; }
+        }
+        @JavascriptInterface public void nextSettingsResponseFails() {
+            synchronized (guard) { nextSettingsResponseFails = true; }
+        }
+        @JavascriptInterface public void setStatusMode(String value) {
+            if (!Arrays.asList("normal", "error", "stopped", "service-error", "invalid-settings").contains(value)) return;
+            synchronized (guard) { statusMode = value; }
         }
         @JavascriptInterface public void holdNextSettings() {
             synchronized (guard) { holdNextSettings = true; }

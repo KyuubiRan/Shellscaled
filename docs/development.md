@@ -132,11 +132,21 @@ Do not advance the installed module's `versionCode` during a binary-only update.
 The original build metadata remains its installation provenance; runtime binary
 metadata is trusted only when its hash matches the current file.
 
+Build and runtime metadata also bind `cliReleaseTag` to the installed core.
+Same-version replacements must advance the CLI run (or promote an equal run
+from preview to stable); changing channels never authorizes an older run.
+Legacy installations recover this identity from source-matched `version.json`,
+or from a digest-verified release manifest matching the current binary hash.
+If no trusted revision can be recovered, same-version replacement requires a
+module upgrade; a higher Tailscale version remains eligible.
+
 An update holds a process lock, stages a verified binary on the destination
 filesystem, and only then stops the owned service. Replacement is atomic, with
 a single temporary rollback link. Restore the prior service state after success
 or rollback and remove all transaction files. Account state and preferences are
 never copied, reset or deleted by the updater.
+Metadata writes reclaim interrupted regular `.update` files while holding the
+update lock, and reject symlinks or directories in their place.
 
 
 ## Root-shell command entries
@@ -164,6 +174,12 @@ and refuses private-data deletion while any mount remains underneath it. A lost
 ownership marker or interrupted alias setup cannot cause recursive deletion to
 cross into a manager tool mount. The anonymous fixture in
 `tests/cli-entry.sh` runs only through the emulator guard and uses mock payloads.
+The service control mutex identifies its owner by the filename's PID and kernel
+start time before reading the record. A live owner keeps its lock even while
+that record is empty or partially written. Only a confirmed dead or reused PID
+is reclaimed; unidentified directories and failed reads remain fail closed.
+`tests/control-lock.sh` exercises these publication and recovery cases without
+starting the real service.
 
 ## Interactive sign-in
 
@@ -193,6 +209,16 @@ failed or ambiguous response restores the last confirmed UI value and requests
 fresh daemon status before controls become available again. Errors stay beside
 the switches, without a global saved notice or manual save control. Leaving the
 page clears the displayed preferences; returning requests current state.
+If reconciliation also fails, the switches remain disabled. An unavailable
+service's default false fields do not count as a confirmed preferences snapshot.
 
 Command shortcuts show their literal executable and arguments in every locale.
 Only surrounding help, controls and feedback are translated.
+
+## Taildrop retries
+
+The native filesystem receiver truncates an interrupted partial file to the
+confirmed retry offset, including zero. It reserves the sender/filename pair
+before opening that file, so rejected duplicate transfers cannot truncate the
+active upload. Resume and concurrency tests use temporary synthetic files in
+the emulator; they do not access the user's download directory or Tailnet.
