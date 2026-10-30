@@ -40,6 +40,7 @@ func dnsTestProxy(t *testing.T, handler func(*http.Request) (int, string)) (*mag
 	p.state = filepath.Join(t.TempDir(), "magicdns.json")
 	p.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	p.ctProbe = func(int) error { return syscall.ENOENT }
+	p.sweep = func(bool) (int, error) { return 0, nil }
 	return p, &calls
 }
 

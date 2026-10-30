@@ -1236,6 +1236,7 @@ func (b *backend) setExitNodeIPv6(ctx context.Context, enabled bool) response {
 			return failed("IPv6 出口设置已保存，需要随本版模块发布的后台服务才能生效")
 		}
 	}
+	nudgeMagicDNS()
 	return b.status(ctx)
 }
 

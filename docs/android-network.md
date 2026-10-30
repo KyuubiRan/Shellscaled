@@ -10,7 +10,7 @@ Shellscaled 直接通过 root 打开 `/dev/net/tun`，由 tailscaled 管理 `tai
 
 [AOSP Fwmark.h](https://android.googlesource.com/platform/system/netd/+/refs/heads/main/include/Fwmark.h) 将低 16 位用于 netId，第 16 位用于显式网络选择，第 17 位用于 `protectedFromVpn`，第 18–19 位用于权限，第 20 位用于计费标记。不能直接照搬桌面 Linux 的 Tailscale mark 分配。
 
-Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socket 使用 `SO_MARK=0x10020000`，包含自有 bypass 位和 Android 的受保护位。路由匹配只检查自有 mask 内的 `0x10000000`，保留 netd 的低位语义。原生 VPN App 通常通过 [VpnService.protect](https://developer.android.com/reference/android/net/VpnService#protect(int)) 请求同类保护，root daemon 使用 socket mark 完成。
+Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socket 使用 `SO_MARK=0x10020000`，包含自有 bypass 位和 Android 的受保护位。12500 的 Tailnet 规则只检查自有 mask 内的 `0x10000000`；13001 的后备规则另外要求 netd 的显式选择位和 `protectedFromVpn` 位为 0（见“Android 策略路由”），其余低位语义保持不变。原生 VPN App 通常通过 [VpnService.protect](https://developer.android.com/reference/android/net/VpnService#protect(int)) 请求同类保护，root daemon 使用 socket mark 完成。
 
 [Linux fib_rules.c](https://github.com/torvalds/linux/blob/master/net/core/fib_rules.c) 的 mark 匹配对 XOR 结果施加 mask，规则的 `not` 反转整个谓词；因此测试必须同时覆盖普通 socket、携带 netId 的 socket 及 daemon 外层 socket，不能只比较常量。
 
@@ -18,7 +18,24 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 [RouteController.h](https://android.googlesource.com/platform/system/netd/+/refs/heads/main/server/RouteController.h) 定义了 AOSP 策略优先级；[RouteController.cpp](https://android.googlesource.com/platform/system/netd/+/refs/heads/main/server/RouteController.cpp) 包含 VPN UID 范围与受保护 mark 的匹配逻辑。典型 secure VPN 优先级为 13000，非 VPN 禁止规则为 14000，显式网络为 16000，隐式网络为 23000，默认网络为 31000。设备厂商可以调整实际行为，模拟器须读取真实规则核对。
 
-本移植保留 table 52，在优先级 12500 只匹配 Tailnet 的 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，并排除自有 mark。这样 Tailnet 目标可先于普通 VPN 处理。优先级 13001 的规则为非 bypass 流量查询 table 52，位于 secure VPN 之后；表中没有目标路由时，继续使用 Android 的后续规则。未选择出口节点时，不在该表安装互联网默认路由；选择出口节点后的行为见“出口节点”一节。
+本移植保留 table 52，在优先级 12500 只匹配 Tailnet 的 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，并排除自有 mark。这样 Tailnet 目标可先于普通 VPN 处理。优先级 13001 的单条规则 `from all fwmark 0x0/0x10030000 lookup 52`（两个地址族）为其余流量查询 table 52，位于 secure VPN 之后；表中没有目标路由时，继续使用 Android 的后续规则。未选择出口节点时，不在该表安装互联网默认路由；选择出口节点后的行为见“出口节点”一节。
+
+下表中“mask X”表示 `fwmark 0x0/X`。`0x10030000` = 显式选择位 `0x10000` | `protectedFromVpn` 位 `0x20000` | 自有 bypass 位 `0x10000000`，即只有三者都未设置的 socket 才会进入后备规则，与原生可绕过（bypassable）VPN 的 UID 规则一致。规则不带源地址条件。
+
+| 优先级 | 地址族 | 规则 | 动作 |
+|---|---|---|---|
+| 12500 | v4 | `to 100.64.0.0/10`，mask `0x1e000000` | lookup 52 |
+| 12500 | v6 | `to fd7a:115c:a1e0::/48`，mask `0x1e000000` | lookup 52 |
+| 13001 | v4 / v6 | `from all`，mask `0x10030000` | lookup 52 |
+
+由此得到的行为，与原生 VpnService 一致：
+- 出口节点生效时，App 的连接不论新建还是已建立都进入 table 52。已建立连接的源地址仍是 Wi-Fi / 蜂窝地址，进入隧道后会被出口节点丢弃，所以由 MagicDNS 代理立即重置（见“出口节点”一节的“失效连接重置”），App 重连后走新路径。
+- 显式绑定网络的 socket（`Network.bindSocket`、NetworkStack 验证探测）和 `protectedFromVpn` 的 socket（netd DNS / DoT、其他 VPN 的传输、clatd）绕过出口节点，与原生 Android 相同。因此 Private DNS 的 DoT 与网络验证改走物理网络。
+- tailscaled 与 DNS 代理转发 socket（`0x10020000`）始终绕过。
+- Tailnet 目标仍由 12500 接管，包括显式绑定的 socket；只有带自有 bypass 位的 socket 例外。
+- 出口节点开启期间建立的连接源地址为 `100.x` / `fd7a:`，关闭出口节点后失效（目标仍在已接受的子网路由内的除外），同样被重置。没有为此加入 `100.64.0.0/10` 源地址的快速失败 unreachable 规则：运营商使用 CGNAT 地址时，它会在未选出口节点时破坏蜂窝网络。
+
+上游 CLI android-v1.104.4-r5 及更早版本的 13001 为 `not fwmark 0x10000000/0x1e000000 lookup 52`（两个地址族），不检查显式 / 受保护位。在该规则下，选中出口节点后 netd 自己的 DNS socket（`protectedFromVpn`，不带 bypass 位）也进入 table 52，局域网与运营商的解析器因此不可达，IP 连通而 DNS 失败。该形状只在删除列表中（`androidLegacyIPRules`，经 `ipRulesToDelete` 用于每次启动和关闭时的 `delIPRules`），从不安装，所以不重启升级或守护进程崩溃后残留的旧规则会被清掉。内核删除规则时比较非零的 mark 和 mask，旧形状（mark `0x10000000`）与当前规则（mark 0、mask `0x10030000`）互不误删；netlink 删除保留每条规则声明的 mark / mask，mask 为 0 表示无谓词。
 
 这意味着普通 Tailnet 地址和其他子网路由具有不同优先级。显式绑定到网络的 socket、更高优先级的 UID 规则、VPN lockdown 或其他 root 模块可能影响结果；不能据此推断所有 VPN 都兼容。出口节点也需要单独验收，不能从普通 Tailnet 共存测试推广。
 
@@ -114,13 +131,28 @@ REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是�
 
 ### 路由
 
-选择出口节点后，tailscaled 无论 NetfilterMode 取值都会向 table 52 强制写入 `0.0.0.0/0` 和 `::/0`（即使对端未发布出口路由，也宁可黑洞不泄漏）。`::/0` 是否写入由下文“IPv6”一节的开关决定（默认写入）。优先级 13001 的规则（见“Android 策略路由”）因此让所有不带 bypass 位的流量进入隧道，只有 tailscaled 自身带 `0x10020000` 的传输 socket 绕过。
+选择出口节点后，tailscaled 无论 NetfilterMode 取值都会向 table 52 强制写入 `0.0.0.0/0` 和 `::/0`（即使对端未发布出口路由，也宁可黑洞不泄漏）。`::/0` 是否写入由下文“IPv6”一节的开关决定（默认写入）。优先级 13001 的规则（见“Android 策略路由”）因此让全部不带显式 / 受保护 / bypass 位的流量进入隧道；显式绑定网络的 socket、`protectedFromVpn` 的 socket（含 netd 自己的 DNS socket）和 tailscaled 自身带 `0x10020000` 的传输 socket 都绕过。开启前已建立的连接由下文“失效连接重置”立即断开。
+
+已建立连接改路由到 `tailscale0` 后源地址仍是 Wi-Fi / 蜂窝地址，出口节点以 `disallowed source` 丢弃，长连接会挂起直到超时，所以这类连接被立即重置，App 随即重连。
 
 `exit-node-allow-lan-access` 关闭时，手机自身各接口的前缀（Wi-Fi 局域网 /24、蜂窝前缀、全局 IPv6 /64、`fe80::/64`）也作为路由装入 `tailscale0`，局域网网关和局域网 DNS 都经出口节点转发而不可达。开启时这些前缀变为 table 52 中的 throw 路由，查表失败后继续走 Android 后续规则。throw 只覆盖接口前缀：不在本链路前缀内的运营商 DNS 或公共解析器仍经隧道。
 
+### 失效连接重置
+
+Android 在 VPN 的 UID 范围变化时（`ConnectivityService.updateVpnUidRanges` → `maybeCloseSockets`）调用 netd `destroyLiveTcpSockets`，对受影响 UID 的 TCP socket 发送 `SOCK_DESTROY`，只豁免 VPN App 自身的 UID。官方 Tailscale App 切换出口节点只是原地更新路由，已有连接被黑洞直到超时。
+
+本模块在 MagicDNS 代理进程中做同样的重置。每次刷新（5 秒，以及连接 / 断开、切换出口节点或 IPv6 开关后的 SIGUSR1）记录路由状态：出口节点 = BackendState 为 Running 时 prefs 的 `ExitNodeID`；exit6 = 选择了出口节点且 IPv6 opt-out 文件不存在；allowLAN = 选择了出口节点且 `ExitNodeAllowLANAccess`。LocalAPI `status` 或 `prefs` 读取失败时状态未知，不记录。状态与上次不同时（代理启动后的首次观测也算），代理用 `NETLINK_SOCK_DIAG` 列出 IPv4 / IPv6 中除 LISTEN、CLOSE、TIME_WAIT 外的 TCP socket 及其 `INET_DIAG_MARK`，对每个不豁免的 socket 用 `RTM_GETROUTE`（`RTM_F_FIB_MATCH`，带 socket 的源 / 目标地址、mark、UID 和绑定接口）向内核查询它的包现在命中的路由，对必然失效的连接发送 `SOCK_DESTROY`（socket id 原样取自内核的返回，同 Android `InetDiagMessage`），重置数大于 0 或出错时向 `daemon.log` 记一行 `exit node routing changed: reset N stale TCP connections`。判定交给内核的当前路由，所以 Android 在 13001 之前的规则（其他 VPN 的 UID 范围、本机地址的 local 表）、子网路由、allow-LAN 的 throw 路由和 IPv6 开关都自动计入；工作中的连接不受影响，重复执行没有副作用：
+
+- 豁免：mark 含 `0x10030000` 任一位（daemon / 代理 socket、显式绑定、`protectedFromVpn`）；内核未返回 mark 的 socket；路由查询失败的 socket。
+- Tailnet 源：源地址是 `tailscale0` 上的地址；运营商 CGNAT 的 `100.x` rmnet 地址因此按物理源处理。v4-mapped 地址按 IPv4 处理。
+- 命中 local 表（目标为本机接口地址）的连接保留；其余连接只有在“经 `tailscale0` 出去”与“Tailnet 源”一致时可用，不一致即重置：出口节点开启后的物理源连接、关闭后或 allow-LAN 开启后改走物理接口的 Tailnet 源连接。
+- 从一个出口节点切换到另一个时，经出口默认路由（前缀长度 0）进入 `tailscale0` 的 Tailnet 源连接也被重置：新出口节点没有它们的 NAT 状态。子网路由和 Tailnet 目标的连接不受影响。
+
+与 Android 相同只处理 TCP；UDP 流不受影响。需要内核 `CONFIG_INET_DIAG_DESTROY`、`CAP_NET_ADMIN`（代理以 root 运行）以及 SELinux 允许 sock_diag 写操作；不满足时只记一行错误，路由行为不变。
+
 ### DNS
 
-`accept-dns=false` 时 quad-100 解析器只回答 MagicDNS 节点名，不向任何上游转发（`dnsConfigForNetmap` 在 CorpDNS 关闭时提前返回），因此出口节点下的普通 DNS 无法由 tailscaled 提供。出口节点下由下述代理整体接管 UDP/53。
+`accept-dns=false` 时 quad-100 解析器只回答 MagicDNS 节点名，不向任何上游转发（`dnsConfigForNetmap` 在 CorpDNS 关闭时提前返回），因此出口节点下的普通 DNS 无法由 tailscaled 提供。netd 自己的 DNS socket 带 `protectedFromVpn` 位，不被 13001 捕获；出口节点下由下述代理整体接管 UDP/53。
 
 出口节点下的 DNS 由 MagicDNS 代理处理：出口节点的 PeerAPI DoH 探测成功时进入 `exit-doh`，普通名称经出口节点解析；探测失败时进入 `exit-passthrough`，普通名称由代理带 `SO_MARK=0x10020000` 转发给系统原本选定的解析器，绕过 12500/13001 与 table 52，与 allow-LAN 设置无关（见上文 MagicDNS 机制与原目的地址转发）。tailnet 名称始终走 LocalAPI `dns-query`，不受 mark 影响。
 
@@ -166,14 +198,19 @@ ip rule; ip -6 rule
 ip route show table 52; ip -6 route show table 52
 cat /proc/sys/net/ipv4/conf/*/rp_filter
 cat /proc/sys/net/ipv6/conf/tailscale0/disable_ipv6
-grep 'disabling tunneled IPv6\|allowing exit node access to local IPs' /data/adb/shellscaled/logs/daemon.log
+grep 'disabling tunneled IPv6\|allowing exit node access to local IPs\|exit node routing changed' /data/adb/shellscaled/logs/daemon.log
 ls -l /data/adb/shellscaled/exit-node-ipv6-local
 ip route get 1.1.1.1 uid 10123                 # tailscale0
+ss -tn state established | wc -l               # 切换出口节点前后对比
 ```
 
-期望：IPv6 开关为关时 `ip -6 route show table 52` 没有 default。
+期望：`ip rule` 与 `ip -6 rule` 各有 13001 `from all fwmark 0/0x10030000 lookup 52`；没有 `not fwmark 0x10000000/0x1e000000`（包括从 CLI android-v1.104.4-r5 不重启升级之后）。IPv6 开关为关时 `ip -6 route show table 52` 没有 default。切换出口节点后 `daemon.log` 有一行 `exit node routing changed: reset N stale TCP connections`（有可重置的连接时），且没有该行的失败形式。
 
 开启出口节点后分别在 Wi-Fi 和蜂窝下解析公共域名、打开网页、确认 IP 查询站点显示出口节点地址、解析 MagicDNS 名称；关闭出口机器后应显示离线提示，“关闭出口节点”一次即可恢复。
+
+### 未实现与不支持
+
+- 失效连接重置只处理本机 TCP socket；UDP 流和热点 / 转发流量不处理。转发包在出口节点开启时是否被 13001 捕获取决于其 fwmark，未经设备验收。
 
 ## 上游与维护
 
