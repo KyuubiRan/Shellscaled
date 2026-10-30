@@ -34,7 +34,7 @@ Run Tailscale natively on rooted Android without occupying Android’s VPN slot.
 
 1. Download the **arm64** ZIP package from [Releases](https://github.com/KyuubiRan/Shellscaled/releases).
 2. In **Magisk** or **KernelSU Manager**, choose **Install from storage** and select the ZIP.
-3. **Reboot**, tap the module action button to connect, and follow the sign-in instructions. KernelSU users can also open the module page and choose **Sign in to Tailscale**.
+3. Installing the module applies within seconds without a reboot (designed for all managers, verified on KernelSU Next). `tailscaled` restarts only when its binary changed, which interrupts the tailnet for a few seconds; otherwise the tailnet is not interrupted. If live update is not possible, the module activates at **reboot** instead. Tap the module action button to connect and follow the sign-in instructions. KernelSU users can also open the module page and choose **Sign in to Tailscale**.
 
 <details>
 <summary>Sign in from a terminal</summary>
@@ -53,11 +53,11 @@ Use the module action button in your manager to connect or disconnect. KernelSU 
 
 **Network roles** lets you select, switch or stop using an exit node, advertise this device as an exit node, and advertise CIDR subnet routes. Advertisements require approval in the Tailscale console. Android forwarding, NAT and SELinux behavior require separate validation.
 
-**Receive files** defaults to `Download/Tailscale` in shared storage. Browse ordinary directories in primary shared storage, save your choice, and receive pending files. App-private directories are protected. See [Taildrop](docs/taildrop.md) for the receive workflow and [Android networking](docs/android-network.md) for MagicDNS, exit node behavior and limitations.
+**Receive files** defaults to `Download/Tailscale` in shared storage. Browse ordinary directories in primary shared storage, save your choice, and receive pending files. App-private directories are protected. See [Taildrop](docs/taildrop.md) for the receive workflow and [Android networking](docs/android-network.md) for MagicDNS, exit node behavior and limitations. See [Live update](docs/hot-update.md) for how module updates apply without a reboot.
 
 Tap a local address to copy it. The Devices page lets you search visible devices, check online status and copy names or addresses.
 
-To update Tailscale on its own, choose Stable or Preview under **Binary updates** in Settings. Your account and preferences are retained. For module interface and feature updates, install the new module package and reboot. Uninstalling the module deletes its account and preferences.
+To update Tailscale on its own, choose Stable or Preview under **Binary updates** in Settings. Your account and preferences are retained. For module interface and feature updates, install the new module package. Installing it switches to the new module within seconds without a reboot (designed for all managers, verified on KernelSU Next); `tailscaled` restarts only when its binary changed, which interrupts the tailnet for a few seconds; otherwise the tailnet is not interrupted. Close and reopen the WebUI. If live update is not possible, the module activates at reboot instead. Uninstalling the module deletes its account and preferences.
 
 ## Credits and license
 

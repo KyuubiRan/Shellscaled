@@ -12,6 +12,7 @@ SC_SUPERVISOR_PID=$SC_RUN/supervisor.pid
 SC_STOP=$SC_RUN/stop
 SC_LOCK=$SC_RUN/control.lock
 SC_LOCK_OWNER=
+SC_DAEMON_ARGS="--tun=tailscale0 --state=$SC_STATE/tailscaled.state --statedir=$SC_STATE --socket=$SC_SOCKET --no-logs-no-support"
 
 sc_error() {
     printf 'Shellscaled: %s\n' "$*" >&2
@@ -35,6 +36,12 @@ sc_prepare() {
 
 sc_log() {
     printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$SC_LOGS/service.log"
+}
+
+# Best effort: keep this process and its children out of the manager app's
+# cgroup, which is killed with the app.
+sc_root_cgroup() {
+    { echo $$ > /sys/fs/cgroup/cgroup.procs; } 2>/dev/null || true
 }
 
 sc_refresh_description() {
@@ -73,8 +80,9 @@ sc_read_pid() {
 sc_daemon_running() {
     sc_read_pid "$SC_DAEMON_PID" || return 1
     sc_exe=$(readlink "/proc/$SC_PID/exe" 2>/dev/null) || return 1
-    case "$sc_exe" in
-        "$SC_MODDIR/bin/tailscaled"|"$SC_MODDIR/bin/tailscaled (deleted)") return 0 ;;
+    # A live update renames the old tree into $SC_DATA/trash (docs/hot-update.md).
+    case "${sc_exe%" (deleted)"}" in
+        "$SC_MODDIR/bin/tailscaled"|"$SC_DATA"/trash/*/bin/tailscaled) return 0 ;;
     esac
     return 1
 }
@@ -178,12 +186,12 @@ sc_stop_daemon() {
     sc_stop_start=$SC_PID_START
     kill -TERM "$sc_stop_pid" 2>/dev/null || true
     sc_wait=0
-    while [ "$sc_wait" -lt 15 ]; do
+    while [ "$sc_wait" -lt 150 ]; do
         if ! sc_daemon_running || [ "$SC_PID" != "$sc_stop_pid" ] || [ "$SC_PID_START" != "$sc_stop_start" ]; then
             rm -f "$SC_DAEMON_PID" "$SC_SOCKET"
             return 0
         fi
-        sleep 1
+        sleep 0.1
         sc_wait=$((sc_wait + 1))
     done
     if sc_daemon_running && [ "$SC_PID" = "$sc_stop_pid" ] && [ "$SC_PID_START" = "$sc_stop_start" ]; then
@@ -201,8 +209,8 @@ sc_stop_daemon() {
 sc_magicdns_running() {
     sc_read_pid "$SC_MAGICDNS_PID" || return 1
     sc_magicdns_exe=$(readlink "/proc/$SC_PID/exe" 2>/dev/null) || return 1
-    case "$sc_magicdns_exe" in
-        "$SC_MODDIR/bin/shellscaled-web"|"$SC_MODDIR/bin/shellscaled-web (deleted)") return 0 ;;
+    case "${sc_magicdns_exe%" (deleted)"}" in
+        "$SC_MODDIR/bin/shellscaled-web"|"$SC_DATA"/trash/*/bin/shellscaled-web) return 0 ;;
     esac
     return 1
 }
@@ -219,6 +227,13 @@ sc_magicdns_rules_remove() {
     return 0
 }
 
+sc_magicdns_jumps() {
+    /system/bin/iptables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null &&
+        /system/bin/ip6tables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null
+}
+
+# Safe-point invariant for the live-update freeze (docs/hot-update.md, "Supervisor handover"):
+# never run sleep between spawning a process and sc_record_pid.
 sc_magicdns_start() {
     sc_magicdns_running && return 0
     # Chains start empty, so DNS is never redirected to a proxy that is not running.
@@ -258,16 +273,16 @@ sc_magicdns_stop() {
     sc_magicdns_term
 }
 
+# Safe-point invariant for the live-update freeze (docs/hot-update.md, "Supervisor handover"):
+# never run sleep between spawning a process and sc_record_pid.
 sc_start_daemon() {
     sc_daemon_running && return 0
     [ -x "$SC_MODDIR/bin/tailscaled" ] || { sc_log 'The daemon binary is missing.'; return 1; }
     rm -f "$SC_DAEMON_PID" "$SC_SOCKET"
-    "$SC_MODDIR/bin/tailscaled" \
-        --tun=tailscale0 \
-        --state="$SC_STATE/tailscaled.state" \
-        --statedir="$SC_STATE" \
-        --socket="$SC_SOCKET" \
-        --no-logs-no-support \
+    # No argument contains a space; ctl.sh compares the resulting cmdline
+    # before it adopts a running daemon.
+    # shellcheck disable=SC2086
+    "$SC_MODDIR/bin/tailscaled" $SC_DAEMON_ARGS \
         </dev/null >> "$SC_LOGS/daemon.log" 2>&1 &
     sc_new_pid=$!
     sc_record_pid "$SC_DAEMON_PID" "$sc_new_pid" || return 1
@@ -284,7 +299,7 @@ sc_start_daemon() {
                 return 0
             fi
         fi
-        sleep 1
+        sleep 0.2
     done
     sc_log 'Daemon did not initialize within 20 seconds.'
     sc_stop_daemon

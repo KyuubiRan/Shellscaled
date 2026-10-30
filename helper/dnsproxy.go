@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -857,8 +858,17 @@ func conntrackOrigDst(client netip.AddrPort) (netip.AddrPort, uint32, error) {
 	return parseConntrackOrigDst(buf[:n])
 }
 
+// sameHelperExe reports whether exe (a /proc/PID/exe link) is this helper:
+// either self, or a module tree a live update moved to trash, as in
+// sc_magicdns_running.
+func sameHelperExe(self, exe string) bool {
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	trashed, _ := filepath.Match(dataDir+"/trash/*/bin/shellscaled-web", exe)
+	return exe == self || trashed
+}
+
 // nudgeMagicDNS asks the running proxy to refresh now. The pid must belong to
-// this same helper binary.
+// this same helper binary (see sameHelperExe).
 func nudgeMagicDNS() {
 	data, err := os.ReadFile(magicDNSPIDPath)
 	fields := strings.Fields(string(data))
@@ -870,7 +880,7 @@ func nudgeMagicDNS() {
 		return
 	}
 	self, err := os.Readlink("/proc/self/exe")
-	if exe, err2 := os.Readlink("/proc/" + fields[0] + "/exe"); err == nil && err2 == nil && exe == self {
+	if exe, err2 := os.Readlink("/proc/" + fields[0] + "/exe"); err == nil && err2 == nil && sameHelperExe(self, exe) {
 		_ = syscall.Kill(pid, syscall.SIGUSR1)
 	}
 }

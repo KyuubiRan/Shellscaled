@@ -34,7 +34,7 @@
 
 1. 从 [Release](https://github.com/KyuubiRan/Shellscaled/releases) 下载 **arm64** ZIP 安装包。
 2. 在 **Magisk** 或 **KernelSU** 管理器中选择「从本地安装」，安装该 ZIP。
-3. **重启设备**，点击模块的运行按钮连接，首次使用时按提示登录。KernelSU 用户也可打开模块页面，点击「登录 Tailscale」完成登录。
+3. 安装模块后，数秒内即自动生效，无需重启（设计上适用于各管理器，已在 KernelSU Next 上验证）；仅当 `tailscaled` 二进制有变化时才会重启它（tailnet 中断数秒），否则不会中断 tailnet。若无法即时生效，则回退为重启设备时启用。点击模块的运行按钮连接，首次使用时按提示登录。KernelSU 用户也可打开模块页面，点击「登录 Tailscale」完成登录。
 
 <details>
 <summary>通过终端登录</summary>
@@ -51,13 +51,13 @@
 
 设置中的「网络角色」可选择、切换和关闭出口节点，也可发布本机为出口节点或输入 CIDR 子网路由。发布后需在 Tailscale 控制台批准；Android 转发、NAT 与 SELinux 的实际可用性需要单独验证。
 
-「文件接收」默认保存到外部存储的 `Download/Tailscale`。可浏览主外部存储下的普通目录并保存选择，再点击接收文件；应用私有目录受到保护。接收流程见 [Taildrop 说明](docs/taildrop.md)；MagicDNS、出口节点的行为与限制见 [Android 网络说明](docs/android-network.md)。
+「文件接收」默认保存到外部存储的 `Download/Tailscale`。可浏览主外部存储下的普通目录并保存选择，再点击接收文件；应用私有目录受到保护。接收流程见 [Taildrop 说明](docs/taildrop.md)；MagicDNS、出口节点的行为与限制见 [Android 网络说明](docs/android-network.md)；模块免重启更新的机制见 [即时更新说明](docs/hot-update.md)。
 
 在 `adb shell` 或终端执行 `su` 后，可直接使用 `tailscale`。`tailscaled` 可启动、停止、重启服务或查看状态。
 
 点击本机地址即可复制；设备页可搜索本机可见的设备，查看在线状态并复制名称或地址。
 
-只更新 Tailscale 时，可在设置中的「二进制更新」选择稳定版或预览版后检查并安装，账号与设置会保留。更新模块界面与功能时，安装新的模块包并重启即可。卸载模块会删除本模块的账号与设置。
+只更新 Tailscale 时，可在设置中的「二进制更新」选择稳定版或预览版后检查并安装，账号与设置会保留。更新模块界面与功能时，安装新的模块包；安装后数秒内即切换到新版，无需重启（设计上适用于各管理器，已在 KernelSU Next 上验证）；仅当 `tailscaled` 二进制有变化时才会重启它（tailnet 中断数秒），否则不会中断 tailnet，关闭后重新打开 WebUI 即可。若无法即时生效，则回退为重启设备时启用。卸载模块会删除本模块的账号与设置。
 
 ## 来源与许可
 

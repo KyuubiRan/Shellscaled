@@ -659,3 +659,20 @@ func TestAnswerDoHFailureFallsBack(t *testing.T) {
 		t.Fatalf("reply %x", out)
 	}
 }
+
+func TestSameHelperExe(t *testing.T) {
+	self := "/data/adb/modules/shellscaled/bin/shellscaled-web"
+	for exe, want := range map[string]bool{
+		self: true,
+		dataDir + "/trash/1761800000/bin/shellscaled-web":           true,
+		dataDir + "/trash/1761800000/bin/shellscaled-web (deleted)": true,
+		self + " (deleted)":                          true,
+		dataDir + "/trash/1761800000/bin/tailscaled": false,
+		dataDir + "/trash/a/b/bin/shellscaled-web":   false,
+		"/data/local/tmp/shellscaled-web":            false,
+	} {
+		if got := sameHelperExe(self, exe); got != want {
+			t.Errorf("sameHelperExe(%q) = %v, want %v", exe, got, want)
+		}
+	}
+}
