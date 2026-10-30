@@ -58,6 +58,8 @@ Use the module action button in your manager to connect or disconnect. KernelSU 
 The **MagicDNS split resolver** switch (off by default) resolves tailnet names without taking over system DNS. See [Android networking](docs/android-network.md) for its behavior and limitations.
 
 
+**Receive files** defaults to `Download/Taildrop` in shared storage. Browse ordinary directories in primary shared storage, save your choice, and receive pending files. App-private directories are protected. See [Taildrop](docs/taildrop.md) for the receive workflow.
+
 Tap a local address to copy it. The Devices page lets you search visible devices, check online status and copy names or addresses.
 
 To update Tailscale on its own, choose Stable or Preview under **Binary updates** in Settings. Your account and preferences are retained. For module interface and feature updates, install the new module package and reboot. Uninstalling the module deletes its account and preferences.
