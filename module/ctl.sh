@@ -106,8 +106,27 @@ sc_stop() {
     printf 'Shellscaled stopped.\n'
 }
 
+# The automatic receiver is identified like the daemon, by PID and start time,
+# plus its command line, so a reused PID is never taken for it or signalled.
+sc_taildrop_spawn() {
+    "$SC_MODDIR/bin/shellscaled-web" taildrop-auto &
+    sc_taildrop_pid=$!
+    sc_taildrop_start=$(sc_start_time "$sc_taildrop_pid")
+}
+
+sc_taildrop_running() {
+    [ -n "${sc_taildrop_pid:-}" ] && [ -n "${sc_taildrop_start:-}" ] || return 1
+    [ "$(sc_start_time "$sc_taildrop_pid")" = "$sc_taildrop_start" ] || return 1
+    sc_cmdline=$(tr '\000' ' ' < "/proc/$sc_taildrop_pid/cmdline" 2>/dev/null) || return 1
+    [ "${sc_cmdline% }" = "$SC_MODDIR/bin/shellscaled-web taildrop-auto" ]
+}
+
 sc_supervise_cleanup() {
     trap '' TERM INT HUP
+    if sc_taildrop_running; then
+        kill "$sc_taildrop_pid" 2>/dev/null
+        wait "$sc_taildrop_pid" 2>/dev/null
+    fi
     sc_stop_daemon
     if sc_read_pid "$SC_SUPERVISOR_PID" && [ "$SC_PID" = "$$" ]; then
         rm -f "$SC_SUPERVISOR_PID"
@@ -131,6 +150,7 @@ sc_supervise() {
     trap 'exit 0' TERM INT HUP
     trap sc_supervise_cleanup EXIT
     sc_log 'Supervisor started.'
+    sc_taildrop_spawn
     sc_failures=0
     sc_description_tick=0
     while ! sc_disabled; do
@@ -150,6 +170,7 @@ sc_supervise() {
             sleep 5
         fi
         sc_bound_logs
+        sc_taildrop_running || sc_taildrop_spawn
         if [ "$sc_description_tick" -eq 0 ]; then
             sc_refresh_description
         fi
