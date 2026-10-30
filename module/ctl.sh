@@ -108,6 +108,10 @@ sc_stop() {
 
 sc_supervise_cleanup() {
     trap '' TERM INT HUP
+    if [ -n "${sc_taildrop_pid:-}" ]; then
+        kill "$sc_taildrop_pid" 2>/dev/null
+        wait "$sc_taildrop_pid" 2>/dev/null
+    fi
     sc_stop_daemon
     if sc_read_pid "$SC_SUPERVISOR_PID" && [ "$SC_PID" = "$$" ]; then
         rm -f "$SC_SUPERVISOR_PID"
@@ -131,6 +135,8 @@ sc_supervise() {
     trap 'exit 0' TERM INT HUP
     trap sc_supervise_cleanup EXIT
     sc_log 'Supervisor started.'
+    "$SC_MODDIR/bin/shellscaled-web" taildrop-auto &
+    sc_taildrop_pid=$!
     sc_failures=0
     sc_description_tick=0
     while ! sc_disabled; do
@@ -150,6 +156,10 @@ sc_supervise() {
             sleep 5
         fi
         sc_bound_logs
+        if ! kill -0 "$sc_taildrop_pid" 2>/dev/null; then
+            "$SC_MODDIR/bin/shellscaled-web" taildrop-auto &
+            sc_taildrop_pid=$!
+        fi
         if [ "$sc_description_tick" -eq 0 ]; then
             sc_refresh_description
         fi

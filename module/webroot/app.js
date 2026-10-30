@@ -39,6 +39,12 @@
     binaryCheckLabel: $("binary-check-label"), binaryUpdateLabel: $("binary-update-label"),
     binaryMessage: $("binary-message"),
     binaryChannel: $("binary-channel"),
+    taildropPath: $("taildrop-path"), taildropSave: $("taildrop-save"),
+    taildropSaveLabel: $("taildrop-save-label"), taildropReceive: $("taildrop-receive"),
+    taildropReceiveLabel: $("taildrop-receive-label"), taildropMessage: $("taildrop-message"),
+    taildropBrowse: $("taildrop-browse"), taildropBrowser: $("taildrop-browser"),
+    taildropBrowserCurrent: $("taildrop-browser-current"), taildropBrowserUp: $("taildrop-browser-up"),
+    taildropDirectoryList: $("taildrop-directory-list"), taildropChoose: $("taildrop-choose"),
   };
   const state = {
     available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
@@ -51,6 +57,9 @@
     loginError: null, loginOpened: false, loginRequestVersion: 0,
     binary: null, binaryFeedback: "", binaryError: null, binaryRequestVersion: 0,
     updateChannel: null, binaryChannelPending: null,
+    taildropPath: "", taildropDraftDirty: false, taildropError: null, taildropBrowserPath: "", taildropDirectories: [],
+    taildropDirectoriesTruncated: false, taildropBrowserBusy: false, taildropBrowserRequestVersion: 0,
+    taildropActionRequestVersion: 0,
   };
   let callbackSequence = 0;
   const copyTimers = new Map();
@@ -662,6 +671,7 @@
     ui.settingsHint.setAttribute("role", state.settingsError ? "alert" : "status");
     if (!state.status) ui.description.textContent = state.busy ? t("state.reading") : "";
     renderBinary();
+    renderTaildrop();
   }
 
   function encodeRequest(payload) {
@@ -774,6 +784,134 @@
     ui.loginMessage.hidden = !ui.loginMessage.textContent;
     ui.loginMessage.dataset.kind = state.loginError ? "error" : "info";
     ui.loginMessage.setAttribute("role", state.loginError ? "alert" : "status");
+  }
+
+  function renderTaildrop() {
+    if (!state.taildropDraftDirty && typeof state.status?.taildropPath === "string" && state.status.taildropPath) {
+      state.taildropPath = state.status.taildropPath.slice(0, 512);
+    }
+    if (!state.taildropDraftDirty && document.activeElement !== ui.taildropPath) ui.taildropPath.value = state.taildropPath;
+    ui.taildropSaveLabel.textContent = t(state.busyAction === "taildrop-path" ? "taildrop.saving" : "taildrop.save");
+    ui.taildropReceiveLabel.textContent = t(state.busyAction === "taildrop-receive" ? "taildrop.receiving" : "taildrop.receive");
+    ui.taildropSave.classList.toggle("is-working", state.busyAction === "taildrop-path");
+    ui.taildropReceive.classList.toggle("is-working", state.busyAction === "taildrop-receive");
+    ui.taildropMessage.textContent = state.taildropError ? viewText(state.taildropError) : "";
+    ui.taildropMessage.hidden = !ui.taildropMessage.textContent;
+    ui.taildropMessage.dataset.kind = state.taildropError ? "error" : "info";
+    ui.taildropMessage.setAttribute("role", state.taildropError ? "alert" : "status");
+    ui.taildropPath.setAttribute("aria-invalid", state.taildropError ? "true" : "false");
+    ui.taildropPath.disabled = !state.available || state.busy || !state.pageActive;
+    ui.taildropBrowse.disabled = !state.available || state.busy || !state.pageActive;
+    ui.taildropBrowser.hidden = !state.taildropBrowserPath;
+    ui.taildropBrowserCurrent.textContent = state.taildropBrowserPath;
+    ui.taildropBrowserUp.disabled = state.taildropBrowserBusy || !state.taildropBrowserPath ||
+      ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
+    ui.taildropChoose.disabled = state.taildropBrowserBusy || !state.taildropBrowserPath ||
+      ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
+    ui.taildropChoose.textContent = t("taildrop.choose");
+    ui.taildropDirectoryList.replaceChildren();
+    if (state.taildropBrowserBusy) {
+      const loading = document.createElement("p");
+      loading.className = "empty-copy";
+      loading.textContent = t("taildrop.browsing");
+      ui.taildropDirectoryList.appendChild(loading);
+    } else if (!state.taildropDirectories.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-copy";
+      empty.textContent = t("taildrop.empty");
+      ui.taildropDirectoryList.appendChild(empty);
+    } else {
+      for (const directory of state.taildropDirectories) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "taildrop-directory";
+        button.textContent = directory.name;
+        button.dataset.path = directory.path;
+        button.setAttribute("role", "option");
+        ui.taildropDirectoryList.appendChild(button);
+      }
+    }
+    if (state.taildropDirectoriesTruncated) {
+      const more = document.createElement("p");
+      more.className = "empty-copy";
+      more.textContent = t("taildrop.more");
+      ui.taildropDirectoryList.appendChild(more);
+    }
+  }
+
+  async function browseTaildrop(path = "") {
+    if (state.busy || state.taildropBrowserBusy || !state.available || !state.pageActive) return;
+    const version = ++state.taildropBrowserRequestVersion;
+    state.busy = true;
+    state.busyAction = "taildrop-browse";
+    state.taildropBrowserBusy = true;
+    state.taildropBrowserPath = path || "/storage/emulated/0";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    updateControls();
+    renderTaildrop();
+    try {
+      const result = requireSuccess(await rpc({ action: "taildrop-list", path: state.taildropBrowserPath }));
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropBrowserPath = typeof result.taildropPath === "string" ? result.taildropPath : state.taildropBrowserPath;
+      state.taildropDirectories = Array.isArray(result.taildropDirectories) ? result.taildropDirectories.filter((item) =>
+        item && typeof item.name === "string" && typeof item.path === "string").slice(0, 128) : [];
+      state.taildropDirectoriesTruncated = result.taildropDirectoriesTruncated === true;
+    } catch (error) {
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropError = errorView(error);
+      state.taildropBrowserPath = "";
+    } finally {
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropBrowserBusy = false;
+      state.busy = false;
+      state.busyAction = "";
+      updateControls();
+      renderTaildrop();
+    }
+  }
+
+  function chooseTaildropDirectory(path) {
+    if (typeof path !== "string" || !path) return;
+    state.taildropPath = path;
+    state.taildropDraftDirty = true;
+    ui.taildropPath.value = path;
+    state.taildropBrowserPath = "";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    renderTaildrop();
+  }
+
+  async function taildropAction(action) {
+    if (state.busy || !state.available || !state.pageActive) return;
+    const value = ui.taildropPath.value.trim();
+    if (value.length > 512 || !value.startsWith("/")) {
+      state.taildropError = { key: "taildrop.invalid" };
+      renderTaildrop();
+      return;
+    }
+    state.taildropError = null;
+    state.busy = true;
+    state.busyAction = action;
+    const version = ++state.taildropActionRequestVersion;
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action, path: value }));
+      if (!state.pageActive || version !== state.taildropActionRequestVersion) return;
+      if (typeof result.taildropPath === "string") {
+        state.taildropPath = result.taildropPath;
+        if (state.status) state.status.taildropPath = result.taildropPath;
+        ui.taildropPath.value = result.taildropPath;
+      }
+      state.taildropDraftDirty = false;
+      state.taildropError = null;
+      message(action === "taildrop-receive" ? "taildrop.received" : "taildrop.saved", "info");
+      renderTaildrop();
+    } catch (error) {
+      if (state.pageActive && version === state.taildropActionRequestVersion) state.taildropError = errorView(error);
+    } finally {
+      finishBusy();
+    }
   }
 
   function renderFreshness() {
@@ -1061,6 +1199,23 @@
   ui.binaryCheck.addEventListener("click", () => runBinaryAction("binary-check"));
   ui.binaryUpdate.addEventListener("click", () => runBinaryAction("binary-update"));
   ui.binaryChannel.addEventListener("change", () => setBinaryChannel(ui.binaryChannel.value));
+  ui.taildropSave.addEventListener("click", () => taildropAction("taildrop-path"));
+  ui.taildropReceive.addEventListener("click", () => taildropAction("taildrop-receive"));
+  ui.taildropPath.addEventListener("input", () => {
+    state.taildropDraftDirty = true;
+    state.taildropPath = ui.taildropPath.value.slice(0, 512);
+  });
+  ui.taildropBrowse.addEventListener("click", () => browseTaildrop(state.taildropPath || ""));
+  ui.taildropBrowserUp.addEventListener("click", () => {
+    if (!state.taildropBrowserPath) return;
+    const parent = state.taildropBrowserPath.replace(/\/[^/]+$/, "") || "/";
+    browseTaildrop(parent === "/storage/emulated" ? "/storage/emulated/0" : parent);
+  });
+  ui.taildropChoose.addEventListener("click", () => chooseTaildropDirectory(state.taildropBrowserPath));
+  ui.taildropDirectoryList.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button[data-path]") : null;
+    if (target) browseTaildrop(target.dataset.path || "");
+  });
   document.addEventListener("click", (event) => {
     if (!(event.target instanceof Element)) return;
     const control = event.target.closest("button.copy-control[data-copy]");
@@ -1110,6 +1265,10 @@
   window.addEventListener("pagehide", () => {
     copyEpoch++;
     state.pageActive = false;
+    if (state.busyAction === "taildrop-browse") {
+      state.busy = false;
+      state.busyAction = "";
+    }
     state.deviceRequestVersion++;
     state.deviceRefreshPending = false;
     state.refreshAfterBusy = false;
@@ -1128,6 +1287,15 @@
     state.binaryError = null;
     state.updateChannel = null;
     state.binaryChannelPending = null;
+    state.taildropPath = "";
+    state.taildropDraftDirty = false;
+    state.taildropError = null;
+    state.taildropBrowserPath = "";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    state.taildropBrowserBusy = false;
+    state.taildropBrowserRequestVersion++;
+    state.taildropActionRequestVersion++;
     state.status = null;
     state.settings = null;
     state.settingsConfirmed = false;
@@ -1146,6 +1314,7 @@
     ui.loginURL.value = "";
     ui.deviceSearch.value = "";
     ui.command.value = "";
+    ui.taildropPath.value = "";
     state.output = { kind: "idle" };
     renderPresentation();
     renderDevices();

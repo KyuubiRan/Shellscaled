@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -28,6 +29,146 @@ import (
 
 const dataDir = "/data/adb/shellscaled"
 const socketPath = dataDir + "/run/tailscaled.sock"
+
+const taildropPathFile = dataDir + "/taildrop-path"
+const taildropStagingDir = dataDir + "/taildrop-staging"
+
+const defaultTaildropPath = "/storage/emulated/0/Download/Tailscale"
+const mediaStoragePath = "/data/media/0"
+
+const sharedStorageRoot = "/storage/emulated/0"
+
+const taildropBrowseLimit = 128
+
+func validTaildropBrowsePath(value string) bool {
+	value, ok := normalizeTaildropPath(value)
+	if !ok {
+		return false
+	}
+	if value == sharedStorageRoot {
+		return true
+	}
+	return validTaildropPath(value)
+}
+
+func normalizeTaildropPath(value string) (string, bool) {
+	if value == "" || len(value) > 512 || !filepath.IsAbs(value) || filepath.Clean(value) != value {
+		return "", false
+	}
+	if value == "/sdcard" {
+		return "/storage/emulated/0", true
+	}
+	if strings.HasPrefix(value, "/sdcard/") {
+		return "/storage/emulated/0" + strings.TrimPrefix(value, "/sdcard"), true
+	}
+	return value, true
+}
+
+func taildropDirectories(value string) response {
+	if value == "" {
+		value = "/storage/emulated/0"
+	}
+	canonical, ok := normalizeTaildropPath(value)
+	if !ok || !validTaildropBrowsePath(canonical) {
+		return failed("浏览目录无效")
+	}
+	value = canonical
+	info, err := os.Lstat(value)
+	if err != nil || !info.IsDir() {
+		return failed("浏览目录不存在或不可用")
+	}
+	resolved, err := filepath.EvalSymlinks(value)
+	if err != nil || resolved != value {
+		return failed("浏览目录不能是符号链接")
+	}
+	directory, err := os.Open(value)
+	if err != nil {
+		return failed("无法读取目录")
+	}
+	defer directory.Close()
+	entries, err := directory.Readdir(taildropBrowseLimit + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return failed("无法读取目录")
+	}
+	truncated := len(entries) > taildropBrowseLimit
+	if truncated {
+		entries = entries[:taildropBrowseLimit]
+	}
+	result := make([]taildropDirectory, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		path := filepath.Join(value, entry.Name())
+		if !validTaildropPath(path) {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil || !validTaildropPath(resolved) || resolved != path {
+			continue
+		}
+		result = append(result, taildropDirectory{Name: boundedText(entry.Name(), 128), Path: path})
+	}
+	sort.Slice(result, func(i, j int) bool { return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name) })
+	return response{OK: true, TaildropPath: value, TaildropDirectories: result, TaildropDirectoriesTruncated: truncated}
+}
+
+func validTaildropPath(value string) bool {
+	canonical, ok := normalizeTaildropPath(value)
+	if !ok {
+		return false
+	}
+	if !strings.HasPrefix(canonical, sharedStorageRoot+string(os.PathSeparator)) {
+		return false
+	}
+	relative := strings.TrimPrefix(canonical, sharedStorageRoot+string(os.PathSeparator))
+	for _, privateRoot := range []string{"Android", "Android/data", "Android/obb", "Android/sandbox"} {
+		if relative == privateRoot || strings.HasPrefix(relative, privateRoot+string(os.PathSeparator)) {
+			return false
+		}
+	}
+	return true
+}
+
+func readTaildropPath() string {
+	// This is shared Android storage. The module staging directory remains
+	// private; the user-facing directory needs ordinary media-readable mode.
+	_ = os.MkdirAll(defaultTaildropPath, 0775)
+	data, err := os.ReadFile(taildropPathFile)
+	if err != nil {
+		return defaultTaildropPath
+	}
+	value := strings.TrimSpace(string(data))
+	if validTaildropPath(value) {
+		return value
+	}
+	return defaultTaildropPath
+}
+
+func saveTaildropPath(value string) error {
+	canonical, ok := normalizeTaildropPath(value)
+	if !ok || !validTaildropPath(canonical) {
+		return errors.New("接收目录必须位于 Android 共享存储，且不能位于 Android/data、Android/obb 或 Android/sandbox")
+	}
+	if info, err := os.Lstat(canonical); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("接收目录不存在或不可用")
+	}
+	if resolved, err := filepath.EvalSymlinks(canonical); err != nil || resolved != canonical {
+		return errors.New("接收目录不能通过符号链接指向其他位置")
+	}
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		return errors.New("无法保存接收目录")
+	}
+	tmp := taildropPathFile + ".new"
+	if err := os.WriteFile(tmp, []byte(canonical+"\n"), 0600); err != nil {
+		return errors.New("无法保存接收目录")
+	}
+	if err := os.Rename(tmp, taildropPathFile); err != nil {
+		_ = os.Remove(tmp)
+		return errors.New("无法保存接收目录")
+	}
+	return nil
+}
 
 type settings struct {
 	AcceptRoutes           bool `json:"acceptRoutes"`
@@ -46,26 +187,36 @@ type request struct {
 	Channel  string         `json:"channel,omitempty"`
 	Locale   string         `json:"locale,omitempty"`
 	Command  string         `json:"command,omitempty"`
+	Path     string         `json:"path,omitempty"`
 	Settings *settingsPatch `json:"settings,omitempty"`
 }
 
 type response struct {
-	OK                 bool          `json:"ok"`
-	State              string        `json:"state,omitempty"`
-	Version            string        `json:"version,omitempty"`
-	IPs                []string      `json:"ips,omitempty"`
-	Settings           settings      `json:"settings"`
-	DaemonRunning      bool          `json:"daemonRunning"`
-	ExitNodeConfigured bool          `json:"exitNodeConfigured"`
-	LoginURL           string        `json:"loginURL,omitempty"`
-	Error              string        `json:"error,omitempty"`
-	ExitCode           int           `json:"exitCode"`
-	Stdout             string        `json:"stdout,omitempty"`
-	Stderr             string        `json:"stderr,omitempty"`
-	Truncated          bool          `json:"truncated,omitempty"`
-	Devices            *[]device     `json:"devices,omitempty"`
-	Binary             *binaryStatus `json:"binary,omitempty"`
-	UpdateChannel      string        `json:"updateChannel,omitempty"`
+	OK                           bool                `json:"ok"`
+	State                        string              `json:"state,omitempty"`
+	Version                      string              `json:"version,omitempty"`
+	IPs                          []string            `json:"ips,omitempty"`
+	Settings                     settings            `json:"settings"`
+	DaemonRunning                bool                `json:"daemonRunning"`
+	ExitNodeConfigured           bool                `json:"exitNodeConfigured"`
+	LoginURL                     string              `json:"loginURL,omitempty"`
+	Error                        string              `json:"error,omitempty"`
+	ExitCode                     int                 `json:"exitCode"`
+	Stdout                       string              `json:"stdout,omitempty"`
+	Stderr                       string              `json:"stderr,omitempty"`
+	Truncated                    bool                `json:"truncated,omitempty"`
+	Devices                      *[]device           `json:"devices,omitempty"`
+	Binary                       *binaryStatus       `json:"binary,omitempty"`
+	UpdateChannel                string              `json:"updateChannel,omitempty"`
+	TaildropPath                 string              `json:"taildropPath,omitempty"`
+	TaildropReceived             bool                `json:"taildropReceived,omitempty"`
+	TaildropDirectories          []taildropDirectory `json:"taildropDirectories,omitempty"`
+	TaildropDirectoriesTruncated bool                `json:"taildropDirectoriesTruncated,omitempty"`
+}
+
+type taildropDirectory struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 // Deliberately decode only UI fields. Never return prefs.Persist or account data.
@@ -171,6 +322,8 @@ func newBackend(module string) *backend {
 	}}
 }
 
+var errDaemonUnreachable = errors.New("后台服务未响应，请先启动或重启 tailscaled")
+
 func (b *backend) api(ctx context.Context, method, path string, body any, result any) error {
 	var reader io.Reader
 	if body != nil {
@@ -189,7 +342,7 @@ func (b *backend) api(ctx context.Context, method, path string, body any, result
 	}
 	res, err := b.client.Do(req)
 	if err != nil {
-		return errors.New("后台服务未响应，请先启动或重启 tailscaled")
+		return errDaemonUnreachable
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
@@ -210,7 +363,7 @@ func (b *backend) status(ctx context.Context) response {
 }
 
 func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
-	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module)}
+	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), TaildropPath: readTaildropPath()}
 	var st localStatus
 	if err := b.api(ctx, "GET", "status?peers=false", nil, &st); err != nil {
 		if _, statErr := os.Stat(socketPath); statErr == nil {
@@ -559,6 +712,351 @@ func (b *backend) setSettings(ctx context.Context, s *settingsPatch) response {
 	return b.status(ctx)
 }
 
+func (b *backend) taildropPath(ctx context.Context, value string) response {
+	if value == "" {
+		_ = os.MkdirAll(defaultTaildropPath, 0775)
+		return response{OK: true, TaildropPath: readTaildropPath()}
+	}
+	if err := saveTaildropPath(value); err != nil {
+		return failed(err.Error())
+	}
+	return response{OK: true, TaildropPath: value}
+}
+
+func (b *backend) taildropReceive(ctx context.Context, value string) response {
+	lock, err := acquireTaildropLock()
+	if err != nil {
+		return failed(err.Error())
+	}
+	defer func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+	}()
+	if value == "" {
+		value = readTaildropPath()
+		if value == defaultTaildropPath {
+			_ = os.MkdirAll(value, 0775)
+		}
+	} else if err := saveTaildropPath(value); err != nil {
+		return failed(err.Error())
+	}
+	if !validTaildropPath(value) {
+		return failed("接收目录无效")
+	}
+	info, err := os.Stat(value)
+	if err != nil || !info.IsDir() {
+		return failed("接收目录不存在或不可用")
+	}
+	if err := prepareSharedTaildropDirectory(value); err != nil {
+		return failed(err.Error())
+	}
+	if err := os.MkdirAll(taildropStagingDir, 0700); err != nil {
+		return failed("无法准备 Taildrop 临时目录")
+	}
+	if info, err := os.Stat(taildropStagingDir); err != nil || !info.IsDir() {
+		return failed("Taildrop 临时目录不可用")
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	out, stderr, truncated, err := run(commandCtx, filepath.Join(b.module, "bin", "tailscale"), "file", "get", "--conflict=rename", taildropStagingDir)
+	r := response{OK: err == nil, TaildropPath: value, TaildropReceived: err == nil, Stdout: out, Stderr: stderr, Truncated: truncated}
+	if err != nil {
+		r.ExitCode = 1
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			r.ExitCode = exit.ExitCode()
+		}
+		if commandCtx.Err() != nil {
+			r.Error = "接收文件超时，请稍后重试"
+		} else if stderr == "" {
+			r.Error = "当前没有可接收的文件，或接收失败"
+		}
+	}
+	published, publishErr := publishTaildropStaging(taildropStagingDir, value)
+	if publishErr != nil {
+		if err != nil && published == 0 {
+			return r
+		}
+		r.OK = false
+		r.TaildropReceived = false
+		r.ExitCode = 1
+		r.Error = publishErr.Error()
+	} else if published > 0 {
+		r.OK = true
+		r.TaildropReceived = true
+		r.Error = ""
+	}
+	return r
+}
+
+func acquireTaildropLock() (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(taildropPathFile), 0700); err != nil {
+		return nil, errors.New("无法准备 Taildrop 锁")
+	}
+	lock, err := os.OpenFile(filepath.Join(filepath.Dir(taildropPathFile), "taildrop-receive.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, errors.New("无法打开 Taildrop 锁")
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		return nil, errors.New("已有文件接收操作正在进行")
+	}
+	return lock, nil
+}
+
+func (b *backend) awaitTaildrop(ctx context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Hour+10*time.Second)
+	defer cancel()
+	// The ordinary RPC client has a five-second timeout. File arrival waits
+	// use their own request deadline and wake as soon as the daemon has files.
+	client := *b.client
+	client.Timeout = 0
+	waiter := *b
+	waiter.client = &client
+	var files []json.RawMessage
+	err := waiter.api(ctx, "GET", "files/?waitsec=3600", nil, &files)
+	return len(files) > 0, err
+}
+
+func (b *backend) taildropAuto(ctx context.Context) {
+	lastError := ""
+	for ctx.Err() == nil {
+		staged := false
+		if directory, openErr := os.Open(taildropStagingDir); openErr == nil {
+			names, _ := directory.Readdirnames(1)
+			staged = len(names) > 0
+			_ = directory.Close()
+		}
+		pending := staged
+		var err error
+		if !pending {
+			pending, err = b.awaitTaildrop(ctx)
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if pending {
+			result := b.taildropReceive(ctx, "")
+			if result.OK {
+				lastError = ""
+			} else {
+				err = errors.New(result.Error)
+			}
+		}
+		if err != nil {
+			// The supervisor logs daemon restarts; an unreachable daemon at boot is routine.
+			if err.Error() != lastError && !errors.Is(err, errDaemonUnreachable) {
+				fmt.Fprintln(os.Stderr, localizedError(err.Error(), b.locale))
+				lastError = err.Error()
+			}
+			timer := time.NewTimer(30 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+	}
+}
+
+func sharedTaildropBacking(path string) (string, bool) {
+	if !validTaildropPath(path) {
+		return "", false
+	}
+	canonical, ok := normalizeTaildropPath(path)
+	if !ok || !strings.HasPrefix(canonical, sharedStorageRoot+string(os.PathSeparator)) {
+		return "", false
+	}
+	relative := strings.TrimPrefix(canonical, sharedStorageRoot+string(os.PathSeparator))
+	backing := filepath.Join(mediaStoragePath, relative)
+	return backing, true
+}
+
+func mediaOwner(path string) (uint32, uint32, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return 0, 0, false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, false
+	}
+	return stat.Uid, stat.Gid, true
+}
+
+func verifyMediaOwner(path string) error {
+	uid, gid, ok := mediaOwner(path)
+	if !ok || uid != 1023 || gid != 1023 {
+		return errors.New("Android 媒体存储权限验证失败，文件已保留")
+	}
+	return nil
+}
+
+func restoreMediaLabel(path string) error {
+	if _, err := os.Stat("/system/bin/restorecon"); err != nil {
+		return errors.New("Android 存储标签工具不可用，文件已保留")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/system/bin/restorecon", "-F", path)
+	cmd.WaitDelay = time.Second
+	if err := cmd.Run(); err != nil {
+		return errors.New("无法恢复 Android 存储标签，文件已保留")
+	}
+	return nil
+}
+
+func prepareSharedTaildropDirectory(directory string) error {
+	backing, ok := sharedTaildropBacking(directory)
+	if !ok {
+		return nil
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("接收目录不可用，文件已保留")
+	}
+	backingInfo, err := os.Lstat(backing)
+	if err != nil || !backingInfo.IsDir() || backingInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Android 媒体存储映射不可用，文件已保留")
+	}
+	if filepath.Clean(directory) == defaultTaildropPath {
+		if err := os.Chown(backing, 1023, 1023); err != nil {
+			return errors.New("无法设置 Android 接收目录属主，文件已保留")
+		}
+		if err := os.Chmod(backing, 0775); err != nil {
+			return errors.New("无法设置 Android 接收目录权限，文件已保留")
+		}
+		if err := verifyMediaOwner(backing); err != nil {
+			return err
+		}
+		if err := restoreMediaLabel(backing); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func normalizePublishedTaildropFile(path string) error {
+	backing, ok := sharedTaildropBacking(path)
+	if !ok {
+		return nil
+	}
+	info, err := os.Lstat(backing)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("Android 媒体存储文件映射不可用，文件已保留")
+	}
+	if err := os.Chown(backing, 1023, 1023); err != nil {
+		return errors.New("无法设置 Android 接收文件属主，文件已保留")
+	}
+	if err := os.Chmod(backing, 0664); err != nil {
+		return errors.New("无法设置 Android 接收文件权限，文件已保留")
+	}
+	if err := verifyMediaOwner(backing); err != nil {
+		return err
+	}
+	if err := restoreMediaLabel(backing); err != nil {
+		return err
+	}
+	return nil
+}
+
+// publishTaildropStaging copies files from the private module directory into
+// shared storage. The source remains in staging until its copy is synced and
+// closed successfully, so a failed publish can be retried without data loss.
+func publishTaildropStaging(staging, directory string) (int, error) {
+	return publishTaildropStagingWith(staging, directory, normalizePublishedTaildropFile)
+}
+
+func publishTaildropStagingWith(staging, directory string, normalize func(string) error) (int, error) {
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		return 0, errors.New("无法读取 Taildrop 临时目录")
+	}
+	if len(entries) == 0 {
+		return 0, errors.New("当前没有可接收的文件")
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return count, errors.New("Taildrop 临时目录包含符号链接，文件已保留")
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			return count, errors.New("Taildrop 临时目录包含非普通文件，文件已保留")
+		}
+		source := filepath.Join(staging, entry.Name())
+		if resolved, err := filepath.EvalSymlinks(source); err != nil || resolved != source {
+			return count, errors.New("Taildrop 文件路径无效，文件已保留")
+		}
+		target, file, err := openTaildropTarget(directory, entry.Name())
+		if err != nil {
+			return count, err
+		}
+		ok := false
+		func() {
+			in, openErr := os.Open(source)
+			if openErr != nil {
+				_ = file.Close()
+				return
+			}
+			if _, copyErr := io.Copy(file, in); copyErr != nil {
+				_ = in.Close()
+				_ = file.Close()
+				return
+			}
+			if closeErr := in.Close(); closeErr != nil {
+				_ = file.Close()
+				return
+			}
+			if chmodErr := file.Chmod(0664); chmodErr != nil {
+				_ = file.Close()
+				return
+			}
+			if syncErr := file.Sync(); syncErr != nil {
+				_ = file.Close()
+				return
+			}
+			ok = file.Close() == nil
+		}()
+		if !ok {
+			_ = os.Remove(target)
+			return count, errors.New("无法完整写入接收文件，文件已保留")
+		}
+		if err := normalize(target); err != nil {
+			_ = os.Remove(target)
+			return count, err
+		}
+		if err := os.Remove(source); err != nil {
+			return count, errors.New("接收文件已写入但临时文件未清理")
+		}
+		count++
+	}
+	return count, nil
+}
+
+func openTaildropTarget(directory, name string) (string, *os.File, error) {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return "", nil, errors.New("接收文件名无效，文件已保留")
+	}
+	for attempt := 0; attempt < 100; attempt++ {
+		candidate := name
+		if attempt > 0 {
+			ext := filepath.Ext(name)
+			candidate = strings.TrimSuffix(name, ext) + fmt.Sprintf(" (%d)", attempt) + ext
+		}
+		target := filepath.Join(directory, candidate)
+		file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0664)
+		if err == nil {
+			return target, file, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", nil, errors.New("无法在接收目录创建文件，文件已保留")
+		}
+	}
+	return "", nil, errors.New("接收目录中没有可用文件名，文件已保留")
+}
+
 func failed(message string) response { return response{OK: false, Error: message, ExitCode: 1} }
 
 type limitedBuffer struct {
@@ -737,6 +1235,22 @@ func decodeRequest(encoded string) (request, error) {
 			return r, errors.New("请求参数不匹配")
 		}
 	}
+	allowedFields := map[string]map[string]bool{
+		"status": {"action": true, "locale": true}, "devices": {"action": true, "locale": true},
+		"console": {"action": true, "locale": true}, "up": {"action": true, "locale": true}, "down": {"action": true, "locale": true},
+		"about": {"action": true, "locale": true}, "login": {"action": true, "locale": true},
+		"binary-check": {"action": true, "locale": true}, "binary-update": {"action": true, "locale": true},
+		"binary-channel": {"action": true, "locale": true, "channel": true},
+		"settings":       {"action": true, "locale": true, "settings": true}, "command": {"action": true, "locale": true, "command": true},
+		"taildrop-list": {"action": true, "locale": true, "path": true}, "taildrop-path": {"action": true, "locale": true, "path": true}, "taildrop-receive": {"action": true, "locale": true, "path": true},
+	}
+	if fields, ok := allowedFields[r.Action]; ok {
+		for key := range inputFields {
+			if !fields[key] {
+				return r, errors.New("请求参数不匹配")
+			}
+		}
+	}
 	switch r.Action {
 	case "binary-channel":
 		for key := range inputFields {
@@ -756,15 +1270,23 @@ func decodeRequest(encoded string) (request, error) {
 			}
 		}
 	case "status", "devices", "console", "up", "down":
-		if r.Command != "" || r.Settings != nil {
+		if r.Command != "" || r.Settings != nil || r.Path != "" {
 			return r, errors.New("请求参数不匹配")
 		}
+	case "taildrop-list":
+		if r.Command != "" || r.Settings != nil || len(r.Path) > 512 || (r.Path != "" && !validTaildropBrowsePath(r.Path)) {
+			return r, errors.New("浏览目录无效")
+		}
+	case "taildrop-path", "taildrop-receive":
+		if r.Command != "" || r.Settings != nil || len(r.Path) > 512 || (r.Path != "" && !validTaildropPath(r.Path)) {
+			return r, errors.New("接收目录无效")
+		}
 	case "settings":
-		if r.Settings == nil || r.Command != "" {
+		if r.Settings == nil || r.Command != "" || r.Path != "" {
 			return r, errors.New("请求参数不匹配")
 		}
 	case "command":
-		if r.Command == "" || r.Settings != nil {
+		if r.Command == "" || r.Settings != nil || r.Path != "" {
 			return r, errors.New("请求参数不匹配")
 		}
 	default:
@@ -851,6 +1373,12 @@ func main() {
 		os.Exit(1)
 	}
 	b := newBackend(filepath.Dir(filepath.Dir(executable)))
+	if len(os.Args) == 2 && os.Args[1] == "taildrop-auto" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+		defer stop()
+		b.taildropAuto(ctx)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	if len(os.Args) == 2 && os.Args[1] == "refresh-description" {
@@ -892,6 +1420,12 @@ func main() {
 				r = b.connection(ctx, false)
 			case "settings":
 				r = b.setSettings(ctx, req.Settings)
+			case "taildrop-path":
+				r = b.taildropPath(ctx, req.Path)
+			case "taildrop-list":
+				r = taildropDirectories(req.Path)
+			case "taildrop-receive":
+				r = b.taildropReceive(ctx, req.Path)
 			case "command":
 				r = b.command(ctx, req.Command)
 			}

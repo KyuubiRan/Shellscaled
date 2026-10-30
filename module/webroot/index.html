@@ -135,6 +135,25 @@
             </label>
           </div>
           <p class="settings-feedback" id="settings-hint" role="status" aria-live="polite" data-i18n="settings.unread"></p>
+          <article class="card taildrop-card">
+            <div class="card-heading"><h3 data-i18n="taildrop.heading"></h3><span class="small-label" data-i18n="taildrop.badge"></span></div>
+            <p class="binary-description" data-i18n="taildrop.description"></p>
+            <label class="field-label" for="taildrop-path" data-i18n="taildrop.pathLabel"></label>
+            <div class="taildrop-path-row">
+              <input id="taildrop-path" class="command-input" type="text" maxlength="512" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" data-i18n-placeholder="taildrop.pathPlaceholder" data-requires-bridge disabled>
+              <button class="button secondary compact" id="taildrop-browse" type="button" data-requires-bridge disabled data-i18n="taildrop.browse"></button>
+            </div>
+            <div class="taildrop-browser" id="taildrop-browser" hidden>
+              <div class="taildrop-browser-heading"><span id="taildrop-browser-current"></span><button class="text-button" id="taildrop-browser-up" type="button" data-i18n="taildrop.up"></button></div>
+              <div class="taildrop-directory-list" id="taildrop-directory-list" role="listbox" data-i18n-aria="taildrop.directoryList"></div>
+              <button class="button primary compact" id="taildrop-choose" type="button" data-i18n="taildrop.choose"></button>
+            </div>
+            <div class="binary-actions">
+              <button class="button secondary compact" id="taildrop-save" type="button" data-requires-bridge disabled><span id="taildrop-save-label" data-i18n="taildrop.save"></span></button>
+              <button class="button primary compact" id="taildrop-receive" type="button" data-requires-bridge disabled><span class="button-spinner" aria-hidden="true"></span><span id="taildrop-receive-label" data-i18n="taildrop.receive"></span></button>
+            </div>
+            <p class="local-message" id="taildrop-message" role="status" aria-live="polite" hidden></p>
+          </article>
           <article class="card binary-update-card" id="binary-update-card">
             <h3 data-i18n="binary.heading"></h3>
             <p class="binary-description" data-i18n="binary.description"></p>

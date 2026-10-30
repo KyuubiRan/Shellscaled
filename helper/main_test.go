@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -39,12 +40,12 @@ func TestCommandBoundary(t *testing.T) {
 
 func TestRPCRejectsUnknownOrMixedRequests(t *testing.T) {
 	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"binary-channel","channel":"stable"}`, `{"action":"binary-channel","channel":"preview","locale":"en"}`, `{"action":"binary-check"}`, `{"action":"binary-update","locale":"en"}`, `{"action":"devices"}`, `{"action":"console","locale":"en"}`, `{"action":"about"}`, `{"action":"about","locale":"en"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`} {
+	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"binary-channel","channel":"stable"}`, `{"action":"binary-channel","channel":"preview","locale":"en"}`, `{"action":"binary-check"}`, `{"action":"binary-update","locale":"en"}`, `{"action":"devices"}`, `{"action":"console","locale":"en"}`, `{"action":"about"}`, `{"action":"about","locale":"en"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`, `{"action":"taildrop-path","path":"/sdcard/Download"}`} {
 		if _, err := decodeRequest(encode(raw)); err != nil {
 			t.Errorf("valid request rejected: %v", err)
 		}
 	}
-	for _, raw := range []string{`{"action":"binary-channel"}`, `{"action":"binary-channel","channel":"prerelease"}`, `{"action":"binary-channel","channel":"../../other"}`, `{"action":"binary-channel","channel":"preview","command":""}`, `{"action":"binary-channel","channel":"stable","settings":null}`, `{"action":"binary-update","channel":"preview"}`, `{"action":"binary-check","channel":null}`, `{"action":"status","channel":"stable"}`, `{"action":"status","Channel":"stable"}`, `{"action":"binary-check","command":""}`, `{"action":"binary-update","settings":null}`, `{"action":"binary-check","url":"https://example.test"}`, `{"action":"binary-update","command":"id"}`, `{"action":"binary-update","settings":{"shieldsUp":true}}`, `{"action":"binary-check","version":"1.2.3"}`, `{"action":"console","command":"id"}`, `{"action":"console","url":"https://example.test"}`, `{"action":"console","settings":{"shieldsUp":true}}`, `{"action":"devices","command":"tailscale status"}`, `{"action":"devices","settings":{"shieldsUp":true}}`, `{"action":"devices","peers":true}`, `{"action":"exec","command":"id"}`, `{"action":"status","locale":"../../other"}`, `{"action":"status","locale":"fr"}`, `{"action":"status","command":"id"}`, `{"action":"settings","settings":{"acceptDNS":true}}`, `{"action":"settings"}`, `{"action":"command","command":"tailscale status","settings":{"shieldsUp":true}}`, `{"action":"status","env":{"PATH":"/evil"}}`, `{"action":"status"} {"action":"up"}`, `null`, `[]`} {
+	for _, raw := range []string{`{"action":"binary-channel"}`, `{"action":"binary-channel","channel":"prerelease"}`, `{"action":"binary-channel","channel":"../../other"}`, `{"action":"binary-channel","channel":"preview","command":""}`, `{"action":"binary-channel","channel":"stable","settings":null}`, `{"action":"binary-update","channel":"preview"}`, `{"action":"binary-check","channel":null}`, `{"action":"status","channel":"stable"}`, `{"action":"status","Channel":"stable"}`, `{"action":"status","command":""}`, `{"action":"binary-check","command":""}`, `{"action":"binary-update","settings":null}`, `{"action":"binary-check","url":"https://example.test"}`, `{"action":"binary-update","command":"id"}`, `{"action":"binary-update","settings":{"shieldsUp":true}}`, `{"action":"binary-check","version":"1.2.3"}`, `{"action":"console","command":"id"}`, `{"action":"console","url":"https://example.test"}`, `{"action":"console","settings":{"shieldsUp":true}}`, `{"action":"devices","command":"tailscale status"}`, `{"action":"devices","settings":{"shieldsUp":true}}`, `{"action":"devices","peers":true}`, `{"action":"exec","command":"id"}`, `{"action":"status","locale":"../../other"}`, `{"action":"status","locale":"fr"}`, `{"action":"status","command":"id"}`, `{"action":"settings","settings":{"acceptDNS":true}}`, `{"action":"settings"}`, `{"action":"command","command":"tailscale status","settings":{"shieldsUp":true}}`, `{"action":"status","env":{"PATH":"/evil"}}`, `{"action":"status"} {"action":"up"}`, `{"action":"taildrop-path","path":"/data/adb"}`, `null`, `[]`} {
 		if _, err := decodeRequest(encode(raw)); err == nil {
 			t.Errorf("invalid request accepted: %s", raw)
 		}
@@ -80,6 +81,162 @@ func TestApplicationLocales(t *testing.T) {
 	}
 	if stateLabel("Running", "en") != "Connected" || stateLabel("Running", "zh-TW") != "已連線" {
 		t.Error("wrong translated state label")
+	}
+}
+
+func TestTaildropPathValidation(t *testing.T) {
+	for _, path := range []string{
+		"/storage/emulated/0/Download/Tailscale",
+		"/sdcard/Download/Tailscale",
+		"/storage/emulated/0/Download",
+		"/storage/emulated/0/Documents/Incoming",
+		"/sdcard/Download",
+	} {
+		if !validTaildropPath(path) {
+			t.Errorf("valid Taildrop path rejected: %q", path)
+		}
+	}
+	for _, path := range []string{
+		"",
+		"relative/Download",
+		"/data/adb/other",
+		"/storage/emulated/0/Download/../Pictures",
+		"/storage/emulated/0/Download/../../data/adb",
+	} {
+		if validTaildropPath(path) {
+			t.Errorf("unsafe Taildrop path accepted: %q", path)
+		}
+	}
+}
+
+func TestAwaitTaildropFileEventAndCancellation(t *testing.T) {
+	for _, cancelWait := range []bool{false, true} {
+		t.Run(fmt.Sprint("cancel=", cancelWait), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			started, arrival := make(chan struct{}), make(chan struct{})
+			b := &backend{client: &http.Client{Timeout: 5 * time.Second, Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+				if r.Method != "GET" || r.URL.Path != "/localapi/v0/files/" || r.URL.RawQuery != "waitsec=3600" {
+					t.Error("expected the daemon's blocking file-arrival endpoint")
+				}
+				if deadline, ok := r.Context().Deadline(); !ok || time.Until(deadline) < time.Hour {
+					t.Error("ordinary RPC timeout interrupted the file wait")
+				}
+				close(started)
+				select {
+				case <-arrival:
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`[{"Name":"test.txt"}]`)), Header: make(http.Header)}, nil
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				}
+			})}}
+			done := make(chan struct{})
+			var pending bool
+			var err error
+			go func() {
+				pending, err = b.awaitTaildrop(ctx)
+				close(done)
+			}()
+			<-started
+			select {
+			case <-done:
+				t.Fatal("file wait returned before an event")
+			default:
+			}
+			if cancelWait {
+				cancel()
+			} else {
+				close(arrival)
+			}
+			<-done
+			if cancelWait && err == nil || !cancelWait && (!pending || err != nil) {
+				t.Fatalf("unexpected file wait result: pending=%v, err=%v", pending, err)
+			}
+			if b.client.Timeout != 5*time.Second {
+				t.Fatal("ordinary RPC timeout changed")
+			}
+		})
+	}
+}
+
+func TestPublishTaildropStaging(t *testing.T) {
+	staging := t.TempDir()
+	dir := t.TempDir()
+	path := filepath.Join(staging, "received.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	count, err := publishTaildropStaging(staging, dir)
+	if err != nil || count != 1 {
+		t.Fatalf("publish count=%d err=%v", count, err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "received.txt"))
+	if err != nil || string(data) != "hello" {
+		t.Fatalf("published data=%q err=%v", data, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("staged source still exists: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "received.txt"), []byte("existing"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("again"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := publishTaildropStaging(staging, dir); err != nil || count != 1 {
+		t.Fatalf("conflict publish count=%d err=%v", count, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "received (1).txt")); err != nil || string(data) != "again" {
+		t.Fatalf("conflict data=%q err=%v", data, err)
+	}
+
+	if err := os.Symlink(filepath.Join(staging, "received.txt"), filepath.Join(staging, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publishTaildropStaging(staging, dir); err == nil {
+		t.Fatal("symlink staging entry was accepted")
+	}
+}
+
+func TestPublishTaildropKeepsStagingOnOwnerFailure(t *testing.T) {
+	staging := t.TempDir()
+	dir := t.TempDir()
+	source := filepath.Join(staging, "owner-check.txt")
+	if err := os.WriteFile(source, []byte("payload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	normalize := func(path string) error { return errors.New("synthetic owner verification failure") }
+	if _, err := publishTaildropStagingWith(staging, dir, normalize); err == nil {
+		t.Fatal("owner failure was ignored")
+	}
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("staged source was removed after owner failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "owner-check.txt")); !os.IsNotExist(err) {
+		t.Fatalf("partial destination was retained: %v", err)
+	}
+}
+
+func TestTaildropBrowsePathValidation(t *testing.T) {
+	if validTaildropBrowsePath("") {
+		t.Fatal("empty browse path bypassed validation")
+	}
+	for _, path := range []string{"/storage/emulated/0", "/sdcard", "/storage/emulated/0/Download", "/storage/emulated/0/Documents/Inbox"} {
+		if !validTaildropBrowsePath(path) {
+			t.Errorf("valid browse path rejected: %q", path)
+		}
+	}
+	for _, path := range []string{"/data/adb", "/storage/emulated/0/Android/data/com.example", "/storage/emulated/0/Android/obb", "/storage/emulated/0/Download/../Documents"} {
+		if validTaildropBrowsePath(path) {
+			t.Errorf("unsafe browse path accepted: %q", path)
+		}
+	}
+	if !validTaildropBrowsePath("/storage/emulated/0/Pictures") || !validTaildropBrowsePath("/storage/emulated/0/Music") {
+		t.Fatal("ordinary shared-storage directories were rejected")
+	}
+	if got, ok := normalizeTaildropPath("/sdcard/Download/Tailscale"); !ok || got != "/storage/emulated/0/Download/Tailscale" {
+		t.Fatalf("sdcard alias was not canonicalized: %q %v", got, ok)
 	}
 }
 

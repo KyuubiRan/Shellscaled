@@ -6,7 +6,7 @@
   const requests = () => JSON.parse(fixture.requestsJSON());
   const backend = () => JSON.parse(fixture.statusJSON());
   const assert = (value) => { if (!value) throw new Error("assertion"); };
-  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error)\.[A-Za-z0-9.]+$/;
+  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error|taildrop)\.[A-Za-z0-9.]+$/;
   async function until(predicate) {
     const end = Date.now() + 6000;
     while (!predicate()) {
@@ -129,7 +129,8 @@
     const keys = Object.keys(translations.en).sort();
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "run-command", "command-output",
-      "devices-message", "console-label", "about-description", "login-label", "binary-check-label", "binary-update-label", "binary-message"]);
+      "devices-message", "console-label", "about-description", "login-label", "binary-check-label", "binary-update-label", "binary-message",
+      "taildrop-message", "taildrop-save-label", "taildrop-receive-label"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);

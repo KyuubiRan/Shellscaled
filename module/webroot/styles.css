@@ -167,6 +167,13 @@ input[type="text"], input[type="search"] { display: block; width: 100%; min-widt
 .switch input:disabled + .switch-track { opacity: .45; }
 .switch input:focus-visible + .switch-track { outline: 3px solid var(--focus); outline-offset: 3px; }
 .settings-feedback { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 14px 2px 24px; }
+.taildrop-path-row { display: flex; gap: 8px; align-items: stretch; }
+.taildrop-path-row .command-input { min-width: 0; flex: 1; }
+.taildrop-browser { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); }
+.taildrop-browser-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; word-break: break-all; }
+.taildrop-directory-list { display: grid; gap: 5px; max-height: 180px; overflow: auto; margin: 8px 0; }
+.taildrop-directory { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); padding: 8px 10px; text-align: left; font: inherit; cursor: pointer; }
+.taildrop-directory:hover, .taildrop-directory:focus-visible { border-color: var(--accent); }
 .settings-feedback[data-kind="error"] { color: var(--danger); }
 .language-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 0; margin-bottom: 24px; padding: 17px 19px; }
 .language-card label { min-width: 0; font-size: 14px; font-weight: 650; }
