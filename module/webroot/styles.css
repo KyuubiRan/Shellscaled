@@ -116,6 +116,7 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .local-message { font-size: 12px; color: var(--muted); line-height: 1.75; overflow-wrap: anywhere; }
 .local-message[data-kind="error"] { color: var(--danger); }
 .local-message[data-kind="warning"] { color: var(--warning); }
+.local-message[data-kind="muted"] { color: var(--muted); }
 .console-action .local-message, .about-action .local-message { margin: 10px 3px 0; }
 .devices-description { margin: -3px 2px 15px; color: var(--muted); font-size: 12px; }
 .device-search { margin-bottom: 14px; }

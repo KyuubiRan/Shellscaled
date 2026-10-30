@@ -7,6 +7,7 @@ SC_RUN=$SC_DATA/run
 SC_LOGS=$SC_DATA/logs
 SC_SOCKET=$SC_RUN/tailscaled.sock
 SC_DAEMON_PID=$SC_RUN/daemon.pid
+SC_MAGICDNS_PID=$SC_RUN/magicdns.pid
 SC_SUPERVISOR_PID=$SC_RUN/supervisor.pid
 SC_STOP=$SC_RUN/stop
 SC_LOCK=$SC_RUN/control.lock
@@ -195,6 +196,66 @@ sc_stop_daemon() {
         return 1
     fi
     rm -f "$SC_DAEMON_PID" "$SC_SOCKET"
+}
+
+sc_magicdns_running() {
+    sc_read_pid "$SC_MAGICDNS_PID" || return 1
+    sc_magicdns_exe=$(readlink "/proc/$SC_PID/exe" 2>/dev/null) || return 1
+    case "$sc_magicdns_exe" in
+        "$SC_MODDIR/bin/shellscaled-web"|"$SC_MODDIR/bin/shellscaled-web (deleted)") return 0 ;;
+    esac
+    return 1
+}
+
+# The module owns only chain shellscaled_dns (IPv4 and IPv6 nat) and its
+# OUTPUT jump; the proxy fills the chain.
+sc_magicdns_rules_remove() {
+    while /system/bin/iptables -w -t nat -D OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null; do :; done
+    /system/bin/iptables -w -t nat -F shellscaled_dns 2>/dev/null
+    /system/bin/iptables -w -t nat -X shellscaled_dns 2>/dev/null
+    while /system/bin/ip6tables -w -t nat -D OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null; do :; done
+    /system/bin/ip6tables -w -t nat -F shellscaled_dns 2>/dev/null
+    /system/bin/ip6tables -w -t nat -X shellscaled_dns 2>/dev/null
+    return 0
+}
+
+sc_magicdns_start() {
+    sc_magicdns_running && return 0
+    # Chains start empty, so DNS is never redirected to a proxy that is not running.
+    /system/bin/iptables -w -t nat -N shellscaled_dns 2>/dev/null
+    /system/bin/iptables -w -t nat -F shellscaled_dns 2>/dev/null
+    /system/bin/iptables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null ||
+        /system/bin/iptables -w -t nat -A OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null
+    /system/bin/ip6tables -w -t nat -N shellscaled_dns 2>/dev/null
+    /system/bin/ip6tables -w -t nat -F shellscaled_dns 2>/dev/null
+    /system/bin/ip6tables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null ||
+        /system/bin/ip6tables -w -t nat -A OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null
+    "$SC_MODDIR/bin/shellscaled-web" magicdns-proxy \
+        </dev/null >> "$SC_LOGS/daemon.log" 2>&1 &
+    sc_magicdns_new_pid=$!
+    sc_record_pid "$SC_MAGICDNS_PID" "$sc_magicdns_new_pid" || return 1
+    sc_log 'MagicDNS split resolver started.'
+}
+
+# Stops the proxy but keeps the OUTPUT jumps; the proxy flushes its own chain.
+sc_magicdns_term() {
+    if sc_magicdns_running; then
+        sc_stop_pid=$SC_PID
+        kill "$sc_stop_pid" 2>/dev/null || true
+        # Wait so the old proxy releases port 1053 and finishes its chain flush
+        # before a successor starts.
+        sc_wait=0
+        while [ "$sc_wait" -lt 50 ] && sc_magicdns_running && [ "$SC_PID" = "$sc_stop_pid" ]; do
+            sleep 0.1
+            sc_wait=$((sc_wait + 1))
+        done
+    fi
+    rm -f "$SC_MAGICDNS_PID"
+}
+
+sc_magicdns_stop() {
+    sc_magicdns_rules_remove
+    sc_magicdns_term
 }
 
 sc_start_daemon() {

@@ -47,10 +47,11 @@
     taildropDirectoryList: $("taildrop-directory-list"), taildropChoose: $("taildrop-choose"),
     exitNodeSelect: $("exit-node-select"), exitNodeRefresh: $("network-refresh"), exitNodeApply: $("exit-node-apply"), exitNodeClear: $("exit-node-clear"),
     advertiseRoutes: $("advertise-routes"), advertiseExitNode: $("advertise-exit-node"), advertiseSave: $("advertise-save"),
-    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"),
+    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), magicDNSStatus: $("magicdns-status"),
     advertiseRoutesError: $("advertise-routes-error"), advertiseMessage: $("advertise-message"),
     advertiseExitDescription: $("advertise-exit-description"),
   };
+  let dnsPendingTimer = null;
   const state = {
     available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
     status: null, settings: null, settingsConfirmed: false, pendingSetting: null, settingsError: null,
@@ -545,6 +546,27 @@
         state.status.exitNodeOnline === false ? ["network.summaryOffline", "warning"] : ["network.summaryActive", "info"];
     ui.exitNodeSummary.textContent = t(summary[0], { name });
     ui.exitNodeSummary.dataset.kind = summary[1];
+
+    const dns = state.status && state.status.magicDNS;
+    const mode = dns && dns.running === true && typeof dns.mode === "string" ? dns.mode : "off";
+    const suffix = dns && Array.isArray(dns.suffixes) && typeof dns.suffixes[0] === "string" ? dns.suffixes[0] : "";
+    // A stale state file means the proxy stopped while its rules may remain.
+    const stale = dns && dns.running !== true && typeof dns.mode === "string" && dns.mode !== "off";
+    const running = state.status && state.status.state === "Running";
+    // The proxy has not caught up with a connect or exit-node change yet.
+    const pending = running && dns && dns.pending === true;
+    if (pending && !dnsPendingTimer) dnsPendingTimer = setTimeout(() => { dnsPendingTimer = null; refresh(false); }, 2000);
+    const dnsLine = pending ? ["network.dnsPending", "muted"] :
+      stale ? ["network.dnsRulesFailed", "warning"] :
+      mode === "off" ? ["network.dnsOff", "info"] :
+      dns.privateDns === "hostname" ? ["network.dnsPrivateHostname", "warning"] :
+      dns.rules === false || dns.rules6 === false ? ["network.dnsRulesFailed", "warning"] :
+      state.status.exitNodeConfigured === true && !mode.startsWith("exit") ? ["network.dnsNotViaExit", "warning"] :
+      mode === "exit-passthrough" ? ["network.dnsExitPassthrough", "warning"] :
+      mode.startsWith("exit") ? ["network.dnsViaExit", "info"] :
+      [suffix ? "network.dnsActive" : "network.dnsActiveNoSuffix", "info"];
+    const dnsHint = dnsLine[1] === "info" && mode !== "off" && dns.privateDns === "opportunistic" ? (I18n.locale() === "en" ? " " : "") + t("network.dnsPrivateAuto") : "";
+    setLocalMessage(ui.magicDNSStatus, running ? t(dnsLine[0], { suffix }) + dnsHint : "", dnsLine[1]);
 
     const text = state.networkError ? t("network.failed") + " " + viewText(state.networkError) :
       state.busyAction === "exit-node" ? t("network.applying") :

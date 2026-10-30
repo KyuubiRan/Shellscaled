@@ -222,6 +222,7 @@ type response struct {
 	TaildropReceived             bool                `json:"taildropReceived,omitempty"`
 	TaildropDirectories          []taildropDirectory `json:"taildropDirectories,omitempty"`
 	TaildropDirectoriesTruncated bool                `json:"taildropDirectoriesTruncated,omitempty"`
+	MagicDNS                     *magicDNSState      `json:"magicDNS,omitempty"`
 }
 
 type taildropDirectory struct {
@@ -382,7 +383,7 @@ func (b *backend) status(ctx context.Context) response {
 }
 
 func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
-	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), TaildropPath: readTaildropPath()}
+	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), TaildropPath: readTaildropPath(), MagicDNS: readMagicDNSState(magicDNSStatePath, time.Now())}
 	var st localStatus
 	if err := b.api(ctx, "GET", "status?peers=false", nil, &st); err != nil {
 		if _, statErr := os.Stat(socketPath); statErr == nil {
@@ -406,6 +407,10 @@ func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
 	}
 	st.controlURL = p.ControlURL
 	r.Settings = settings{p.RouteAll, p.ShieldsUp, p.ExitNodeAllowLANAccess}
+	// The proxy refreshes every 5 s; until then its mode reflects older state.
+	if m := r.MagicDNS; m != nil && m.Running && (m.Daemon != st.BackendState || (st.BackendState == "Running" && m.ExitNode != p.ExitNodeID)) {
+		m.Pending = true
+	}
 	r.ExitNodeConfigured = p.ExitNodeID != "" || (p.ExitNodeIP != "" && p.ExitNodeIP != "invalid IP")
 	if p.ExitNodeID != "" {
 		r.ExitNodeTarget = boundedText(p.ExitNodeID, 128)
@@ -730,6 +735,7 @@ func (b *backend) connection(ctx context.Context, up bool) response {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+	nudgeMagicDNS()
 	return r
 }
 
@@ -1181,6 +1187,7 @@ func (b *backend) setExitNode(ctx context.Context, target string) response {
 	if err := b.api(ctx, "PATCH", "prefs", p, nil); err != nil {
 		return failed(err.Error())
 	}
+	nudgeMagicDNS()
 	return b.status(ctx)
 }
 
@@ -1621,6 +1628,15 @@ func main() {
 		os.Exit(1)
 	}
 	b := newBackend(filepath.Dir(filepath.Dir(executable)))
+	if len(os.Args) == 2 && os.Args[1] == "magicdns-proxy" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+		defer stop()
+		if err := b.magicDNSProxy(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "taildrop-auto" {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 		defer stop()

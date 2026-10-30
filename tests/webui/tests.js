@@ -149,6 +149,10 @@
       const refreshBox = $("network-refresh").getBoundingClientRect();
       assert(refreshBox.width >= 44 && refreshBox.height >= 44);
       assert($("network-refresh").getAttribute("aria-label").trim());
+      const dns = $("magicdns-status");
+      assert(backend().state === "Running" && !backend().magicDNS);
+      assert(!dns.hidden && dns.dataset.kind === "info" && dns.getAttribute("aria-live") === "polite");
+      assert(dns.textContent === ShellscaledI18n.t("network.dnsOff"));
       click("tab-overview");
     });
 

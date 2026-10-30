@@ -108,6 +108,7 @@ sc_stop() {
 
 sc_supervise_cleanup() {
     trap '' TERM INT HUP
+    sc_magicdns_stop
     if [ -n "${sc_taildrop_pid:-}" ]; then
         kill "$sc_taildrop_pid" 2>/dev/null
         wait "$sc_taildrop_pid" 2>/dev/null
@@ -139,6 +140,7 @@ sc_supervise() {
     sc_taildrop_pid=$!
     sc_failures=0
     sc_description_tick=0
+    sc_magicdns_daemon_identity=
     while ! sc_disabled; do
         if sc_legacy_active; then
             sc_log 'Conflicting magisk-tailscaled module is enabled; stopping.'
@@ -146,7 +148,17 @@ sc_supervise() {
         fi
         if sc_daemon_running; then
             sc_failures=0
-        elif ! sc_start_daemon; then
+            sc_current_daemon_identity="$SC_PID.$SC_PID_START"
+            if [ "$sc_magicdns_daemon_identity" != "$sc_current_daemon_identity" ]; then
+                sc_magicdns_term
+                sc_magicdns_start || sc_log 'MagicDNS split resolver could not start.'
+                sc_magicdns_daemon_identity="$sc_current_daemon_identity"
+            else
+                sc_magicdns_start || sc_log 'MagicDNS split resolver could not start.'
+            fi
+        elif sc_start_daemon; then
+            continue
+        else
             sc_failures=$((sc_failures + 1))
             sc_log "Daemon startup failed (attempt $sc_failures)."
             if [ "$sc_failures" -ge 5 ]; then

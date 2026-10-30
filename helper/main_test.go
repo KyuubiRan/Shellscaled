@@ -452,6 +452,32 @@ func TestStatusExitNodeOnlineAndIPv6(t *testing.T) {
 	}
 }
 
+func TestStatusMagicDNSPending(t *testing.T) {
+	defer func(old string) { magicDNSStatePath = old }(magicDNSStatePath)
+	magicDNSStatePath = filepath.Join(t.TempDir(), "magicdns.json")
+	b := &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"BackendState":"Running"}`
+		if r.URL.Path == "/localapi/v0/prefs" {
+			body = `{"ExitNodeID":"nOn"}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+	for file, want := range map[string]bool{
+		`{"daemon":"Running","exitNode":"nOn"}`:    false,
+		`{"daemon":"Stopped","exitNode":""}`:       true,
+		`{"daemon":"Running","exitNode":"nOther"}`: true,
+	} {
+		file = fmt.Sprintf(`{"updated":%d,"mode":"tailnet",%s`, time.Now().Unix(), file[1:])
+		if err := os.WriteFile(magicDNSStatePath, []byte(file), 0600); err != nil {
+			t.Fatal(err)
+		}
+		r, _ := b.statusWithLocal(context.Background())
+		if r.MagicDNS == nil || r.MagicDNS.Pending != want {
+			t.Fatalf("%s: pending want %v, got %+v", file, want, r.MagicDNS)
+		}
+	}
+}
+
 func TestOutputIsBounded(t *testing.T) {
 	var b limitedBuffer
 	input := []byte(strings.Repeat("x", 2<<20))
