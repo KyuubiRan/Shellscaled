@@ -38,4 +38,4 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 原模块当前 main 最后提交为 `dffc1aee6fa80dd435a95776a37f979e0204e590`，日期 2025-11-04；其 README 仍描述历史 userspace + hev 方案，而当时代码已采用 Android CLI。因此重构以实际源码为依据。
 
-本次核查官方 [stable 包索引](https://pkgs.tailscale.com/stable/) 和 Tailscale `v1.104.2` 源码，选择相同版本作为模块版本。源码私有仓库使用带上游版本 / 提交说明的源码快照，再独立维护 Android 补丁，避免在本机拉取完整上游历史。没有 clone AOSP；仅下载必要的官方单文件。
+本次核查官方 [stable 包索引](https://pkgs.tailscale.com/stable/) 和 Tailscale `v1.104.4` release 源码，选择相同版本作为模块版本。源码仓库保留官方 release 的历史，再独立维护 Android 补丁，避免把 Android 改动混入上游提交。没有 clone AOSP；仅下载必要的官方单文件。

@@ -7,10 +7,10 @@ then the parent reference. Preserve the owner's configured Git identity/signing.
 ## Source ancestry and updates
 
 The official GitHub fork retains the real Tailscale history through
-`v1.104.2` (`e26db7a5797683ec99ad1516c40b628c7f2dfd71`). The Android changes
+`v1.104.4` (`27047635f237d1f3e0b08c0f487674757f30d2f7`). The Android changes
 are separate commits directly above that release, rather than a disconnected
-snapshot. The original r1 source is retained by `shellscaled-v1.104.2-r1` so
-existing parent commits remain reproducible.
+snapshot. The original 1.104.2 source is retained by the existing module tags so
+previous releases remain reproducible.
 
 Configure `upstream` as `https://github.com/tailscale/tailscale.git` when working
 from a fresh clone. `android-upstream` may reference the original
