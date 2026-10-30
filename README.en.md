@@ -51,7 +51,9 @@ After running `su` in `adb shell` or a terminal, use `tailscale` directly. Use `
 
 Use the module action button in your manager to connect or disconnect. KernelSU users can also open the settings page to manage subnet routes, incoming connections and LAN access when using an exit node. Switch changes take effect immediately.
 
-**Receive files** defaults to `Download/Tailscale` in shared storage. Browse ordinary directories in primary shared storage, save your choice, and receive pending files. App-private directories are protected. See [Taildrop](docs/taildrop.md) for the receive workflow.
+**Network roles** lets you select, switch or stop using an exit node, advertise this device as an exit node, and advertise CIDR subnet routes. Advertisements require approval in the Tailscale console. Android forwarding, NAT and SELinux behavior require separate validation.
+
+**Receive files** defaults to `Download/Tailscale` in shared storage. Browse ordinary directories in primary shared storage, save your choice, and receive pending files. App-private directories are protected. See [Taildrop](docs/taildrop.md) for the receive workflow and [Android networking](docs/android-network.md) for exit node behavior and limitations.
 
 Tap a local address to copy it. The Devices page lets you search visible devices, check online status and copy names or addresses.
 

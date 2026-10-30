@@ -255,7 +255,7 @@ public final class MainActivity extends Activity {
                 }
                 synchronized (guard) {
                     String action = request.getString("action");
-                    if (Arrays.asList("devices", "console", "about", "login", "binary-check", "binary-update").contains(action) && request.length() != 2) {
+                    if (Arrays.asList("devices", "exit-nodes", "console", "about", "login", "binary-check", "binary-update").contains(action) && request.length() != 2) {
                         throw new JSONException("extra-fields");
                     }
                     if ("binary-channel".equals(action) && (request.length() != 3 ||
@@ -330,6 +330,7 @@ public final class MainActivity extends Activity {
                             replyOrHold(callback, binary);
                             return;
                         case "devices":
+                        case "exit-nodes":
                             reply(callback, new JSONObject().put("ok", true).put("devices", devices()));
                             return;
                         case "console":

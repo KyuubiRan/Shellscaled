@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -183,12 +184,16 @@ type settingsPatch struct {
 }
 
 type request struct {
-	Action   string         `json:"action"`
-	Channel  string         `json:"channel,omitempty"`
-	Locale   string         `json:"locale,omitempty"`
-	Command  string         `json:"command,omitempty"`
-	Path     string         `json:"path,omitempty"`
-	Settings *settingsPatch `json:"settings,omitempty"`
+	Action   string `json:"action"`
+	Channel  string `json:"channel,omitempty"`
+	Locale   string `json:"locale,omitempty"`
+	Command  string `json:"command,omitempty"`
+	Path     string `json:"path,omitempty"`
+	ExitNode string `json:"exitNode,omitempty"`
+	// Routes are accepted as a comma separated list and parsed at the RPC boundary.
+	AdvertiseRoutes   *string        `json:"advertiseRoutes,omitempty"`
+	AdvertiseExitNode *bool          `json:"advertiseExitNode,omitempty"`
+	Settings          *settingsPatch `json:"settings,omitempty"`
 }
 
 type response struct {
@@ -199,6 +204,8 @@ type response struct {
 	Settings                     settings            `json:"settings"`
 	DaemonRunning                bool                `json:"daemonRunning"`
 	ExitNodeConfigured           bool                `json:"exitNodeConfigured"`
+	ExitNodeOnline               *bool               `json:"exitNodeOnline,omitempty"`
+	ExitNodeIPv6                 *bool               `json:"exitNodeIPv6,omitempty"`
 	LoginURL                     string              `json:"loginURL,omitempty"`
 	Error                        string              `json:"error,omitempty"`
 	ExitCode                     int                 `json:"exitCode"`
@@ -206,6 +213,9 @@ type response struct {
 	Stderr                       string              `json:"stderr,omitempty"`
 	Truncated                    bool                `json:"truncated,omitempty"`
 	Devices                      *[]device           `json:"devices,omitempty"`
+	ExitNodeTarget               string              `json:"exitNodeTarget,omitempty"`
+	AdvertiseExitNode            bool                `json:"advertiseExitNode"`
+	AdvertiseRoutes              []string            `json:"advertiseRoutes,omitempty"`
 	Binary                       *binaryStatus       `json:"binary,omitempty"`
 	UpdateChannel                string              `json:"updateChannel,omitempty"`
 	TaildropPath                 string              `json:"taildropPath,omitempty"`
@@ -221,11 +231,15 @@ type taildropDirectory struct {
 
 // Deliberately decode only UI fields. Never return prefs.Persist or account data.
 type localStatus struct {
-	BackendState string
-	Version      string
-	TailscaleIPs []string
-	AuthURL      string
-	controlURL   string // Set only from the same LocalAPI preferences snapshot.
+	BackendState   string
+	Version        string
+	TailscaleIPs   []string
+	AuthURL        string
+	ExitNodeStatus *struct {
+		ID     string
+		Online bool
+	}
+	controlURL string // Set only from the same LocalAPI preferences snapshot.
 }
 
 // Keep this projection separate from ordinary status polling, which omits peers.
@@ -271,24 +285,28 @@ func (peers *localDeviceList) UnmarshalJSON(data []byte) error {
 }
 
 type localDevice struct {
-	ID           string
-	HostName     string
-	DNSName      string
-	TailscaleIPs []string
-	Online       bool
-	OS           string
-	LastSeen     time.Time
+	ID             string
+	HostName       string
+	DNSName        string
+	TailscaleIPs   []string
+	Online         bool
+	OS             string
+	LastSeen       time.Time
+	ExitNode       bool
+	ExitNodeOption bool
 }
 
 type device struct {
-	ID       string     `json:"id"`
-	Name     string     `json:"name"`
-	DNSName  string     `json:"dnsName"`
-	IPs      []string   `json:"ips"`
-	Online   bool       `json:"online"`
-	OS       string     `json:"os"`
-	Self     bool       `json:"self"`
-	LastSeen *time.Time `json:"lastSeen,omitempty"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	DNSName        string     `json:"dnsName"`
+	IPs            []string   `json:"ips"`
+	Online         bool       `json:"online"`
+	OS             string     `json:"os"`
+	Self           bool       `json:"self"`
+	LastSeen       *time.Time `json:"lastSeen,omitempty"`
+	ExitNode       bool       `json:"exitNode,omitempty"`
+	ExitNodeOption bool       `json:"exitNodeOption,omitempty"`
 }
 
 type localPrefs struct {
@@ -298,6 +316,7 @@ type localPrefs struct {
 	ExitNodeAllowLANAccess bool
 	ExitNodeID             string
 	ExitNodeIP             string
+	AdvertiseRoutes        []string
 }
 
 type backend struct {
@@ -388,17 +407,46 @@ func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
 	st.controlURL = p.ControlURL
 	r.Settings = settings{p.RouteAll, p.ShieldsUp, p.ExitNodeAllowLANAccess}
 	r.ExitNodeConfigured = p.ExitNodeID != "" || (p.ExitNodeIP != "" && p.ExitNodeIP != "invalid IP")
+	if p.ExitNodeID != "" {
+		r.ExitNodeTarget = boundedText(p.ExitNodeID, 128)
+	} else if p.ExitNodeIP != "" && p.ExitNodeIP != "invalid IP" {
+		r.ExitNodeTarget = boundedText(p.ExitNodeIP, 80)
+	}
+	if r.ExitNodeConfigured {
+		if st.ExitNodeStatus != nil && st.ExitNodeStatus.ID == p.ExitNodeID {
+			online := st.ExitNodeStatus.Online
+			r.ExitNodeOnline = &online
+		} else if p.ExitNodeID != "" && st.BackendState == "Running" {
+			// The selected node is missing from the netmap; tailscaled blackholes traffic.
+			online := false
+			r.ExitNodeOnline = &online
+		}
+		r.ExitNodeIPv6 = tunnelIPv6Default()
+	}
+	for _, route := range p.AdvertiseRoutes {
+		if route == "0.0.0.0/0" || route == "::/0" {
+			r.AdvertiseExitNode = true
+			continue
+		}
+		if route != "" {
+			r.AdvertiseRoutes = append(r.AdvertiseRoutes, boundedText(route, 80))
+		}
+	}
 	return r, st
 }
 
 func (b *backend) devices(ctx context.Context) response {
+	return b.deviceList(ctx, false)
+}
+
+func (b *backend) deviceList(ctx context.Context, exitsOnly bool) response {
 	var status localDevices
 	if err := b.api(ctx, "GET", "status?peers=true", nil, &status); err != nil {
 		return failed(err.Error())
 	}
 	devices := make([]device, 0, len(status.Peer)+1)
 	add := func(peer *localDevice, self bool) {
-		if peer == nil {
+		if peer == nil || (exitsOnly && (self || !peer.ExitNodeOption)) {
 			return
 		}
 		dnsName := boundedText(strings.TrimRight(peer.DNSName, "."), 253)
@@ -423,7 +471,7 @@ func (b *backend) devices(ctx context.Context) response {
 				ips = append(ips, ip.String())
 			}
 		}
-		entry := device{ID: boundedText(peer.ID, 128), Name: name, DNSName: dnsName, IPs: ips, Online: peer.Online, OS: boundedText(peer.OS, 32), Self: self}
+		entry := device{ID: boundedText(peer.ID, 128), Name: name, DNSName: dnsName, IPs: ips, Online: peer.Online, OS: boundedText(peer.OS, 32), Self: self, ExitNode: peer.ExitNode, ExitNodeOption: peer.ExitNodeOption}
 		if !peer.Online && !peer.LastSeen.IsZero() {
 			lastSeen := peer.LastSeen
 			entry.LastSeen = &lastSeen
@@ -1057,6 +1105,180 @@ func openTaildropTarget(directory, name string) (string, *os.File, error) {
 	return "", nil, errors.New("接收目录中没有可用文件名，文件已保留")
 }
 
+func validExitNodeTarget(value string) bool {
+	if len(value) > 256 || (value != "" && !targetCharacters.MatchString(value)) {
+		return false
+	}
+	return value == "" || (value != "." && value != "..")
+}
+
+func parseAdvertiseRoutes(value string) ([]string, error) {
+	if len(value) > 1024 {
+		return nil, errors.New("子网路由过长")
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return []string{}, nil
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) > 16 {
+		return nil, errors.New("最多发布 16 条子网路由")
+	}
+	routes := make([]string, 0, len(parts))
+	seen := make(map[string]bool)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		prefix, err := netip.ParsePrefix(part)
+		if err != nil || prefix != prefix.Masked() || prefix.Bits() == 0 {
+			return nil, fmt.Errorf("无效的子网路由：%s", boundedText(part, 80))
+		}
+		canonical := prefix.String()
+		if !seen[canonical] {
+			seen[canonical] = true
+			routes = append(routes, canonical)
+		}
+	}
+	return routes, nil
+}
+
+func (b *backend) setExitNode(ctx context.Context, target string) response {
+	if !validExitNodeTarget(target) {
+		return failed("出口节点名称或地址无效")
+	}
+	cur := b.status(ctx)
+	if !cur.DaemonRunning {
+		return failed("请先启动后台服务")
+	}
+	p := map[string]any{
+		"ExitNodeIDSet": true, "ExitNodeID": "",
+		"ExitNodeIPSet": true, "ExitNodeIP": "",
+		"NetfilterModeSet": true, "NetfilterMode": 0,
+	}
+	if target != "" {
+		if cur.AdvertiseExitNode {
+			return failed("本机正在发布出口节点，不能同时使用出口节点")
+		}
+		list := b.deviceList(ctx, true)
+		if !list.OK {
+			return list
+		}
+		var found *device
+		for i, d := range *list.Devices {
+			if d.ID == target || slices.Contains(d.IPs, target) {
+				found = &(*list.Devices)[i]
+				break
+			}
+		}
+		if found == nil || !found.Online {
+			return failed("所选出口节点离线或不可用")
+		}
+		p["ExitNodeID"] = found.ID
+		// Netfilter only adds the connmark workaround for strict reverse-path filtering.
+		if strictReversePath() {
+			p["NetfilterMode"] = 2
+		}
+	}
+	if err := b.api(ctx, "PATCH", "prefs", p, nil); err != nil {
+		return failed(err.Error())
+	}
+	return b.status(ctx)
+}
+
+var procRoot = "/proc"
+
+func readProcInt(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	v, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	return v
+}
+
+// strictReversePath reports whether any IPv4 interface uses strict rp_filter (max(all, iface) == 1).
+func strictReversePath() bool {
+	conf := filepath.Join(procRoot, "sys/net/ipv4/conf")
+	all := readProcInt(filepath.Join(conf, "all/rp_filter"))
+	entries, _ := os.ReadDir(conf)
+	for _, e := range entries {
+		switch e.Name() {
+		case "all", "default", "lo", "tailscale0":
+			continue
+		}
+		if max(all, readProcInt(filepath.Join(conf, e.Name(), "rp_filter"))) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// tunnelIPv6Default reports whether ::/0 is routed via tailscale0 in any fib6
+// table, or nil when the route table cannot be read.
+func tunnelIPv6Default() *bool {
+	data, err := os.ReadFile(filepath.Join(procRoot, "net/ipv6_route"))
+	if err != nil {
+		return nil
+	}
+	found := false
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 10 && f[0] == strings.Repeat("0", 32) && f[1] == "00" && f[9] == "tailscale0" {
+			found = true
+			break
+		}
+	}
+	return &found
+}
+
+func (b *backend) setAdvertisement(ctx context.Context, exitNode *bool, routes *string) response {
+	if !b.status(ctx).DaemonRunning {
+		return failed("请先启动后台服务")
+	}
+	var parsedRoutes []string
+	if routes != nil {
+		var err error
+		parsedRoutes, err = parseAdvertiseRoutes(*routes)
+		if err != nil {
+			return failed(err.Error())
+		}
+	}
+	var current localPrefs
+	if err := b.api(ctx, "GET", "prefs", nil, &current); err != nil {
+		return failed(err.Error())
+	}
+	const ipv4Default, ipv6Default = "0.0.0.0/0", "::/0"
+	kept := make([]string, 0, len(current.AdvertiseRoutes)+len(parsedRoutes)+2)
+	for _, route := range current.AdvertiseRoutes {
+		isDefault := route == ipv4Default || route == ipv6Default
+		if (routes == nil && !isDefault) || (isDefault && exitNode == nil) {
+			kept = append(kept, route)
+		}
+	}
+	if routes != nil {
+		kept = append(kept, parsedRoutes...)
+	}
+	if exitNode != nil && *exitNode {
+		kept = append(kept, ipv4Default, ipv6Default)
+	}
+	seen := make(map[string]bool, len(kept))
+	unique := kept[:0]
+	for _, route := range kept {
+		if !seen[route] {
+			seen[route] = true
+			unique = append(unique, route)
+		}
+	}
+	if exitNode == nil && routes == nil {
+		return failed("发布设置不能为空")
+	}
+	if err := b.api(ctx, "PATCH", "prefs", map[string]any{
+		"AdvertiseRoutes": unique, "AdvertiseRoutesSet": true,
+	}, nil); err != nil {
+		return failed(err.Error())
+	}
+	return b.status(ctx)
+}
+
 func failed(message string) response { return response{OK: false, Error: message, ExitCode: 1} }
 
 type limitedBuffer struct {
@@ -1237,11 +1459,14 @@ func decodeRequest(encoded string) (request, error) {
 	}
 	allowedFields := map[string]map[string]bool{
 		"status": {"action": true, "locale": true}, "devices": {"action": true, "locale": true},
-		"console": {"action": true, "locale": true}, "up": {"action": true, "locale": true}, "down": {"action": true, "locale": true},
+		"exit-nodes": {"action": true, "locale": true},
+		"console":    {"action": true, "locale": true}, "up": {"action": true, "locale": true}, "down": {"action": true, "locale": true},
 		"about": {"action": true, "locale": true}, "login": {"action": true, "locale": true},
 		"binary-check": {"action": true, "locale": true}, "binary-update": {"action": true, "locale": true},
 		"binary-channel": {"action": true, "locale": true, "channel": true},
 		"settings":       {"action": true, "locale": true, "settings": true}, "command": {"action": true, "locale": true, "command": true},
+		"exit-node":     {"action": true, "locale": true, "exitNode": true},
+		"advertise":     {"action": true, "locale": true, "advertiseRoutes": true, "advertiseExitNode": true},
 		"taildrop-list": {"action": true, "locale": true, "path": true}, "taildrop-path": {"action": true, "locale": true, "path": true}, "taildrop-receive": {"action": true, "locale": true, "path": true},
 	}
 	if fields, ok := allowedFields[r.Action]; ok {
@@ -1269,9 +1494,32 @@ func decodeRequest(encoded string) (request, error) {
 				return r, errors.New("请求参数不匹配")
 			}
 		}
-	case "status", "devices", "console", "up", "down":
-		if r.Command != "" || r.Settings != nil || r.Path != "" {
+	case "status", "devices", "exit-nodes", "console", "up", "down":
+		if r.Command != "" || r.Settings != nil || r.Path != "" || r.ExitNode != "" || r.AdvertiseRoutes != nil || r.AdvertiseExitNode != nil {
 			return r, errors.New("请求参数不匹配")
+		}
+	case "exit-node":
+		for key := range inputFields {
+			if key != "action" && key != "locale" && key != "exitNode" {
+				return r, errors.New("请求参数不匹配")
+			}
+		}
+		if !validExitNodeTarget(r.ExitNode) {
+			return r, errors.New("出口节点名称或地址无效")
+		}
+	case "advertise":
+		for key := range inputFields {
+			if key != "action" && key != "locale" && key != "advertiseRoutes" && key != "advertiseExitNode" {
+				return r, errors.New("请求参数不匹配")
+			}
+		}
+		if r.AdvertiseRoutes == nil && r.AdvertiseExitNode == nil {
+			return r, errors.New("发布设置不能为空")
+		}
+		if r.AdvertiseRoutes != nil {
+			if _, err := parseAdvertiseRoutes(*r.AdvertiseRoutes); err != nil {
+				return r, err
+			}
 		}
 	case "taildrop-list":
 		if r.Command != "" || r.Settings != nil || len(r.Path) > 512 || (r.Path != "" && !validTaildropBrowsePath(r.Path)) {
@@ -1282,11 +1530,11 @@ func decodeRequest(encoded string) (request, error) {
 			return r, errors.New("接收目录无效")
 		}
 	case "settings":
-		if r.Settings == nil || r.Command != "" || r.Path != "" {
+		if r.Settings == nil || r.Command != "" || r.Path != "" || r.ExitNode != "" || r.AdvertiseRoutes != nil || r.AdvertiseExitNode != nil {
 			return r, errors.New("请求参数不匹配")
 		}
 	case "command":
-		if r.Command == "" || r.Settings != nil || r.Path != "" {
+		if r.Command == "" || r.Settings != nil || r.Path != "" || r.ExitNode != "" || r.AdvertiseRoutes != nil || r.AdvertiseExitNode != nil {
 			return r, errors.New("请求参数不匹配")
 		}
 	default:
@@ -1404,6 +1652,8 @@ func main() {
 				r = b.status(ctx)
 			case "devices":
 				r = b.devices(ctx)
+			case "exit-nodes":
+				r = b.deviceList(ctx, true)
 			case "console":
 				r = b.console(ctx)
 			case "about":
@@ -1420,6 +1670,10 @@ func main() {
 				r = b.connection(ctx, false)
 			case "settings":
 				r = b.setSettings(ctx, req.Settings)
+			case "exit-node":
+				r = b.setExitNode(ctx, req.ExitNode)
+			case "advertise":
+				r = b.setAdvertisement(ctx, req.AdvertiseExitNode, req.AdvertiseRoutes)
 			case "taildrop-path":
 				r = b.taildropPath(ctx, req.Path)
 			case "taildrop-list":

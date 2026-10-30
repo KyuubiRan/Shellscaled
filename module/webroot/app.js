@@ -45,6 +45,11 @@
     taildropBrowse: $("taildrop-browse"), taildropBrowser: $("taildrop-browser"),
     taildropBrowserCurrent: $("taildrop-browser-current"), taildropBrowserUp: $("taildrop-browser-up"),
     taildropDirectoryList: $("taildrop-directory-list"), taildropChoose: $("taildrop-choose"),
+    exitNodeSelect: $("exit-node-select"), exitNodeRefresh: $("network-refresh"), exitNodeApply: $("exit-node-apply"), exitNodeClear: $("exit-node-clear"),
+    advertiseRoutes: $("advertise-routes"), advertiseExitNode: $("advertise-exit-node"), advertiseSave: $("advertise-save"),
+    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"),
+    advertiseRoutesError: $("advertise-routes-error"), advertiseMessage: $("advertise-message"),
+    advertiseExitDescription: $("advertise-exit-description"),
   };
   const state = {
     available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
@@ -60,6 +65,10 @@
     taildropPath: "", taildropDraftDirty: false, taildropError: null, taildropBrowserPath: "", taildropDirectories: [],
     taildropDirectoriesTruncated: false, taildropBrowserBusy: false, taildropBrowserRequestVersion: 0,
     taildropActionRequestVersion: 0,
+    networkFeedback: "", networkError: null, advertiseFeedback: "", advertiseError: null,
+    networkDraft: { exitNode: null, routes: null, advertiseExitNode: null },
+    networkRequestVersion: 0,
+    exitNodes: null, exitNodesLoading: false, exitNodesError: null, exitNodesRequestVersion: 0,
   };
   let callbackSequence = 0;
   const copyTimers = new Map();
@@ -351,6 +360,8 @@
       ips: Array.isArray(device.ips) ? [...new Set(device.ips.filter((ip) => typeof ip === "string" && ip.length <= 80))].slice(0, 8) : [],
       online: device.online === true,
       self: device.self === true,
+      exitNode: device.exitNode === true,
+      exitNodeOption: device.exitNodeOption === true,
       os: boundedString(device.os, 200),
       lastSeen: typeof device.lastSeen === "number" ? device.lastSeen : boundedString(device.lastSeen, 100),
     }));
@@ -390,6 +401,12 @@
       self.className = "badge device-self";
       self.textContent = t("devices.self");
       badges.appendChild(self);
+    }
+    if (device.exitNodeOption) {
+      const role = document.createElement("span");
+      role.className = "badge device-self";
+      role.textContent = t(device.exitNode ? "network.active" : "network.exitNode");
+      badges.appendChild(role);
     }
     if (device.os) {
       const os = document.createElement("span");
@@ -466,6 +483,118 @@
     }
   }
 
+  function exitNodeCandidates() {
+    return state.exitNodes ? state.exitNodes.items.filter((device) => device.exitNodeOption && !device.self) : [];
+  }
+
+  function currentExitNode() {
+    return state.status && typeof state.status.exitNodeTarget === "string" ? state.status.exitNodeTarget : "";
+  }
+
+  function validateRoutes(text) {
+    const routes = text.split(",").map((route) => route.trim()).filter(Boolean);
+    if (routes.length > 16) return "network.routesTooMany";
+    if (text.length > 1024 || routes.some((route) => !/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(route) || /\/0+$/.test(route))) return "network.routesInvalid";
+    return "";
+  }
+
+  function setLocalMessage(element, text, kind) {
+    element.textContent = text;
+    element.hidden = !text;
+    element.dataset.kind = kind;
+    element.setAttribute("role", kind === "error" ? "alert" : "status");
+  }
+
+  function renderNetwork() {
+    if (!ui.exitNodeSelect) return;
+    const current = currentExitNode();
+    const candidates = exitNodeCandidates();
+    const signature = I18n.locale() + "\n" + current + "\n" + JSON.stringify(candidates.map((device) => [device.id, device.name, device.dnsName, device.online, device.exitNode]));
+    if (ui.exitNodeSelect.dataset.signature !== signature) {
+      ui.exitNodeSelect.replaceChildren();
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = t("network.exitNodeNone");
+      ui.exitNodeSelect.appendChild(none);
+      for (const device of candidates) {
+        const option = document.createElement("option");
+        const active = device.id === current || device.exitNode;
+        option.value = device.id;
+        option.textContent = (device.name || device.dnsName || device.id) +
+          (active ? " · " + t("network.active") : "") + (device.online ? "" : " · " + t("network.offline"));
+        option.disabled = !device.online && device.id !== current;
+        ui.exitNodeSelect.appendChild(option);
+      }
+      if (current && ![...ui.exitNodeSelect.options].some((option) => option.value === current)) {
+        const option = document.createElement("option");
+        option.value = current;
+        option.textContent = current + " · " + t("network.active");
+        ui.exitNodeSelect.appendChild(option);
+      }
+      ui.exitNodeSelect.dataset.signature = signature;
+    }
+    const matching = [...ui.exitNodeSelect.options].find((option) => option.value === current);
+    const draftTarget = state.networkDraft.exitNode;
+    ui.exitNodeSelect.value = draftTarget !== null ? draftTarget : (matching ? current : "");
+
+    const activeNode = candidates.find((device) => device.id === current || device.ips.includes(current));
+    const name = (activeNode && (activeNode.name || activeNode.dnsName)) || current;
+    const summary = !state.status ? ["network.waiting", "muted"] :
+      state.status.exitNodeConfigured !== true ? ["network.summaryNone", "muted"] :
+        state.status.state !== "Running" ? ["network.summaryPending", "muted"] :
+        state.status.exitNodeOnline === false ? ["network.summaryOffline", "warning"] : ["network.summaryActive", "info"];
+    ui.exitNodeSummary.textContent = t(summary[0], { name });
+    ui.exitNodeSummary.dataset.kind = summary[1];
+
+    const text = state.networkError ? t("network.failed") + " " + viewText(state.networkError) :
+      state.busyAction === "exit-node" ? t("network.applying") :
+      state.exitNodesLoading && !state.exitNodes ? t("network.loading") :
+      state.exitNodesError ? t("network.loadFailed") + " " + viewText(state.exitNodesError) :
+      state.networkFeedback === "saved" ? t("network.saved") :
+      state.exitNodes && candidates.length === 0 ? t("network.empty") :
+      candidates.length > 0 && !candidates.some((device) => device.online) ? t("network.allOffline") : "";
+    const exitError = state.networkError || (state.busyAction !== "exit-node" && state.exitNodesError);
+    setLocalMessage(ui.networkMessage, text, exitError ? "error" : "info");
+    ui.exitNodeRefresh.setAttribute("aria-label", t(state.exitNodesError ? "network.retry" : "network.refresh"));
+    ui.exitNodeRefresh.setAttribute("aria-busy", String(state.exitNodesLoading));
+
+    if (state.status) {
+      ui.advertiseExitNode.checked = state.networkDraft.advertiseExitNode !== null ? state.networkDraft.advertiseExitNode : state.status.advertiseExitNode === true;
+      if (state.networkDraft.routes === null && !ui.advertiseRoutes.matches(":focus")) ui.advertiseRoutes.value = Array.isArray(state.status.advertiseRoutes) ? state.status.advertiseRoutes.join(",") : "";
+      if (state.networkDraft.routes !== null) ui.advertiseRoutes.value = state.networkDraft.routes;
+    }
+    const routesError = state.networkDraft.routes !== null ? validateRoutes(ui.advertiseRoutes.value) : "";
+    ui.advertiseRoutes.setAttribute("aria-invalid", String(Boolean(routesError)));
+    setLocalMessage(ui.advertiseRoutesError, routesError ? t(routesError) : "", "error");
+    setLocalMessage(ui.advertiseMessage, state.advertiseError ? t("network.advertiseFailed") + " " + viewText(state.advertiseError) :
+      state.advertiseFeedback === "saved" ? t("network.advertiseSaved") : "", state.advertiseError ? "error" : "info");
+    ui.advertiseExitDescription.textContent = t(exitAdvertisementBlocked() ? "network.exitAdvertisementBlocked" : "network.exitAdvertisementDescription");
+  }
+
+  function exitAdvertisementBlocked() {
+    return Boolean(state.status && state.status.exitNodeConfigured === true && state.status.advertiseExitNode !== true);
+  }
+
+  async function loadExitNodes() {
+    if (!state.available || !state.pageActive || state.exitNodesLoading) return;
+    const version = ++state.exitNodesRequestVersion;
+    state.exitNodesLoading = true;
+    state.exitNodesError = null;
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "exit-nodes" }));
+      if (version !== state.exitNodesRequestVersion || !state.pageActive) return;
+      state.exitNodes = normalizeDevices(result);
+    } catch (error) {
+      if (version === state.exitNodesRequestVersion && state.pageActive) state.exitNodesError = errorView(error);
+    } finally {
+      if (version === state.exitNodesRequestVersion) {
+        state.exitNodesLoading = false;
+        updateControls();
+      }
+    }
+  }
+
   async function loadDevices() {
     if (!state.available || !state.pageActive) return;
     if (state.busyAction === "devices") return;
@@ -485,10 +614,70 @@
       const result = requireSuccess(await rpc({ action: "devices" }));
       if (version !== state.deviceRequestVersion || !state.pageActive) return;
       state.devices = normalizeDevices(result);
+      renderNetwork();
     } catch (error) {
       if (version === state.deviceRequestVersion && state.pageActive) state.devicesError = errorView(error);
     } finally {
       if (state.pageActive) renderDevices();
+      finishBusy();
+    }
+  }
+
+  async function applyExitNode(target) {
+    if (state.busy || !state.available || !state.pageActive || (target !== "" && !state.settingsConfirmed)) return;
+    const version = ++state.networkRequestVersion;
+    state.busy = true;
+    state.busyAction = "exit-node";
+    state.networkError = null;
+    state.networkFeedback = "";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "exit-node", exitNode: target }));
+      if (!state.pageActive || version !== state.networkRequestVersion) return;
+      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+      state.networkDraft = { ...state.networkDraft, exitNode: null, ...(target ? { advertiseExitNode: null } : {}) };
+      state.networkFeedback = "saved";
+      state.exitNodesLoading = false;
+      loadExitNodes();
+    } catch (error) {
+      if (state.pageActive && version === state.networkRequestVersion) {
+        state.networkError = errorView(error);
+        state.refreshAfterBusy = true;
+        markFreshness("verify");
+      }
+    } finally {
+      finishBusy();
+    }
+  }
+
+  async function saveAdvertisement() {
+    if (state.busy || !state.available || !state.pageActive || !state.settingsConfirmed) return;
+    const routes = ui.advertiseRoutes.value.trim();
+    const advertiseExitNode = ui.advertiseExitNode.checked;
+    if (validateRoutes(routes)) {
+      state.networkDraft.routes = ui.advertiseRoutes.value;
+      updateControls();
+      return;
+    }
+    const version = ++state.networkRequestVersion;
+    state.busy = true;
+    state.busyAction = "advertise";
+    state.advertiseError = null;
+    state.advertiseFeedback = "";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "advertise", advertiseExitNode, advertiseRoutes: routes }));
+      if (!state.pageActive || version !== state.networkRequestVersion) return;
+      state.networkDraft = { ...state.networkDraft, routes: null, advertiseExitNode: null };
+      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+      state.advertiseFeedback = "saved";
+    } catch (error) {
+      if (state.pageActive && version === state.networkRequestVersion) {
+        state.advertiseError = errorView(error);
+        state.refreshAfterBusy = true;
+        markFreshness("verify");
+      }
+    } finally {
       finishBusy();
     }
   }
@@ -656,6 +845,19 @@
     ui.exitLan.disabled = disabled || !state.settingsConfirmed || !exitNodeConfigured;
     ui.exitLanDescription.textContent = t(!state.status ? "settings.exitLanWaiting" :
       exitNodeConfigured ? "settings.exitLanDescription" : "settings.exitLanUnavailable");
+    renderNetwork();
+    const networkDisabled = disabled || !state.settingsConfirmed;
+    const selected = ui.exitNodeSelect.selectedOptions[0];
+    const draft = state.networkDraft;
+    ui.exitNodeSelect.disabled = networkDisabled || !state.exitNodes;
+    ui.exitNodeRefresh.disabled = !state.available || !state.pageActive || state.exitNodesLoading;
+    ui.exitNodeApply.disabled = networkDisabled || !state.exitNodes || !selected || selected.disabled ||
+      selected.value === "" || selected.value === currentExitNode();
+    ui.exitNodeClear.disabled = !state.available || !state.pageActive || state.busy || !exitNodeConfigured;
+    ui.advertiseRoutes.disabled = networkDisabled;
+    ui.advertiseExitNode.disabled = networkDisabled || exitAdvertisementBlocked();
+    ui.advertiseSave.disabled = networkDisabled || (draft.routes === null && draft.advertiseExitNode === null) ||
+      Boolean(draft.routes !== null && validateRoutes(ui.advertiseRoutes.value));
     ui.run.textContent = t(state.busyAction === "command" ? "command.running" : "command.run");
     ui.consoleLabel.textContent = t(state.busyAction === "console" ? "console.opening" : "console.open");
     renderAbout();
@@ -979,6 +1181,7 @@
     }
     syncSettings();
     renderPresentation();
+    renderNetwork();
     updateControls();
   }
 
@@ -1174,6 +1377,13 @@
       if (selected && focus) tab.focus();
     }
     if (name === "devices" && !state.devices && !state.devicesError) loadDevices();
+    if (name === "settings") {
+      loadExitNodes();
+      if (!state.settingsConfirmed) {
+        if (state.busy) state.refreshAfterBusy = true;
+        else refresh(false);
+      }
+    }
   }
 
   document.querySelectorAll("[data-tab]").forEach((tab) => {
@@ -1193,6 +1403,30 @@
   $("refresh").addEventListener("click", () => refresh(true));
   $("refresh-devices").addEventListener("click", () => loadDevices());
   ui.deviceSearch.addEventListener("input", renderDevices);
+  ui.exitNodeApply.addEventListener("click", () => applyExitNode(ui.exitNodeSelect.value));
+  ui.exitNodeClear.addEventListener("click", () => applyExitNode(""));
+  ui.exitNodeRefresh.addEventListener("click", () => {
+    loadExitNodes();
+    if (!state.settingsConfirmed) {
+      if (state.busy) state.refreshAfterBusy = true;
+      else refresh(false);
+    }
+  });
+  ui.advertiseSave.addEventListener("click", saveAdvertisement);
+  ui.exitNodeSelect.addEventListener("change", () => {
+    state.networkDraft.exitNode = ui.exitNodeSelect.value;
+    state.networkFeedback = "";
+    state.networkError = null;
+    updateControls();
+  });
+  const editAdvertisement = (field, value) => {
+    state.networkDraft[field] = value;
+    state.advertiseFeedback = "";
+    state.advertiseError = null;
+    updateControls();
+  };
+  ui.advertiseRoutes.addEventListener("input", () => editAdvertisement("routes", ui.advertiseRoutes.value));
+  ui.advertiseExitNode.addEventListener("change", () => editAdvertisement("advertiseExitNode", ui.advertiseExitNode.checked));
   ui.console.addEventListener("click", openConsole);
   ui.about.addEventListener("click", openAbout);
   ui.login.addEventListener("click", startLogin);
@@ -1260,7 +1494,9 @@
   }, true);
   document.addEventListener("submit", (event) => event.preventDefault());
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refresh(false);
+    if (document.visibilityState !== "visible") return;
+    refresh(false);
+    if (state.activeTab === "settings") loadExitNodes();
   });
   window.addEventListener("pagehide", () => {
     copyEpoch++;
@@ -1296,6 +1532,16 @@
     state.taildropBrowserBusy = false;
     state.taildropBrowserRequestVersion++;
     state.taildropActionRequestVersion++;
+    state.networkFeedback = "";
+    state.networkError = null;
+    state.advertiseFeedback = "";
+    state.advertiseError = null;
+    state.networkDraft = { exitNode: null, routes: null, advertiseExitNode: null };
+    state.networkRequestVersion++;
+    state.exitNodesRequestVersion++;
+    state.exitNodes = null;
+    state.exitNodesLoading = false;
+    state.exitNodesError = null;
     state.status = null;
     state.settings = null;
     state.settingsConfirmed = false;
@@ -1323,11 +1569,13 @@
     renderNotice();
     renderOutput();
     renderBinary();
+    renderNetwork();
     updateControls();
   });
   window.addEventListener("pageshow", () => {
     if (state.pageActive) return;
     state.pageActive = true;
+    if (state.activeTab === "settings") loadExitNodes();
     if (state.activeTab === "devices") state.deviceRefreshPending = true;
     if (state.busy) state.refreshAfterBusy = true;
     else refresh(false);
@@ -1338,12 +1586,16 @@
   renderPresentation();
   renderOutput();
   renderDevices();
+  renderNetwork();
   renderConsoleMessage();
   updateControls();
   if (state.available) {
     refresh(false);
     setInterval(() => {
-      if (document.visibilityState === "visible") refresh(false);
+      if (document.visibilityState === "visible") {
+        refresh(false);
+        if (state.activeTab === "settings") loadExitNodes();
+      }
     }, 15000);
   }
 })();
