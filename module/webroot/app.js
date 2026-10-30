@@ -47,7 +47,7 @@
     taildropDirectoryList: $("taildrop-directory-list"), taildropChoose: $("taildrop-choose"),
     exitNodeSelect: $("exit-node-select"), exitNodeRefresh: $("network-refresh"), exitNodeApply: $("exit-node-apply"), exitNodeClear: $("exit-node-clear"),
     advertiseRoutes: $("advertise-routes"), advertiseExitNode: $("advertise-exit-node"), advertiseSave: $("advertise-save"),
-    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), magicDNSStatus: $("magicdns-status"),
+    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), exitNodeIpv6: $("exit-node-ipv6"), exitNodeIpv6Takeover: $("exit-node-ipv6-takeover"), magicDNSStatus: $("magicdns-status"),
     advertiseRoutesError: $("advertise-routes-error"), advertiseMessage: $("advertise-message"),
     advertiseExitDescription: $("advertise-exit-description"),
   };
@@ -68,7 +68,7 @@
     taildropActionRequestVersion: 0,
     networkFeedback: "", networkError: null, advertiseFeedback: "", advertiseError: null,
     networkDraft: { exitNode: null, routes: null, advertiseExitNode: null },
-    networkRequestVersion: 0,
+    networkRequestVersion: 0, exitIpv6Pending: null,
     exitNodes: null, exitNodesLoading: false, exitNodesError: null, exitNodesRequestVersion: 0,
   };
   let callbackSequence = 0;
@@ -570,6 +570,7 @@
 
     const text = state.networkError ? t("network.failed") + " " + viewText(state.networkError) :
       state.busyAction === "exit-node" ? t("network.applying") :
+      state.busyAction === "exit-ipv6" ? t("network.ipv6Applying") :
       state.exitNodesLoading && !state.exitNodes ? t("network.loading") :
       state.exitNodesError ? t("network.loadFailed") + " " + viewText(state.exitNodesError) :
       state.networkFeedback === "saved" ? t("network.saved") :
@@ -577,6 +578,16 @@
       candidates.length > 0 && !candidates.some((device) => device.online) ? t("network.allOffline") : "";
     const exitError = state.networkError || (state.busyAction !== "exit-node" && state.exitNodesError);
     setLocalMessage(ui.networkMessage, text, exitError ? "error" : "info");
+    const takeover = exitIpv6Takeover();
+    ui.exitNodeIpv6Takeover.checked = takeover;
+    // On is the default, as in the official app. Off keeps IPv6 on the current
+    // network; a tunnelled ::/0 while off means the daemon cannot apply it (an
+    // older daemon). On without a tunnelled ::/0 means the daemon skipped IPv6.
+    const ipv6Line = !(state.status && state.status.exitNodeConfigured === true) ? ["", "info"] :
+      !takeover && state.status.exitNodeIPv6 === true ? ["network.ipv6Unsupported", "warning"] :
+      !takeover ? ["network.ipv6Physical", "info"] :
+      state.status.exitNodeIPv6 === false ? ["network.ipv6Bypass", "warning"] : ["", "info"];
+    setLocalMessage(ui.exitNodeIpv6, ipv6Line[0] ? t(ipv6Line[0]) : "", ipv6Line[1]);
     ui.exitNodeRefresh.setAttribute("aria-label", t(state.exitNodesError ? "network.retry" : "network.refresh"));
     ui.exitNodeRefresh.setAttribute("aria-busy", String(state.exitNodesLoading));
 
@@ -591,6 +602,40 @@
     setLocalMessage(ui.advertiseMessage, state.advertiseError ? t("network.advertiseFailed") + " " + viewText(state.advertiseError) :
       state.advertiseFeedback === "saved" ? t("network.advertiseSaved") : "", state.advertiseError ? "error" : "info");
     ui.advertiseExitDescription.textContent = t(exitAdvertisementBlocked() ? "network.exitAdvertisementBlocked" : "network.exitAdvertisementDescription");
+  }
+
+  function exitIpv6Takeover() {
+    return state.exitIpv6Pending !== null ? state.exitIpv6Pending : Boolean(state.status && state.status.exitNodeIPv6Takeover === true);
+  }
+
+  async function applyExitIpv6(enabled) {
+    if (state.busy || !state.available || !state.pageActive || !state.status || enabled === exitIpv6Takeover()) {
+      updateControls();
+      return;
+    }
+    const version = ++state.networkRequestVersion;
+    state.busy = true;
+    state.busyAction = "exit-ipv6";
+    state.exitIpv6Pending = enabled;
+    state.networkError = null;
+    state.networkFeedback = "";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "exit-node-ipv6", exitNodeIPv6: enabled }));
+      if (!state.pageActive || version !== state.networkRequestVersion) return;
+      state.exitIpv6Pending = null;
+      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+    } catch (error) {
+      if (state.pageActive && version === state.networkRequestVersion) {
+        state.networkError = errorView(error);
+        // The switch file may be saved even when applying failed; re-read it.
+        state.refreshAfterBusy = true;
+        markFreshness("verify");
+      }
+    } finally {
+      state.exitIpv6Pending = null;
+      finishBusy();
+    }
   }
 
   function exitAdvertisementBlocked() {
@@ -877,6 +922,7 @@
       selected.value === "" || selected.value === currentExitNode();
     ui.exitNodeClear.disabled = !state.available || !state.pageActive || state.busy || !exitNodeConfigured;
     ui.advertiseRoutes.disabled = networkDisabled;
+    ui.exitNodeIpv6Takeover.disabled = disabled || !state.status;
     ui.advertiseExitNode.disabled = networkDisabled || exitAdvertisementBlocked();
     ui.advertiseSave.disabled = networkDisabled || (draft.routes === null && draft.advertiseExitNode === null) ||
       Boolean(draft.routes !== null && validateRoutes(ui.advertiseRoutes.value));
@@ -1435,6 +1481,7 @@
     }
   });
   ui.advertiseSave.addEventListener("click", saveAdvertisement);
+  ui.exitNodeIpv6Takeover.addEventListener("change", () => applyExitIpv6(ui.exitNodeIpv6Takeover.checked));
   ui.exitNodeSelect.addEventListener("change", () => {
     state.networkDraft.exitNode = ui.exitNodeSelect.value;
     state.networkFeedback = "";

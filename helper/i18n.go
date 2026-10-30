@@ -82,13 +82,15 @@ func (b *backend) selectLocale(preference string) {
 
 // CLI output remains untouched. Only application messages are translated.
 var messages = map[string][3]string{
-	"所选出口节点离线或不可用":          {"所选出口节点离线或不可用。", "所選出口節點離線或無法使用。", "The selected exit node is offline or unavailable."},
-	"本机正在发布出口节点，不能同时使用出口节点": {"本机正在发布出口节点，不能同时使用出口节点。", "本機正在發布出口節點，無法同時使用出口節點。", "This device is advertising itself as an exit node and cannot use one at the same time."},
-	"出口节点名称或地址无效":           {"出口节点名称或地址无效。", "出口節點名稱或位址無效。", "Choose a valid exit node."},
-	"发布设置不能为空":              {"请选择要发布的网络角色。", "請選擇要公布的網路角色。", "Choose the network role to advertise."},
-	"子网路由过长":                {"子网路由过长。", "子網路由過長。", "The subnet route list is too long."},
-	"子网路由格式无效":              {"请输入规范的 CIDR 子网路由；出口能力请使用出口节点开关。", "請輸入標準的 CIDR 子網路由；出口功能請使用出口節點開關。", "Enter canonical CIDR subnet routes. Use the exit node switch to advertise an exit node."},
-	"最多发布 16 条子网路由":         {"最多发布 16 条子网路由。", "最多公布 16 條子網路由。", "Advertise up to 16 subnet routes."},
+	"所选出口节点离线或不可用":                    {"所选出口节点离线或不可用。", "所選出口節點離線或無法使用。", "The selected exit node is offline or unavailable."},
+	"本机正在发布出口节点，不能同时使用出口节点":           {"本机正在发布出口节点，不能同时使用出口节点。", "本機正在發布出口節點，無法同時使用出口節點。", "This device is advertising itself as an exit node and cannot use one at the same time."},
+	"出口节点名称或地址无效":                     {"出口节点名称或地址无效。", "出口節點名稱或位址無效。", "Choose a valid exit node."},
+	"无法保存 IPv6 出口设置":                  {"无法保存 IPv6 出口设置。", "無法儲存 IPv6 出口設定。", "Could not save the exit node IPv6 setting."},
+	"IPv6 出口设置已保存，需要随本版模块发布的后台服务才能生效": {"设置已保存，但需要随本版模块发布的服务版本才能生效。", "設定已儲存，但需要隨本版模組發布的服務版本才能生效。", "Saved, but this requires the daemon shipped with this module version to take effect."},
+	"发布设置不能为空":                        {"请选择要发布的网络角色。", "請選擇要公布的網路角色。", "Choose the network role to advertise."},
+	"子网路由过长":                          {"子网路由过长。", "子網路由過長。", "The subnet route list is too long."},
+	"子网路由格式无效":                        {"请输入规范的 CIDR 子网路由；出口能力请使用出口节点开关。", "請輸入標準的 CIDR 子網路由；出口功能請使用出口節點開關。", "Enter canonical CIDR subnet routes. Use the exit node switch to advertise an exit node."},
+	"最多发布 16 条子网路由":                   {"最多发布 16 条子网路由。", "最多公布 16 條子網路由。", "Advertise up to 16 subnet routes."},
 	"接收目录必须位于 Android 共享存储，且不能位于 Android/data、Android/obb 或 Android/sandbox": {"请选择主外部存储中的普通目录。", "請選擇主外部儲存空間中的一般目錄。", "Choose an ordinary directory in primary shared storage."},
 	"接收目录不存在或不可用":                                 {"接收目录不存在或不可用。", "接收目錄不存在或無法使用。", "The receive directory is unavailable."},
 	"接收目录无效":                                      {"请选择有效的接收目录。", "請選擇有效的接收目錄。", "Choose a valid receive directory."},

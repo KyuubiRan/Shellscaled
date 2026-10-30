@@ -130,7 +130,7 @@
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "run-command", "command-output",
       "devices-message", "console-label", "about-description", "login-label", "binary-check-label", "binary-update-label", "binary-message",
-      "network-message", "exit-node-summary", "advertise-exit-description", "taildrop-message", "taildrop-save-label", "taildrop-receive-label"]);
+      "network-message", "exit-node-summary", "exit-node-ipv6", "advertise-exit-description", "taildrop-message", "taildrop-save-label", "taildrop-receive-label"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
@@ -153,6 +153,29 @@
       assert(backend().state === "Running" && !backend().magicDNS);
       assert(!dns.hidden && dns.dataset.kind === "info" && dns.getAttribute("aria-live") === "polite");
       assert(dns.textContent === ShellscaledI18n.t("network.dnsOff"));
+      click("tab-overview");
+    });
+
+    await test("exit-node-ipv6-takeover-defaults-on", async () => {
+      await idle();
+      click("tab-settings");
+      await until(() => !$("exit-node-ipv6-takeover").disabled);
+      const toggle = $("exit-node-ipv6-takeover");
+      const line = $("exit-node-ipv6");
+      // The fixture reports no opt-out file, so the exit node takes IPv6 too.
+      assert(backend().exitNodeConfigured === true && backend().exitNodeIPv6Takeover === true && toggle.checked);
+      assert(toggle.getAttribute("role") === "switch" && toggle.closest("#network-role-card"));
+      assert(line.hidden);
+      const ipv6Requests = () => requests().filter((request) => request.action === "exit-node-ipv6");
+      const before = ipv6Requests().length;
+      click("exit-node-ipv6-takeover");
+      await until(() => ipv6Requests().length === before + 1);
+      const request = ipv6Requests().at(-1);
+      assert(request.exitNodeIPv6 === false && Object.keys(request).every((key) => ["action", "locale", "exitNodeIPv6"].includes(key)));
+      await idle();
+      // The fixture rejects the action: the switch returns to the daemon's state with a local error.
+      assert(toggle.checked && !$("network-message").hidden && $("network-message").dataset.kind === "error");
+      assert(line.hidden);
       click("tab-overview");
     });
 

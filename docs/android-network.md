@@ -114,7 +114,7 @@ REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是�
 
 ### 路由
 
-选择出口节点后，tailscaled 无论 NetfilterMode 取值都会向 table 52 强制写入 `0.0.0.0/0` 和 `::/0`（即使对端未发布出口路由，也宁可黑洞不泄漏）。优先级 13001 的规则（见“Android 策略路由”）因此让所有不带 bypass 位的流量进入隧道，只有 tailscaled 自身带 `0x10020000` 的传输 socket 绕过。
+选择出口节点后，tailscaled 无论 NetfilterMode 取值都会向 table 52 强制写入 `0.0.0.0/0` 和 `::/0`（即使对端未发布出口路由，也宁可黑洞不泄漏）。`::/0` 是否写入由下文“IPv6”一节的开关决定（默认写入）。优先级 13001 的规则（见“Android 策略路由”）因此让所有不带 bypass 位的流量进入隧道，只有 tailscaled 自身带 `0x10020000` 的传输 socket 绕过。
 
 `exit-node-allow-lan-access` 关闭时，手机自身各接口的前缀（Wi-Fi 局域网 /24、蜂窝前缀、全局 IPv6 /64、`fe80::/64`）也作为路由装入 `tailscale0`，局域网网关和局域网 DNS 都经出口节点转发而不可达。开启时这些前缀变为 table 52 中的 throw 路由，查表失败后继续走 Android 后续规则。throw 只覆盖接口前缀：不在本链路前缀内的运营商 DNS 或公共解析器仍经隧道。
 
@@ -143,15 +143,35 @@ REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是�
 
 一个已选但离线、未获批准或未发布出口路由的节点会按设计黑洞所有流量。helper 在 PATCH 前从 `status?peers=true` 中查找 `ExitNodeOption` 且在线的对端（目标可为 StableNodeID 或其 Tailscale IP，最终都写 `ExitNodeID`，`ExitNodeIP` 置空），找不到或离线即拒绝；本机正在发布出口节点时也拒绝（tailscaled 不允许同时发布和使用）。关闭出口节点不做任何查询，只发一次 PATCH。状态字段 `exitNodeOnline` 来自 `status` 的 `ExitNodeStatus`，仅在其 ID 与 prefs 的 `ExitNodeID` 一致时给出。
 
+### IPv6
+
+出口节点默认同时接管 IPv6，与上游和官方 Tailscale Android App 一致。WebUI 的“出口节点接管 IPv6”开关默认为开；关闭时 helper 创建 opt-out 文件 `/data/adb/shellscaled/exit-node-ipv6-local`：
+
+- 文件不存在为开，也是默认值：选中的出口节点同时得到 `::/0`，即上游行为。
+- 文件存在（内容不限）为关：只有 `0.0.0.0/0` 进入出口节点，IPv6（包括手机自身 IPv6 接口前缀）留在物理网络。用于没有 IPv6 互联网的出口节点：这类节点对 IPv6 目标回 `Destination unreachable: No route`，开着时双栈网络上的 IPv6 连接会失败。
+- tailscaled 在每次 `ipnlocal.routerConfigLocked` 时（仅 GOOS=android）`os.Stat` 该文件，不用环境变量，不需重启守护进程；重启后保持，卸载时随 `/data/adb/shellscaled` 删除。安装和升级不创建该文件，开关保持为开。
+
+关闭时 `routerConfigLocked` 从 `rs.Routes` 去掉出口对端 AllowedIPs 带来的 `::/0`，不补 `::/0`，allow-LAN 关闭时只把 IPv4 的接口前缀装入隧道；`0.0.0.0/0`、Tailnet 与子网 IPv6 路由及上面的策略规则都不变。table 52 中没有 `::/0` 时，IPv6 查找在 13001 查表失败，继续使用 Android 的 wwan / wlan 规则并选物理源地址。过滤放在 ipnlocal 而不是 `router_linux.go` 的 `Set()`：routerCfg 不变时 wgengine 不调用 `router.Set`。
+
+切换后 helper 删除或写入该文件，再向 LocalAPI `POST /localapi/v0/debug?action=reconfig`（空 body）。该动作调用 `LocalBackend.authReconfig()`，routerCfg 变化后 wgengine 调用 `router.Set`，由 cidrDiff 在 table 52 增删 `::/0 dev tailscale0`。重复 PATCH 相同的 `ExitNodeID` 无效（prefs 相同时 `editPrefsLocked` 提前返回，routerCfg 相同时 Reconfig 返回 ErrNoChanges），`force-netmap-update` 也不调用 `authReconfig`。未选出口节点时该调用无副作用，文件状态在下次选择时生效。不含该动作的守护进程（CLI android-v1.104.4-r5 及更早）返回 400 `unknown action`。这类守护进程总让 `::/0` 经过出口节点，所以打开开关时 helper 视为成功；关闭时 helper 提示设置已保存、需要随本版模块发布的后台服务才能生效。
+
+状态语义：`exitNodeIPv6Takeover` 表示 opt-out 文件不存在（默认为真）；`exitNodeIPv6` 检查 `/proc/net/ipv6_route` 中是否有经 `tailscale0` 的 `::/0`。开关为开且 `exitNodeIPv6` 为假时提示 IPv6 不经过出口节点；开关为关时说明 IPv6 使用物理网络，此时 `exitNodeIPv6` 仍为真（守护进程不支持该开关）则改为提示 IPv6 仍经过出口节点。
+
+开关为开时，`getV6Available()` 为假仍会使 `::/0` 被静默跳过，IPv6 流量直接出网。条件包括：netfilter runner 创建失败或不支持 IPv6、tailscaled 的 PATH 中没有 `ip6tables`、`disable_ipv6` / `disable_policy` 为 1、IPv6 策略路由不可用、`tailscale0` 禁用 IPv6。守护进程会在启动时记录 `disabling tunneled IPv6 due to ...`。模块只报告不修复（见上面的状态语义）；修复需要改 fork 或全局 sysctl，不在范围内。
+
 ### 设备检查
 
 ```sh
 ip rule; ip -6 rule
 ip route show table 52; ip -6 route show table 52
 cat /proc/sys/net/ipv4/conf/*/rp_filter
-grep 'allowing exit node access to local IPs' /data/adb/shellscaled/logs/daemon.log
+cat /proc/sys/net/ipv6/conf/tailscale0/disable_ipv6
+grep 'disabling tunneled IPv6\|allowing exit node access to local IPs' /data/adb/shellscaled/logs/daemon.log
+ls -l /data/adb/shellscaled/exit-node-ipv6-local
 ip route get 1.1.1.1 uid 10123                 # tailscale0
 ```
+
+期望：IPv6 开关为关时 `ip -6 route show table 52` 没有 default。
 
 开启出口节点后分别在 Wi-Fi 和蜂窝下解析公共域名、打开网页、确认 IP 查询站点显示出口节点地址、解析 MagicDNS 名称；关闭出口机器后应显示离线提示，“关闭出口节点”一次即可恢复。
 

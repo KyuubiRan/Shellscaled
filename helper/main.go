@@ -34,6 +34,12 @@ const socketPath = dataDir + "/run/tailscaled.sock"
 const taildropPathFile = dataDir + "/taildrop-path"
 const taildropStagingDir = dataDir + "/taildrop-staging"
 
+// exitNodeIPv6LocalFile is the opt-out tailscaled (shipped with this module)
+// reads on every router reconfiguration: absent (the default) means a selected
+// exit node also takes ::/0, present keeps IPv6 on the physical network. Only
+// setExitNodeIPv6 writes it. It is a variable for tests.
+var exitNodeIPv6LocalFile = dataDir + "/exit-node-ipv6-local"
+
 const defaultTaildropPath = "/storage/emulated/0/Download/Tailscale"
 const mediaStoragePath = "/data/media/0"
 
@@ -193,6 +199,7 @@ type request struct {
 	// Routes are accepted as a comma separated list and parsed at the RPC boundary.
 	AdvertiseRoutes   *string        `json:"advertiseRoutes,omitempty"`
 	AdvertiseExitNode *bool          `json:"advertiseExitNode,omitempty"`
+	ExitNodeIPv6      *bool          `json:"exitNodeIPv6,omitempty"`
 	Settings          *settingsPatch `json:"settings,omitempty"`
 }
 
@@ -206,6 +213,7 @@ type response struct {
 	ExitNodeConfigured           bool                `json:"exitNodeConfigured"`
 	ExitNodeOnline               *bool               `json:"exitNodeOnline,omitempty"`
 	ExitNodeIPv6                 *bool               `json:"exitNodeIPv6,omitempty"`
+	ExitNodeIPv6Takeover         bool                `json:"exitNodeIPv6Takeover"`
 	LoginURL                     string              `json:"loginURL,omitempty"`
 	Error                        string              `json:"error,omitempty"`
 	ExitCode                     int                 `json:"exitCode"`
@@ -383,7 +391,7 @@ func (b *backend) status(ctx context.Context) response {
 }
 
 func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
-	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), TaildropPath: readTaildropPath(), MagicDNS: readMagicDNSState(magicDNSStatePath, time.Now())}
+	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), TaildropPath: readTaildropPath(), MagicDNS: readMagicDNSState(magicDNSStatePath, time.Now()), ExitNodeIPv6Takeover: exitNodeIPv6Takeover()}
 	var st localStatus
 	if err := b.api(ctx, "GET", "status?peers=false", nil, &st); err != nil {
 		if _, statErr := os.Stat(socketPath); statErr == nil {
@@ -1191,6 +1199,46 @@ func (b *backend) setExitNode(ctx context.Context, target string) response {
 	return b.status(ctx)
 }
 
+func exitNodeIPv6Takeover() bool {
+	_, err := os.Stat(exitNodeIPv6LocalFile)
+	return err != nil
+}
+
+// setExitNodeIPv6 persists the IPv6 takeover switch and asks tailscaled to
+// rebuild its router config, which adds or removes ::/0 in table 52 when an
+// exit node is selected. A stopped daemon reads the file when it next starts.
+func (b *backend) setExitNodeIPv6(ctx context.Context, enabled bool) response {
+	if !enabled {
+		if err := os.MkdirAll(filepath.Dir(exitNodeIPv6LocalFile), 0700); err != nil {
+			return failed("无法保存 IPv6 出口设置")
+		}
+		tmp := exitNodeIPv6LocalFile + ".new"
+		if err := os.WriteFile(tmp, []byte("1\n"), 0600); err != nil {
+			_ = os.Remove(tmp)
+			return failed("无法保存 IPv6 出口设置")
+		}
+		if err := os.Rename(tmp, exitNodeIPv6LocalFile); err != nil {
+			_ = os.Remove(tmp)
+			return failed("无法保存 IPv6 出口设置")
+		}
+	} else if err := os.Remove(exitNodeIPv6LocalFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return failed("无法保存 IPv6 出口设置")
+	}
+	if err := b.api(ctx, "POST", "debug?action=reconfig", nil, nil); err != nil && !errors.Is(err, errDaemonUnreachable) {
+		// Older daemons do not know the action (400) or lack debug support
+		// (501). They always route IPv6 through the exit node, so only
+		// turning takeover off needs the daemon shipped with this module.
+		msg := err.Error()
+		if !strings.HasPrefix(msg, "LocalAPI 400: unknown action") && !strings.HasPrefix(msg, "LocalAPI 501:") {
+			return failed(msg)
+		}
+		if !enabled {
+			return failed("IPv6 出口设置已保存，需要随本版模块发布的后台服务才能生效")
+		}
+	}
+	return b.status(ctx)
+}
+
 var procRoot = "/proc"
 
 func readProcInt(path string) int {
@@ -1472,9 +1520,10 @@ func decodeRequest(encoded string) (request, error) {
 		"binary-check": {"action": true, "locale": true}, "binary-update": {"action": true, "locale": true},
 		"binary-channel": {"action": true, "locale": true, "channel": true},
 		"settings":       {"action": true, "locale": true, "settings": true}, "command": {"action": true, "locale": true, "command": true},
-		"exit-node":     {"action": true, "locale": true, "exitNode": true},
-		"advertise":     {"action": true, "locale": true, "advertiseRoutes": true, "advertiseExitNode": true},
-		"taildrop-list": {"action": true, "locale": true, "path": true}, "taildrop-path": {"action": true, "locale": true, "path": true}, "taildrop-receive": {"action": true, "locale": true, "path": true},
+		"exit-node":      {"action": true, "locale": true, "exitNode": true},
+		"advertise":      {"action": true, "locale": true, "advertiseRoutes": true, "advertiseExitNode": true},
+		"exit-node-ipv6": {"action": true, "locale": true, "exitNodeIPv6": true},
+		"taildrop-list":  {"action": true, "locale": true, "path": true}, "taildrop-path": {"action": true, "locale": true, "path": true}, "taildrop-receive": {"action": true, "locale": true, "path": true},
 	}
 	if fields, ok := allowedFields[r.Action]; ok {
 		for key := range inputFields {
@@ -1527,6 +1576,10 @@ func decodeRequest(encoded string) (request, error) {
 			if _, err := parseAdvertiseRoutes(*r.AdvertiseRoutes); err != nil {
 				return r, err
 			}
+		}
+	case "exit-node-ipv6":
+		if r.ExitNodeIPv6 == nil {
+			return r, errors.New("请求参数不匹配")
 		}
 	case "taildrop-list":
 		if r.Command != "" || r.Settings != nil || len(r.Path) > 512 || (r.Path != "" && !validTaildropBrowsePath(r.Path)) {
@@ -1690,6 +1743,8 @@ func main() {
 				r = b.setExitNode(ctx, req.ExitNode)
 			case "advertise":
 				r = b.setAdvertisement(ctx, req.AdvertiseExitNode, req.AdvertiseRoutes)
+			case "exit-node-ipv6":
+				r = b.setExitNodeIPv6(ctx, *req.ExitNodeIPv6)
 			case "taildrop-path":
 				r = b.taildropPath(ctx, req.Path)
 			case "taildrop-list":

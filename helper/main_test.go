@@ -41,12 +41,12 @@ func TestCommandBoundary(t *testing.T) {
 
 func TestRPCRejectsUnknownOrMixedRequests(t *testing.T) {
 	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"binary-channel","channel":"stable"}`, `{"action":"binary-channel","channel":"preview","locale":"en"}`, `{"action":"binary-check"}`, `{"action":"binary-update","locale":"en"}`, `{"action":"devices"}`, `{"action":"console","locale":"en"}`, `{"action":"about"}`, `{"action":"about","locale":"en"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`, `{"action":"exit-node","exitNode":"100.64.0.2"}`, `{"action":"exit-node","exitNode":""}`, `{"action":"advertise","advertiseRoutes":"10.0.0.0/8","advertiseExitNode":true}`, `{"action":"advertise","advertiseRoutes":""}`, `{"action":"taildrop-path","path":"/sdcard/Download"}`} {
+	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"binary-channel","channel":"stable"}`, `{"action":"binary-channel","channel":"preview","locale":"en"}`, `{"action":"binary-check"}`, `{"action":"binary-update","locale":"en"}`, `{"action":"devices"}`, `{"action":"console","locale":"en"}`, `{"action":"about"}`, `{"action":"about","locale":"en"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`, `{"action":"exit-node","exitNode":"100.64.0.2"}`, `{"action":"exit-node","exitNode":""}`, `{"action":"advertise","advertiseRoutes":"10.0.0.0/8","advertiseExitNode":true}`, `{"action":"advertise","advertiseRoutes":""}`, `{"action":"taildrop-path","path":"/sdcard/Download"}`, `{"action":"exit-node-ipv6","exitNodeIPv6":true}`, `{"action":"exit-node-ipv6","exitNodeIPv6":false,"locale":"en"}`} {
 		if _, err := decodeRequest(encode(raw)); err != nil {
 			t.Errorf("valid request rejected: %v", err)
 		}
 	}
-	for _, raw := range []string{`{"action":"binary-channel"}`, `{"action":"binary-channel","channel":"prerelease"}`, `{"action":"binary-channel","channel":"../../other"}`, `{"action":"binary-channel","channel":"preview","command":""}`, `{"action":"binary-channel","channel":"stable","settings":null}`, `{"action":"binary-update","channel":"preview"}`, `{"action":"binary-check","channel":null}`, `{"action":"status","channel":"stable"}`, `{"action":"status","Channel":"stable"}`, `{"action":"status","command":""}`, `{"action":"binary-check","command":""}`, `{"action":"binary-update","settings":null}`, `{"action":"binary-check","url":"https://example.test"}`, `{"action":"binary-update","command":"id"}`, `{"action":"binary-update","settings":{"shieldsUp":true}}`, `{"action":"binary-check","version":"1.2.3"}`, `{"action":"console","command":"id"}`, `{"action":"console","url":"https://example.test"}`, `{"action":"console","settings":{"shieldsUp":true}}`, `{"action":"devices","command":"tailscale status"}`, `{"action":"devices","settings":{"shieldsUp":true}}`, `{"action":"devices","peers":true}`, `{"action":"exec","command":"id"}`, `{"action":"status","locale":"../../other"}`, `{"action":"status","locale":"fr"}`, `{"action":"status","command":"id"}`, `{"action":"settings","settings":{"acceptDNS":true}}`, `{"action":"settings"}`, `{"action":"command","command":"tailscale status","settings":{"shieldsUp":true}}`, `{"action":"status","env":{"PATH":"/evil"}}`, `{"action":"status"} {"action":"up"}`, `{"action":"exit-node","exitNode":"100.64.0.2","command":""}`, `{"action":"advertise","advertiseRoutes":"0.0.0.0/0"}`, `{"action":"advertise"}`, `{"action":"taildrop-path","path":"/data/adb"}`, `null`, `[]`} {
+	for _, raw := range []string{`{"action":"binary-channel"}`, `{"action":"binary-channel","channel":"prerelease"}`, `{"action":"binary-channel","channel":"../../other"}`, `{"action":"binary-channel","channel":"preview","command":""}`, `{"action":"binary-channel","channel":"stable","settings":null}`, `{"action":"binary-update","channel":"preview"}`, `{"action":"binary-check","channel":null}`, `{"action":"status","channel":"stable"}`, `{"action":"status","Channel":"stable"}`, `{"action":"status","command":""}`, `{"action":"binary-check","command":""}`, `{"action":"binary-update","settings":null}`, `{"action":"binary-check","url":"https://example.test"}`, `{"action":"binary-update","command":"id"}`, `{"action":"binary-update","settings":{"shieldsUp":true}}`, `{"action":"binary-check","version":"1.2.3"}`, `{"action":"console","command":"id"}`, `{"action":"console","url":"https://example.test"}`, `{"action":"console","settings":{"shieldsUp":true}}`, `{"action":"devices","command":"tailscale status"}`, `{"action":"devices","settings":{"shieldsUp":true}}`, `{"action":"devices","peers":true}`, `{"action":"exec","command":"id"}`, `{"action":"status","locale":"../../other"}`, `{"action":"status","locale":"fr"}`, `{"action":"status","command":"id"}`, `{"action":"settings","settings":{"acceptDNS":true}}`, `{"action":"settings"}`, `{"action":"command","command":"tailscale status","settings":{"shieldsUp":true}}`, `{"action":"status","env":{"PATH":"/evil"}}`, `{"action":"status"} {"action":"up"}`, `{"action":"exit-node","exitNode":"100.64.0.2","command":""}`, `{"action":"advertise","advertiseRoutes":"0.0.0.0/0"}`, `{"action":"advertise"}`, `{"action":"taildrop-path","path":"/data/adb"}`, `{"action":"exit-node-ipv6"}`, `{"action":"exit-node-ipv6","exitNodeIPv6":null}`, `{"action":"exit-node-ipv6","exitNodeIPv6":"1"}`, `{"action":"exit-node-ipv6","exitNodeIPv6":true,"exitNode":""}`, `{"action":"status","exitNodeIPv6":true}`, `{"action":"exit-node","exitNode":"","exitNodeIPv6":true}`, `null`, `[]`} {
 		if _, err := decodeRequest(encode(raw)); err == nil {
 			t.Errorf("invalid request accepted: %s", raw)
 		}
@@ -475,6 +475,71 @@ func TestStatusMagicDNSPending(t *testing.T) {
 		if r.MagicDNS == nil || r.MagicDNS.Pending != want {
 			t.Fatalf("%s: pending want %v, got %+v", file, want, r.MagicDNS)
 		}
+	}
+}
+
+func TestSetExitNodeIPv6(t *testing.T) {
+	defer func(old string) { exitNodeIPv6LocalFile = old }(exitNodeIPv6LocalFile)
+	exitNodeIPv6LocalFile = filepath.Join(t.TempDir(), "state", "exit-node-ipv6-local")
+	var reconfigs int
+	reconfigStatus, reconfigBody := 200, "done\n"
+	b := &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		status, body := 200, `{"BackendState":"Running"}`
+		switch r.URL.Path {
+		case "/localapi/v0/prefs":
+			body = `{"ExitNodeID":"nOn"}`
+		case "/localapi/v0/debug":
+			if r.Method != "POST" || r.URL.RawQuery != "action=reconfig" || r.ContentLength > 0 {
+				t.Fatalf("unexpected reconfig request: %s %s", r.Method, r.URL)
+			}
+			reconfigs++
+			status, body = reconfigStatus, reconfigBody
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+	if !exitNodeIPv6Takeover() {
+		t.Fatal("takeover must default to on")
+	}
+	r := b.setExitNodeIPv6(context.Background(), false)
+	if !r.OK || r.ExitNodeIPv6Takeover || reconfigs != 1 {
+		t.Fatalf("disable failed: %+v reconfigs=%d", r, reconfigs)
+	}
+	if data, _ := json.Marshal(r); !strings.Contains(string(data), `"exitNodeIPv6Takeover":false`) {
+		t.Fatalf("takeover must always be reported: %s", data)
+	}
+	info, err := os.Stat(exitNodeIPv6LocalFile)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("opt-out file: %v %v", info, err)
+	}
+	if _, err := os.Stat(exitNodeIPv6LocalFile + ".new"); !os.IsNotExist(err) {
+		t.Fatal("temporary opt-out file left behind")
+	}
+	if r := b.setExitNodeIPv6(context.Background(), true); !r.OK || !r.ExitNodeIPv6Takeover || reconfigs != 2 {
+		t.Fatalf("enable failed: %+v", r)
+	}
+	if r := b.setExitNodeIPv6(context.Background(), true); !r.OK || reconfigs != 3 {
+		t.Fatalf("enabling twice must succeed: %+v", r)
+	}
+	reconfigStatus, reconfigBody = 400, "unknown action \"reconfig\"\n"
+	if r := b.setExitNodeIPv6(context.Background(), true); !r.OK || !r.ExitNodeIPv6Takeover {
+		t.Fatalf("an older daemon already routes IPv6 through the exit node: %+v", r)
+	}
+	r = b.setExitNodeIPv6(context.Background(), false)
+	if r.OK || r.Error != "IPv6 出口设置已保存，需要随本版模块发布的后台服务才能生效" || exitNodeIPv6Takeover() {
+		t.Fatalf("an older daemon must be reported, keeping the saved opt-out: %+v", r)
+	}
+	if got := localizedError(r.Error, "en"); !strings.Contains(got, "daemon shipped with this module") {
+		t.Fatalf("missing translation: %q", got)
+	}
+	reconfigStatus, reconfigBody = 403, "debug access denied\n"
+	if r := b.setExitNodeIPv6(context.Background(), true); r.OK || !exitNodeIPv6Takeover() {
+		t.Fatalf("other LocalAPI failures must be reported: %+v", r)
+	}
+	down := &backend{client: &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial unix: no such file")
+	})}}
+	if r := down.setExitNodeIPv6(context.Background(), false); !r.OK || r.ExitNodeIPv6Takeover || r.DaemonRunning {
+		t.Fatalf("a stopped daemon must still save the opt-out: %+v", r)
 	}
 }
 

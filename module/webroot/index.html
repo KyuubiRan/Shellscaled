@@ -138,6 +138,11 @@
               <button class="button primary compact" id="exit-node-apply" type="button" data-requires-bridge disabled data-i18n="network.apply"></button>
               <button class="button secondary compact" id="exit-node-clear" type="button" data-requires-bridge disabled data-i18n="network.clear"></button>
             </div>
+            <label class="setting-row network-toggle" for="exit-node-ipv6-takeover">
+              <span class="setting-copy"><strong data-i18n="network.exitIpv6"></strong><span data-i18n="network.exitIpv6Description"></span></span>
+              <span class="switch"><input id="exit-node-ipv6-takeover" type="checkbox" role="switch" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
+            </label>
+            <p class="local-message" id="exit-node-ipv6" role="status" data-kind="info" data-i18n="network.ipv6Physical" hidden></p>
             <label class="field-label network-routes-label" for="advertise-routes" data-i18n="network.routes"></label>
             <input id="advertise-routes" type="text" data-i18n-placeholder="network.routesPlaceholder" data-requires-bridge disabled spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="advertise-routes-error">
             <p class="local-message" id="advertise-routes-error" data-kind="error" hidden></p>

@@ -173,7 +173,7 @@ public final class MainActivity extends Activity {
         if (!"login".equals(screenshotTab)) addresses.put("100.64.0.10").put("fd7a:115c:a1e0::10");
         JSONObject result = new JSONObject().put("ok", true).put("state", state)
                 .put("version", binaryVersion)
-                .put("daemonRunning", true).put("exitNodeConfigured", true).put("exitCode", 0)
+                .put("daemonRunning", true).put("exitNodeConfigured", true).put("exitNodeIPv6Takeover", true).put("exitCode", 0)
                 .put("ips", addresses)
                 .put("settings", settings).put("updateChannel", updateChannel);
         if (!loginURL.isEmpty()) result.put("loginURL", loginURL);
