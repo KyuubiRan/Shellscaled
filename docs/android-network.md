@@ -12,6 +12,8 @@ Shellscaled 直接通过 root 打开 `/dev/net/tun`，由 tailscaled 管理 `tai
 
 Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socket 使用 `SO_MARK=0x10020000`，包含自有 bypass 位和 Android 的受保护位。路由匹配只检查自有 mask 内的 `0x10000000`，保留 netd 的低位语义。原生 VPN App 通常通过 [VpnService.protect](https://developer.android.com/reference/android/net/VpnService#protect(int)) 请求同类保护，root daemon 使用 socket mark 完成。
 
+模块更新检查使用 `SO_MARK=0x10000000`，只避开 Shellscaled 自己的 TUN 路由，不设置 Android 的 `protectedFromVpn` 位。因此 GitHub 请求仍可经由用户已启用的 Android VPN；只有 tailscaled 自身的外层传输使用完整的 `0x10020000` 保护标记。
+
 [Linux fib_rules.c](https://github.com/torvalds/linux/blob/master/net/core/fib_rules.c) 的 mark 匹配对 XOR 结果施加 mask，规则的 `not` 反转整个谓词；因此测试必须同时覆盖普通 socket、携带 netId 的 socket 及 daemon 外层 socket，不能只比较常量。
 
 ## Android 策略路由

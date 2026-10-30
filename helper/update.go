@@ -114,17 +114,28 @@ type binaryUpdater struct {
 	controlOwner string
 }
 
+// Keep update traffic out of Shellscaled's own TUN route while allowing an
+// active Android VPN to carry the request. The daemon's transport sockets use
+// the additional protectedFromVpn bit because they must reach the underlying
+// network directly; update checks are ordinary user traffic and should respect
+// the user's VPN/proxy path.
+const (
+	updateSocketMark  = 0x10000000
+	androidSocketMark = 0x24 // Linux SO_MARK; syscall omits it on Darwin.
+)
+
+func updateSocketControl(_ string, _ string, raw syscall.RawConn) error {
+	var socketErr error
+	if err := raw.Control(func(fd uintptr) {
+		socketErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, androidSocketMark, updateSocketMark)
+	}); err != nil {
+		return err
+	}
+	return socketErr
+}
+
 func newBinaryUpdater(b *backend) *binaryUpdater {
-	dialer := &net.Dialer{Timeout: 15 * time.Second, Control: func(_, _ string, raw syscall.RawConn) error {
-		var socketErr error
-		if err := raw.Control(func(fd uintptr) {
-			// Match the daemon's owned bypass bit and Android protectedFromVpn bit.
-			socketErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_MARK, 0x10020000)
-		}); err != nil {
-			return err
-		}
-		return socketErr
-	}}
+	dialer := &net.Dialer{Timeout: 15 * time.Second, Control: updateSocketControl}
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: dialer.DialContext,
 		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 15 * time.Second,
 		ResponseHeaderTimeout: 20 * time.Second, IdleConnTimeout: 15 * time.Second}
