@@ -6,7 +6,7 @@
   const requests = () => JSON.parse(fixture.requestsJSON());
   const backend = () => JSON.parse(fixture.statusJSON());
   const assert = (value, label = "assertion") => { if (!value) throw new Error(label); };
-  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error)\.[A-Za-z0-9.]+$/;
+  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error|network)\.[A-Za-z0-9.]+$/;
   async function until(predicate) {
     const end = Date.now() + 6000;
     while (!predicate()) {
@@ -146,7 +146,7 @@
     const keys = Object.keys(translations.en).sort();
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "run-command", "command-output",
-      "devices-message", "console-label", "about-description", "login-label", "binary-action-label", "binary-message"]);
+      "devices-message", "console-label", "about-description", "login-label", "binary-action-label", "binary-message", "network-message", "exit-node-summary", "advertise-exit-description"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
@@ -197,6 +197,20 @@
         await refresh();
         assert(JSON.parse(fixture.transportsJSON()).at(-1) === "exec");
       } finally { window.ksu = native; }
+    });
+
+    await test("settings-load-exit-nodes-automatically", async () => {
+      const count = () => requests().filter((request) => request.action === "exit-nodes").length;
+      const before = count();
+      click("tab-settings");
+      await until(() => count() > before);
+      await until(() => $("network-refresh").getAttribute("aria-busy") === "false");
+      assert(!$("exit-node-select").disabled);
+      assert($("network-message").textContent !== ShellscaledI18n.t("network.loading"));
+      const refreshBox = $("network-refresh").getBoundingClientRect();
+      assert(refreshBox.width >= 44 && refreshBox.height >= 44);
+      assert($("network-refresh").getAttribute("aria-label").trim());
+      click("tab-overview");
     });
 
     for (const locale of locales) {

@@ -53,6 +53,9 @@ After running `su` in `adb shell` or a terminal, use `tailscale` directly. Use `
 
 Use the module action button in your manager to connect or disconnect. KernelSU users can also open the settings page to manage subnet routes, incoming connections and LAN access when using an exit node. Switch changes take effect immediately.
 
+**Network roles** lets you select, switch or stop using an exit node, advertise this device as an exit node, and advertise CIDR subnet routes. Advertisements require approval in the Tailscale console. Android forwarding, NAT and SELinux behavior require separate validation.
+
+
 Tap a local address to copy it. The Devices page lets you search visible devices, check online status and copy names or addresses.
 
 To update Tailscale on its own, choose Stable or Preview under **Binary updates** in Settings. Your account and preferences are retained. For module interface and feature updates, install the new module package and reboot. Uninstalling the module deletes its account and preferences.
