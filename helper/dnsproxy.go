@@ -29,9 +29,10 @@ import (
 // and IPv6 nat) hand to it, on 127.0.0.1:1053 and [::1]:1053. Its own UDP/53
 // carries the bypass mark, which each chain returns first.
 const (
-	magicDNSChain     = "shellscaled_dns"
-	magicDNSPort      = 1053
-	magicDNSMaxSuffix = 16
+	magicDNSChain         = "shellscaled_dns"
+	magicDNSFallbackChain = "shellscaled_dns6_fallback"
+	magicDNSPort          = 1053
+	magicDNSMaxSuffix     = 16
 )
 
 var (
@@ -40,28 +41,30 @@ var (
 )
 
 type magicDNSState struct {
-	Running    bool   `json:"running"`
-	Mode       string `json:"mode"`
-	Rules      bool   `json:"rules"`
-	Rules6     bool   `json:"rules6"`
-	PrivateDNS string `json:"privateDns"`
-	Upstream   string `json:"upstream"`
-	Daemon     string `json:"daemon"`
-	ExitNode   string `json:"exitNode"`
-	Pending    bool   `json:"pending,omitempty"`
+	Running      bool   `json:"running"`
+	Mode         string `json:"mode"`
+	Rules        bool   `json:"rules"`
+	Rules6       bool   `json:"rules6"`
+	IPv6Fallback bool   `json:"ipv6Fallback,omitempty"`
+	PrivateDNS   string `json:"privateDns"`
+	Upstream     string `json:"upstream"`
+	Daemon       string `json:"daemon"`
+	ExitNode     string `json:"exitNode"`
+	Pending      bool   `json:"pending,omitempty"`
 }
 
 // Daemon and ExitNode record the BackendState and prefs.ExitNodeID the mode
 // was derived from, so status can tell when it is stale.
 type magicDNSFile struct {
-	Updated    int64  `json:"updated"`
-	Mode       string `json:"mode"`
-	Rules      bool   `json:"rules"`
-	Rules6     bool   `json:"rules6"`
-	PrivateDNS string `json:"privateDns"`
-	Upstream   string `json:"upstream"`
-	Daemon     string `json:"daemon"`
-	ExitNode   string `json:"exitNode"`
+	Updated      int64  `json:"updated"`
+	Mode         string `json:"mode"`
+	Rules        bool   `json:"rules"`
+	Rules6       bool   `json:"rules6"`
+	IPv6Fallback bool   `json:"ipv6Fallback,omitempty"`
+	PrivateDNS   string `json:"privateDns"`
+	Upstream     string `json:"upstream"`
+	Daemon       string `json:"daemon"`
+	ExitNode     string `json:"exitNode"`
 }
 
 type magicDNSProxy struct {
@@ -81,18 +84,19 @@ type magicDNSProxy struct {
 	exitDoH string
 
 	// Owned by the refresh goroutine.
-	exitID     string
-	daemon     string
-	prefsExit  string
-	applied    [2]string
-	rulesOK    [2]bool
-	noString   bool
-	conntrack  [2]int // per family: 0 untested, 1 usable, -1 unusable
-	listen6    bool
-	privateDNS string
-	tick       int
-	logged     map[string]string
-	routing    *exitRouting // last observed, nil until known
+	exitID       string
+	daemon       string
+	prefsExit    string
+	applied      [2]string
+	rulesOK      [2]bool
+	noString     bool
+	conntrack    [2]int // per family: 0 untested, 1 usable, -1 unusable
+	listen6      bool
+	ipv6Fallback bool // No IPv6 NAT: fail tailnet queries fast so netd tries IPv4 DNS.
+	privateDNS   string
+	tick         int
+	logged       map[string]string
+	routing      *exitRouting // last observed, nil until known
 }
 
 func newMagicDNSProxy(b *backend) *magicDNSProxy {
@@ -208,6 +212,8 @@ func (p *magicDNSProxy) refresh(ctx context.Context) {
 		p.applyRules(ctx, 0, v4)
 	}
 	switch {
+	case p.ipv6Fallback:
+		p.applyRules(ctx, 1, ipv6FallbackRules(mode, suffixes))
 	case p.listen6 && p.dead6.Load():
 		// Nobody reads [::1]:1053 any more: hand IPv6 DNS back to the system.
 		if p.applyRules(ctx, 1, nil) {
@@ -443,12 +449,37 @@ func desiredRules(mode string, suffixes []string) (v4, v6 [][]string) {
 	return chain("40", "300", false), chain("60", "320", true)
 }
 
+// ipv6FallbackRules rejects IPv6 DNS that the IPv4 proxy should answer, so
+// netd retries via IPv4 DNS. With an exit node that is every query, keeping
+// ordinary names off the physical network as with IPv6 NAT.
+func ipv6FallbackRules(mode string, suffixes []string) [][]string {
+	if mode == "off" {
+		return nil
+	}
+	rules := [][]string{{"-m", "mark", "--mark", "0x10000000/0x1e000000", "-j", "RETURN"}}
+	if strings.HasPrefix(mode, "exit") {
+		return append(rules, []string{"-p", "udp", "-j", "REJECT", "--reject-with", "icmp6-port-unreachable"})
+	}
+	if len(suffixes) == 0 {
+		return nil
+	}
+	for _, suffix := range suffixes {
+		rules = append(rules, []string{"-m", "string", "--algo", "bm", "--icase",
+			"--from", "60", "--to", "320", "--hex-string", "|" + wireHex(suffix) + "|",
+			"-p", "udp", "-j", "REJECT", "--reject-with", "icmp6-port-unreachable"})
+	}
+	return rules
+}
+
 // applyRules reports false when the rule set could not be applied; it is
 // retried on the next refresh.
 func (p *magicDNSProxy) applyRules(ctx context.Context, family int, rules [][]string) bool {
-	bin, table := "/system/bin/iptables", "nat"
+	bin, table, chain := "/system/bin/iptables", "nat", magicDNSChain
 	if family == 1 {
 		bin = "/system/bin/ip6tables"
+		if p.ipv6Fallback {
+			table, chain = "filter", magicDNSFallbackChain
+		}
 	}
 	parts := make([]string, len(rules))
 	for i, rule := range rules {
@@ -462,13 +493,13 @@ func (p *magicDNSProxy) applyRules(ctx context.Context, family int, rules [][]st
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	base := []string{"-w", "-t", table}
-	if out, err := p.run(ctx, bin, append(base, "-F", magicDNSChain)...); err != nil {
+	if out, err := p.run(ctx, bin, append(base, "-F", chain)...); err != nil {
 		p.logOnce(bin, "cannot flush the module chain: "+commandError(out, err))
 		return false
 	}
 	for _, rule := range rules {
-		if out, err := p.run(ctx, bin, append(append(base, "-A", magicDNSChain), rule...)...); err != nil {
-			_, _ = p.run(ctx, bin, append(base, "-F", magicDNSChain)...)
+		if out, err := p.run(ctx, bin, append(append(base, "-A", chain), rule...)...); err != nil {
+			_, _ = p.run(ctx, bin, append(base, "-F", chain)...)
 			p.logOnce(bin, "rules not applied, DNS stays on the system path: "+commandError(out, err))
 			return false
 		}
@@ -491,11 +522,14 @@ func (p *magicDNSProxy) flushRules() {
 	defer cancel()
 	_, _ = p.run(ctx, "/system/bin/iptables", "-w", "-t", "nat", "-F", magicDNSChain)
 	_, _ = p.run(ctx, "/system/bin/ip6tables", "-w", "-t", "nat", "-F", magicDNSChain)
+	if p.ipv6Fallback {
+		_, _ = p.run(ctx, "/system/bin/ip6tables", "-w", "-t", "filter", "-F", magicDNSFallbackChain)
+	}
 }
 
 func (p *magicDNSProxy) writeState(now time.Time) {
 	p.mu.RLock()
-	f := magicDNSFile{Updated: now.Unix(), Mode: p.mode, Rules: p.rulesOK[0], Rules6: p.rulesOK[1], PrivateDNS: p.privateDNS, Upstream: "system", Daemon: p.daemon, ExitNode: p.prefsExit}
+	f := magicDNSFile{Updated: now.Unix(), Mode: p.mode, Rules: p.rulesOK[0], Rules6: p.rulesOK[1], IPv6Fallback: p.ipv6Fallback, PrivateDNS: p.privateDNS, Upstream: "system", Daemon: p.daemon, ExitNode: p.prefsExit}
 	p.mu.RUnlock()
 	switch f.Mode {
 	case "exit-doh":
@@ -524,7 +558,7 @@ func readMagicDNSState(path string, now time.Time) *magicDNSState {
 		return nil
 	}
 	age := now.Unix() - f.Updated
-	return &magicDNSState{Running: age >= 0 && age <= 20, Mode: f.Mode, Rules: f.Rules, Rules6: f.Rules6, PrivateDNS: f.PrivateDNS, Upstream: f.Upstream, Daemon: f.Daemon, ExitNode: f.ExitNode}
+	return &magicDNSState{Running: age >= 0 && age <= 20, Mode: f.Mode, Rules: f.Rules, Rules6: f.Rules6, IPv6Fallback: f.IPv6Fallback, PrivateDNS: f.PrivateDNS, Upstream: f.Upstream, Daemon: f.Daemon, ExitNode: f.ExitNode}
 }
 
 // dnsQuestion parses a standard query with exactly one uncompressed question.
@@ -913,6 +947,13 @@ func (b *backend) magicDNSProxy(ctx context.Context) error {
 	signal.Notify(nudge, syscall.SIGUSR1)
 	defer signal.Stop(nudge)
 	p := newMagicDNSProxy(b)
+	probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
+	_, err := p.run(probeCtx, "/system/bin/ip6tables", "-w", "-t", "nat", "-S", "OUTPUT")
+	probeCancel()
+	p.ipv6Fallback = err != nil
+	if p.ipv6Fallback {
+		fmt.Fprintln(os.Stderr, "MagicDNS: IPv6 NAT unavailable; tailnet queries to IPv6 DNS retry via system IPv4 DNS. A working IPv4 DNS server is required.")
+	}
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: magicDNSPort})
 	if err != nil {
 		return fmt.Errorf("listen magicdns proxy: %w", err)

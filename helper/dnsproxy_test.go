@@ -576,6 +576,58 @@ func TestRefreshIPv6NAT(t *testing.T) {
 	}
 }
 
+func TestRefreshIPv6WithoutNAT(t *testing.T) {
+	p, _ := dnsTestProxy(t, func(r *http.Request) (int, string) {
+		if r.URL.Path+"?"+r.URL.RawQuery == "/localapi/v0/status?peers=false" {
+			return 200, `{"BackendState":"Running","CurrentTailnet":{"MagicDNSSuffix":"tail1234.ts.net"}}`
+		}
+		return 404, ""
+	})
+	p.ipv6Fallback = true
+	p.listen6 = false // The fallback needs only the IPv4 listener.
+	var rules []string
+	p.run = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "ip6tables") {
+			if args[2] != "filter" {
+				t.Fatalf("IPv6 NAT used on unsupported kernel: %v", args)
+			}
+			rules = append(rules, strings.Join(args[3:], " "))
+		}
+		return nil, nil
+	}
+	p.refresh(context.Background())
+	if len(rules) != 3 || !strings.Contains(rules[2], "--from 60 --to 320") ||
+		!strings.Contains(rules[2], "|"+wireHex("tail1234.ts.net")+"|") ||
+		!strings.HasSuffix(rules[2], "-p udp -j REJECT --reject-with icmp6-port-unreachable") {
+		t.Fatalf("fallback must reject only tailnet DNS: %q", rules)
+	}
+	state := readMagicDNSState(p.state, time.Now())
+	if state == nil || !state.Rules || !state.Rules6 || !state.IPv6Fallback {
+		t.Fatalf("fallback state %+v", state)
+	}
+	// Disconnect clears the filter chain.
+	rules = nil
+	p.backend.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"BackendState":"Stopped"}`)), Header: http.Header{}}, nil
+	})
+	p.refresh(context.Background())
+	if len(rules) != 1 || rules[0] != "-F "+magicDNSFallbackChain {
+		t.Fatalf("disconnect leaves fallback rules: %q", rules)
+	}
+}
+
+func TestIPv6FallbackRulesExitNode(t *testing.T) {
+	for _, mode := range []string{"exit-doh", "exit-passthrough"} {
+		rules := ipv6FallbackRules(mode, nil)
+		if len(rules) != 2 || strings.Join(rules[1], " ") != "-p udp -j REJECT --reject-with icmp6-port-unreachable" {
+			t.Fatalf("%s: every IPv6 query must retry via the IPv4 proxy: %q", mode, rules)
+		}
+	}
+	if rules := ipv6FallbackRules("tailnet", nil); rules != nil {
+		t.Fatalf("tailnet mode without suffixes: %q", rules)
+	}
+}
+
 func TestAnswerPassthroughIPv6(t *testing.T) {
 	server, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback})
 	if err != nil {

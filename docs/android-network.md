@@ -54,12 +54,24 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 内核对象全部归模块所有：
 
 - IPv4：`iptables` `nat` 表链 `shellscaled_dns`，由 `OUTPUT -p udp --dport 53 -j shellscaled_dns` 进入。
-- IPv6：`ip6tables` `nat` 表链 `shellscaled_dns`，同样的跳转。Android GKI 内核提供 IPv6 NAT：Pixel（KernelSU）上 `/proc/net/ip6_tables_targets` 含 `REDIRECT` / `DNAT` / `TPROXY`，`ip6tables -t nat -L OUTPUT` 可用。
+- IPv6：`ip6tables` `nat` 表链 `shellscaled_dns`，同样的跳转。Android GKI 内核提供 IPv6 NAT：Pixel（KernelSU）上 `/proc/net/ip6_tables_targets` 含 `REDIRECT` / `DNAT` / `TPROXY`，`ip6tables -t nat -L OUTPUT` 可用。没有 IPv6 NAT 的内核见下文“缺少 IPv6 NAT 的内核”。
 - 服务脚本创建空链和跳转，停止和卸载时删除；代理只对该链执行 `-F` / `-A`，退出时清空。链初始为空，代理未运行时不会拦截任何 DNS。
 
 代理监听 `127.0.0.1:1053` 和 `[::1]:1053` 两个 socket，处理逻辑相同：nat `OUTPUT` 中的 REDIRECT 把本机发出的包改写到该地址族的回环地址。`[::1]` 无法绑定时记录一行日志，IPv6 链保持为空（IPv6 DNS 留在系统路径），`rules6` 为 false。运行中 `[::1]` 的读取出错退出时同样处理：刷新循环清空 IPv6 链，`rules6` 变为 false，直到代理重启。
 
 IPv6 必须和 IPv4 一样交给代理：双栈网络上 netd 优先使用 IPv6 DNS 服务器。例如双栈蜂窝网络同时下发 IPv6 和 IPv4 DNS 服务器时，tailnet 名称的 A 与 AAAA 查询都发往 IPv6 服务器，只拦截 IPv4 时这类名称无法解析。
+
+**缺少 IPv6 NAT 的内核**
+
+部分内核没有 IPv6 `nat` 表（`ip6tables -t nat -S OUTPUT` 失败），无法把 IPv6 DNS 重定向到 `[::1]:1053`。双栈网络上 netd 优先查询 IPv6 DNS 服务器，tailnet 名称因此超时。
+
+这类内核改用模块自有的 IPv6 `filter` 链 `shellscaled_dns6_fallback`，同样通过一条 UDP/53 OUTPUT 跳转进入，第一条规则同样放行带 bypass 位的查询。被拒绝的查询收到本地 `icmp6-port-unreachable`，Android resolver 随即改问 IPv4 DNS 服务器，再由 IPv4 链交给代理：
+
+- `tailnet`：只拒绝 tailnet 后缀（启用 accept-dns 时也包括 split-DNS 后缀）的查询，普通域名仍走系统路径。tailnet 的 A、AAAA 记录都经 IPv4 入口解析，tailnet IPv6 地址照常可用。
+- `exit-doh` / `exit-passthrough`：拒绝全部 IPv6 UDP/53，所有查询经 IPv4 交给代理，与有 IPv6 NAT 时一样不从物理网络直接查询。
+- `passthrough-fallback`：内核没有 `xt_string`，后缀规则无法安装，`rules6` 报告 false。
+
+该路径要求网络提供可用的 IPv4 DNS 服务器；只提供 IPv6 DNS 的网络不支持。模块不修改 Android DNS 配置、原生 IPv6 地址和路由。停止、断开和卸载时删除该链，`sc_magicdns_jumps` 按内核能力检查对应的 OUTPUT 跳转，所以热更新同样可以接管代理。状态附加 `ipv6Fallback:true`，WebUI 提示对 IPv4 DNS 的依赖。
 
 代理每 5 秒读取一次 LocalAPI `status` 和 `dns-config`，按模式重建链内容（仅在变化时）。WebUI 应用或关闭出口节点后，helper 向 `magicdns.pid` 中的进程发送 SIGUSR1（先确认 `/proc/<pid>/exe` 与 helper 自身是同一文件，同 `sc_magicdns_running`），代理立即刷新。除 `off` 外，两条链内容基本相同（`xt_string` 偏移不同；整体重定向时 IPv6 链多一条链路本地 RETURN；某一地址族 conntrack 不可用时见下文），第一条总是 `-m mark --mark 0x10000000/0x1e000000 -j RETURN`：代理自己转发的查询带 `SO_MARK=0x10020000`，由此直接返回，不会再次被 REDIRECT；tailscaled 自身带同一 bypass 位的 UDP/53 也不被拦截。第二条 `-j CONNMARK --save-mark --nfmask 0x1ffff --ctmask 0x1ffff` 把 netd 为该查询设置的 netId 与显式选择位存入连接 mark，供原目的地址转发使用。
 

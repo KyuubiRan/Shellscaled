@@ -561,6 +561,7 @@
       mode === "off" ? ["network.dnsOff", "info"] :
       dns.privateDns === "hostname" ? ["network.dnsPrivateHostname", "warning"] :
       dns.rules === false || dns.rules6 === false ? ["network.dnsRulesFailed", "warning"] :
+      dns.ipv6Fallback === true ? ["network.dnsIPv4Fallback", "warning"] :
       state.status.exitNodeConfigured === true && !mode.startsWith("exit") ? ["network.dnsNotViaExit", "warning"] :
       mode === "exit-passthrough" ? ["network.dnsExitPassthrough", "warning"] :
       mode.startsWith("exit") ? ["network.dnsViaExit", "info"] :

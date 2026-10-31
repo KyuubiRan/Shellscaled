@@ -215,8 +215,7 @@ sc_magicdns_running() {
     return 1
 }
 
-# The module owns only chain shellscaled_dns (IPv4 and IPv6 nat) and its
-# OUTPUT jump; the proxy fills the chain.
+# Module-owned DNS chains and OUTPUT jumps; the proxy fills their contents.
 sc_magicdns_rules_remove() {
     while /system/bin/iptables -w -t nat -D OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null; do :; done
     /system/bin/iptables -w -t nat -F shellscaled_dns 2>/dev/null
@@ -224,12 +223,19 @@ sc_magicdns_rules_remove() {
     while /system/bin/ip6tables -w -t nat -D OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null; do :; done
     /system/bin/ip6tables -w -t nat -F shellscaled_dns 2>/dev/null
     /system/bin/ip6tables -w -t nat -X shellscaled_dns 2>/dev/null
+    while /system/bin/ip6tables -w -t filter -D OUTPUT -p udp --dport 53 -j shellscaled_dns6_fallback 2>/dev/null; do :; done
+    /system/bin/ip6tables -w -t filter -F shellscaled_dns6_fallback 2>/dev/null
+    /system/bin/ip6tables -w -t filter -X shellscaled_dns6_fallback 2>/dev/null
     return 0
 }
 
 sc_magicdns_jumps() {
-    /system/bin/iptables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null &&
+    /system/bin/iptables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null || return 1
+    if /system/bin/ip6tables -w -t nat -S OUTPUT >/dev/null 2>&1; then
         /system/bin/ip6tables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null
+    else
+        /system/bin/ip6tables -w -t filter -C OUTPUT -p udp --dport 53 -j shellscaled_dns6_fallback 2>/dev/null
+    fi
 }
 
 # Safe-point invariant for the live-update freeze (docs/hot-update.md, "Supervisor handover"):
@@ -241,10 +247,17 @@ sc_magicdns_start() {
     /system/bin/iptables -w -t nat -F shellscaled_dns 2>/dev/null
     /system/bin/iptables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null ||
         /system/bin/iptables -w -t nat -A OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null
-    /system/bin/ip6tables -w -t nat -N shellscaled_dns 2>/dev/null
-    /system/bin/ip6tables -w -t nat -F shellscaled_dns 2>/dev/null
-    /system/bin/ip6tables -w -t nat -C OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null ||
-        /system/bin/ip6tables -w -t nat -A OUTPUT -p udp --dport 53 -j shellscaled_dns 2>/dev/null
+    if /system/bin/ip6tables -w -t nat -S OUTPUT >/dev/null 2>&1; then
+        sc_dns6_table=nat
+        sc_dns6_chain=shellscaled_dns
+    else
+        sc_dns6_table=filter
+        sc_dns6_chain=shellscaled_dns6_fallback
+    fi
+    /system/bin/ip6tables -w -t "$sc_dns6_table" -N "$sc_dns6_chain" 2>/dev/null
+    /system/bin/ip6tables -w -t "$sc_dns6_table" -F "$sc_dns6_chain" 2>/dev/null
+    /system/bin/ip6tables -w -t "$sc_dns6_table" -C OUTPUT -p udp --dport 53 -j "$sc_dns6_chain" 2>/dev/null ||
+        /system/bin/ip6tables -w -t "$sc_dns6_table" -A OUTPUT -p udp --dport 53 -j "$sc_dns6_chain" 2>/dev/null
     "$SC_MODDIR/bin/shellscaled-web" magicdns-proxy \
         </dev/null >> "$SC_LOGS/daemon.log" 2>&1 &
     sc_magicdns_new_pid=$!
