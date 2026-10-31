@@ -82,6 +82,51 @@ func (b *backend) selectLocale(preference string) {
 
 // CLI output remains untouched. Only application messages are translated.
 var messages = map[string][3]string{
+	"所选出口节点离线或不可用":                    {"所选出口节点离线或不可用。", "所選出口節點離線或無法使用。", "The selected exit node is offline or unavailable."},
+	"本机正在发布出口节点，不能同时使用出口节点":           {"本机正在发布出口节点，不能同时使用出口节点。", "本機正在發布出口節點，無法同時使用出口節點。", "This device is advertising itself as an exit node and cannot use one at the same time."},
+	"出口节点名称或地址无效":                     {"出口节点名称或地址无效。", "出口節點名稱或位址無效。", "Choose a valid exit node."},
+	"无法保存 IPv6 出口设置":                  {"无法保存 IPv6 出口设置。", "無法儲存 IPv6 出口設定。", "Could not save the exit node IPv6 setting."},
+	"IPv6 出口设置已保存，需要随本版模块发布的后台服务才能生效": {"设置已保存，但需要随本版模块发布的服务版本才能生效。", "設定已儲存，但需要隨本版模組發布的服務版本才能生效。", "Saved, but this requires the daemon shipped with this module version to take effect."},
+	"发布设置不能为空":                        {"请选择要发布的网络角色。", "請選擇要公布的網路角色。", "Choose the network role to advertise."},
+	"子网路由过长":                          {"子网路由过长。", "子網路由過長。", "The subnet route list is too long."},
+	"子网路由格式无效":                        {"请输入规范的 CIDR 子网路由；出口能力请使用出口节点开关。", "請輸入標準的 CIDR 子網路由；出口功能請使用出口節點開關。", "Enter canonical CIDR subnet routes. Use the exit node switch to advertise an exit node."},
+	"最多发布 16 条子网路由":                   {"最多发布 16 条子网路由。", "最多公布 16 條子網路由。", "Advertise up to 16 subnet routes."},
+	"接收目录必须位于 Android 共享存储，且不能位于 Android/data、Android/obb 或 Android/sandbox": {"请选择主外部存储中的普通目录。", "請選擇主外部儲存空間中的一般目錄。", "Choose an ordinary directory in primary shared storage."},
+	"接收目录不存在或不可用":                                 {"接收目录不存在或不可用。", "接收目錄不存在或無法使用。", "The receive directory is unavailable."},
+	"接收目录无效":                                      {"请选择有效的接收目录。", "請選擇有效的接收目錄。", "Choose a valid receive directory."},
+	"接收目录不能通过符号链接指向其他位置":                          {"请选择直接位于共享存储的目录。", "請選擇直接位於共用儲存空間的目錄。", "Choose a directory directly within shared storage."},
+	"无法保存接收目录":                                    {"无法保存接收目录。", "無法儲存接收目錄。", "Could not save the receive directory."},
+	"浏览目录无效":                                      {"请选择有效的浏览目录。", "請選擇有效的瀏覽目錄。", "Choose a valid directory to browse."},
+	"浏览目录不存在或不可用":                                 {"浏览目录不存在或不可用。", "瀏覽目錄不存在或無法使用。", "The directory is unavailable."},
+	"浏览目录不能是符号链接":                                 {"请选择直接位于共享存储的目录。", "請選擇直接位於共用儲存空間的目錄。", "Choose a directory directly within shared storage."},
+	"无法读取目录":                                      {"无法读取目录。", "無法讀取目錄。", "Could not read the directory."},
+	"当前没有可接收的文件":                                  {"当前没有待接收文件。", "目前沒有待接收檔案。", "There are no files waiting to be received."},
+	"Taildrop 临时目录不可用":                            {"Taildrop 暂存目录不可用。", "Taildrop 暫存目錄無法使用。", "The Taildrop staging directory is unavailable."},
+	"无法准备 Taildrop 临时目录":                          {"无法准备 Taildrop 暂存目录。", "無法準備 Taildrop 暫存目錄。", "Could not prepare the Taildrop staging directory."},
+	"无法读取 Taildrop 临时目录":                          {"无法读取 Taildrop 暂存目录。", "無法讀取 Taildrop 暫存目錄。", "Could not read the Taildrop staging directory."},
+	"Taildrop 临时目录包含符号链接，文件已保留":                   {"暂存目录包含符号链接，文件已保留。", "暫存目錄包含符號連結，檔案已保留。", "Staged files were retained because a symbolic link was found."},
+	"Taildrop 临时目录包含非普通文件，文件已保留":                  {"暂存目录包含特殊文件，文件已保留。", "暫存目錄包含特殊檔案，檔案已保留。", "Staged files were retained because an unsupported file type was found."},
+	"Taildrop 文件路径无效，文件已保留":                       {"暂存文件路径无效，文件已保留。", "暫存檔案路徑無效，檔案已保留。", "Staged files were retained because a file path is invalid."},
+	"接收文件名无效，文件已保留":                               {"接收文件名无效，文件已保留。", "接收檔案名稱無效，檔案已保留。", "Staged files were retained because a file name is invalid."},
+	"无法在接收目录创建文件，文件已保留":                           {"无法在接收目录创建文件，暂存副本已保留。", "無法在接收目錄建立檔案，暫存副本已保留。", "Could not create the received file. Its staged copy was retained."},
+	"无法完整写入接收文件，文件已保留":                            {"接收文件写入失败，暂存副本已保留。", "接收檔案寫入失敗，暫存副本已保留。", "Could not finish writing the received file. Its staged copy was retained."},
+	"接收文件已写入但临时文件未清理":                             {"文件已保存，暂存副本清理失败。", "檔案已儲存，暫存副本清理失敗。", "The file was saved, but its staged copy could not be removed."},
+	"接收目录中没有可用文件名，文件已保留":                          {"接收目录存在过多同名文件，暂存副本已保留。", "接收目錄存在過多同名檔案，暫存副本已保留。", "Too many files share this name. The staged copy was retained."},
+	"无法准备 Taildrop 锁":                             {"无法准备接收操作锁。", "無法準備接收操作鎖。", "Could not prepare the receive operation lock."},
+	"无法打开 Taildrop 锁":                             {"无法打开接收操作锁。", "無法開啟接收操作鎖。", "Could not open the receive operation lock."},
+	"已有文件接收操作正在进行":                                {"正在接收文件，请稍候。", "正在接收檔案，請稍候。", "Files are being received. Please wait."},
+	"Android 媒体存储权限验证失败，文件已保留":                    {"Android 存储权限验证失败，暂存文件已保留。", "Android 儲存權限驗證失敗，暫存檔案已保留。", "Android storage ownership verification failed. Staged files were retained."},
+	"Android 存储标签工具不可用，文件已保留":                     {"Android 存储标签工具不可用，暂存文件已保留。", "Android 儲存標籤工具無法使用，暫存檔案已保留。", "The Android storage labeling tool is unavailable. Staged files were retained."},
+	"无法恢复 Android 存储标签，文件已保留":                     {"存储标签恢复失败，暂存文件已保留。", "儲存標籤還原失敗，暫存檔案已保留。", "Android storage labeling failed. Staged files were retained."},
+	"接收目录不可用，文件已保留":                               {"接收目录不可用，暂存文件已保留。", "接收目錄無法使用，暫存檔案已保留。", "The receive directory is unavailable. Staged files were retained."},
+	"Android 媒体存储映射不可用，文件已保留":                     {"Android 存储映射不可用，暂存文件已保留。", "Android 儲存映射無法使用，暫存檔案已保留。", "The Android shared storage mapping is unavailable. Staged files were retained."},
+	"Android 媒体存储文件映射不可用，文件已保留":                   {"接收文件的存储映射不可用，暂存文件已保留。", "接收檔案的儲存映射無法使用，暫存檔案已保留。", "The received file's storage mapping is unavailable. Its staged copy was retained."},
+	"无法设置 Android 接收目录属主，文件已保留":                   {"接收目录属主设置失败，暂存文件已保留。", "接收目錄擁有者設定失敗，暫存檔案已保留。", "Could not set the receive directory owner. Staged files were retained."},
+	"无法设置 Android 接收目录权限，文件已保留":                   {"接收目录权限设置失败，暂存文件已保留。", "接收目錄權限設定失敗，暫存檔案已保留。", "Could not set the receive directory permissions. Staged files were retained."},
+	"无法设置 Android 接收文件属主，文件已保留":                   {"接收文件属主设置失败，暂存副本已保留。", "接收檔案擁有者設定失敗，暫存副本已保留。", "Could not set the received file owner. Its staged copy was retained."},
+	"无法设置 Android 接收文件权限，文件已保留":                   {"接收文件权限设置失败，暂存副本已保留。", "接收檔案權限設定失敗，暫存副本已保留。", "Could not set the received file permissions. Its staged copy was retained."},
+	"接收文件超时，请稍后重试":                                {"文件接收超时，请稍后重试。", "檔案接收逾時，請稍後重試。", "Receiving timed out. Try again later."},
+	"当前没有可接收的文件，或接收失败":                            {"请检查待接收文件和连接状态后重试。", "請檢查待接收檔案及連線狀態後重試。", "Check pending files and the connection, then try again."},
 	"登录链接无效，请刷新后重试":                               {"登录链接无效，请刷新后重试。", "登入連結無效，請重新整理後重試。", "The sign-in link is invalid. Refresh and try again."},
 	"登录链接尚未准备好，请稍后重试":                             {"登录链接尚未准备好，请稍后重试。", "登入連結尚未準備好，請稍後重試。", "The sign-in link is not ready. Try again shortly."},
 	"无法打开登录页面，请安装或启用浏览器后重试":                       {"无法打开登录页面，请安装或启用浏览器后重试。", "無法開啟登入頁面，請安裝或啟用瀏覽器後重試。", "Could not open the sign-in page. Install or enable a browser and try again."},
@@ -143,6 +188,9 @@ func tr(key, locale string) string {
 }
 
 func localizedError(value, locale string) string {
+	if strings.HasPrefix(value, "无效的子网路由：") {
+		return tr("子网路由格式无效", locale)
+	}
 	if flag, ok := strings.CutPrefix(value, "未开放参数 "); ok {
 		return tr("未开放参数", locale) + flag
 	}

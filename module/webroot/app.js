@@ -39,7 +39,19 @@
     binaryCheckLabel: $("binary-check-label"), binaryUpdateLabel: $("binary-update-label"),
     binaryMessage: $("binary-message"),
     binaryChannel: $("binary-channel"),
+    taildropPath: $("taildrop-path"), taildropSave: $("taildrop-save"),
+    taildropSaveLabel: $("taildrop-save-label"), taildropReceive: $("taildrop-receive"),
+    taildropReceiveLabel: $("taildrop-receive-label"), taildropMessage: $("taildrop-message"),
+    taildropBrowse: $("taildrop-browse"), taildropBrowser: $("taildrop-browser"),
+    taildropBrowserCurrent: $("taildrop-browser-current"), taildropBrowserUp: $("taildrop-browser-up"),
+    taildropDirectoryList: $("taildrop-directory-list"), taildropChoose: $("taildrop-choose"),
+    exitNodeSelect: $("exit-node-select"), exitNodeRefresh: $("network-refresh"), exitNodeApply: $("exit-node-apply"), exitNodeClear: $("exit-node-clear"),
+    advertiseRoutes: $("advertise-routes"), advertiseExitNode: $("advertise-exit-node"), advertiseSave: $("advertise-save"),
+    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), exitNodeIpv6: $("exit-node-ipv6"), exitNodeIpv6Takeover: $("exit-node-ipv6-takeover"), magicDNSStatus: $("magicdns-status"),
+    advertiseRoutesError: $("advertise-routes-error"), advertiseMessage: $("advertise-message"),
+    advertiseExitDescription: $("advertise-exit-description"),
   };
+  let dnsPendingTimer = null;
   const state = {
     available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
     status: null, settings: null, settingsConfirmed: false, pendingSetting: null, settingsError: null,
@@ -51,6 +63,13 @@
     loginError: null, loginOpened: false, loginRequestVersion: 0,
     binary: null, binaryFeedback: "", binaryError: null, binaryRequestVersion: 0,
     updateChannel: null, binaryChannelPending: null,
+    taildropPath: "", taildropDraftDirty: false, taildropError: null, taildropBrowserPath: "", taildropDirectories: [],
+    taildropDirectoriesTruncated: false, taildropBrowserBusy: false, taildropBrowserRequestVersion: 0,
+    taildropActionRequestVersion: 0,
+    networkFeedback: "", networkError: null, advertiseFeedback: "", advertiseError: null,
+    networkDraft: { exitNode: null, routes: null, advertiseExitNode: null },
+    networkRequestVersion: 0, exitIpv6Pending: null,
+    exitNodes: null, exitNodesLoading: false, exitNodesError: null, exitNodesRequestVersion: 0,
   };
   let callbackSequence = 0;
   const copyTimers = new Map();
@@ -342,6 +361,8 @@
       ips: Array.isArray(device.ips) ? [...new Set(device.ips.filter((ip) => typeof ip === "string" && ip.length <= 80))].slice(0, 8) : [],
       online: device.online === true,
       self: device.self === true,
+      exitNode: device.exitNode === true,
+      exitNodeOption: device.exitNodeOption === true,
       os: boundedString(device.os, 200),
       lastSeen: typeof device.lastSeen === "number" ? device.lastSeen : boundedString(device.lastSeen, 100),
     }));
@@ -381,6 +402,12 @@
       self.className = "badge device-self";
       self.textContent = t("devices.self");
       badges.appendChild(self);
+    }
+    if (device.exitNodeOption) {
+      const role = document.createElement("span");
+      role.className = "badge device-self";
+      role.textContent = t(device.exitNode ? "network.active" : "network.exitNode");
+      badges.appendChild(role);
     }
     if (device.os) {
       const os = document.createElement("span");
@@ -457,6 +484,185 @@
     }
   }
 
+  function exitNodeCandidates() {
+    return state.exitNodes ? state.exitNodes.items.filter((device) => device.exitNodeOption && !device.self) : [];
+  }
+
+  function currentExitNode() {
+    return state.status && typeof state.status.exitNodeTarget === "string" ? state.status.exitNodeTarget : "";
+  }
+
+  function validateRoutes(text) {
+    const routes = text.split(",").map((route) => route.trim()).filter(Boolean);
+    if (routes.length > 16) return "network.routesTooMany";
+    if (text.length > 1024 || routes.some((route) => !/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(route) || /\/0+$/.test(route))) return "network.routesInvalid";
+    return "";
+  }
+
+  function setLocalMessage(element, text, kind) {
+    element.textContent = text;
+    element.hidden = !text;
+    element.dataset.kind = kind;
+    element.setAttribute("role", kind === "error" ? "alert" : "status");
+  }
+
+  function renderNetwork() {
+    if (!ui.exitNodeSelect) return;
+    const current = currentExitNode();
+    const candidates = exitNodeCandidates();
+    const signature = I18n.locale() + "\n" + current + "\n" + JSON.stringify(candidates.map((device) => [device.id, device.name, device.dnsName, device.online, device.exitNode]));
+    if (ui.exitNodeSelect.dataset.signature !== signature) {
+      ui.exitNodeSelect.replaceChildren();
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = t("network.exitNodeNone");
+      ui.exitNodeSelect.appendChild(none);
+      for (const device of candidates) {
+        const option = document.createElement("option");
+        const active = device.id === current || device.exitNode;
+        option.value = device.id;
+        option.textContent = (device.name || device.dnsName || device.id) +
+          (active ? " · " + t("network.active") : "") + (device.online ? "" : " · " + t("network.offline"));
+        option.disabled = !device.online && device.id !== current;
+        ui.exitNodeSelect.appendChild(option);
+      }
+      if (current && ![...ui.exitNodeSelect.options].some((option) => option.value === current)) {
+        const option = document.createElement("option");
+        option.value = current;
+        option.textContent = current + " · " + t("network.active");
+        ui.exitNodeSelect.appendChild(option);
+      }
+      ui.exitNodeSelect.dataset.signature = signature;
+    }
+    const matching = [...ui.exitNodeSelect.options].find((option) => option.value === current);
+    const draftTarget = state.networkDraft.exitNode;
+    ui.exitNodeSelect.value = draftTarget !== null ? draftTarget : (matching ? current : "");
+
+    const activeNode = candidates.find((device) => device.id === current || device.ips.includes(current));
+    const name = (activeNode && (activeNode.name || activeNode.dnsName)) || current;
+    const summary = !state.status ? ["network.waiting", "muted"] :
+      state.status.exitNodeConfigured !== true ? ["network.summaryNone", "muted"] :
+        state.status.state !== "Running" ? ["network.summaryPending", "muted"] :
+        state.status.exitNodeOnline === false ? ["network.summaryOffline", "warning"] : ["network.summaryActive", "info"];
+    ui.exitNodeSummary.textContent = t(summary[0], { name });
+    ui.exitNodeSummary.dataset.kind = summary[1];
+
+    const dns = state.status && state.status.magicDNS;
+    const mode = dns && dns.running === true && typeof dns.mode === "string" ? dns.mode : "off";
+    const suffix = dns && Array.isArray(dns.suffixes) && typeof dns.suffixes[0] === "string" ? dns.suffixes[0] : "";
+    // A stale state file means the proxy stopped while its rules may remain.
+    const stale = dns && dns.running !== true && typeof dns.mode === "string" && dns.mode !== "off";
+    const running = state.status && state.status.state === "Running";
+    // The proxy has not caught up with a connect or exit-node change yet.
+    const pending = running && dns && dns.pending === true;
+    if (pending && !dnsPendingTimer) dnsPendingTimer = setTimeout(() => { dnsPendingTimer = null; refresh(false); }, 2000);
+    const dnsLine = pending ? ["network.dnsPending", "muted"] :
+      stale ? ["network.dnsRulesFailed", "warning"] :
+      mode === "off" ? ["network.dnsOff", "info"] :
+      dns.privateDns === "hostname" ? ["network.dnsPrivateHostname", "warning"] :
+      dns.rules === false || dns.rules6 === false ? ["network.dnsRulesFailed", "warning"] :
+      dns.ipv6Fallback === true ? ["network.dnsIPv4Fallback", "warning"] :
+      state.status.exitNodeConfigured === true && !mode.startsWith("exit") ? ["network.dnsNotViaExit", "warning"] :
+      mode === "exit-passthrough" ? ["network.dnsExitPassthrough", "warning"] :
+      mode.startsWith("exit") ? ["network.dnsViaExit", "info"] :
+      [suffix ? "network.dnsActive" : "network.dnsActiveNoSuffix", "info"];
+    const dnsHint = dnsLine[1] === "info" && mode !== "off" && dns.privateDns === "opportunistic" ? (I18n.locale() === "en" ? " " : "") + t("network.dnsPrivateAuto") : "";
+    setLocalMessage(ui.magicDNSStatus, running ? t(dnsLine[0], { suffix }) + dnsHint : "", dnsLine[1]);
+
+    const text = state.networkError ? t("network.failed") + " " + viewText(state.networkError) :
+      state.busyAction === "exit-node" ? t("network.applying") :
+      state.busyAction === "exit-ipv6" ? t("network.ipv6Applying") :
+      state.exitNodesLoading && !state.exitNodes ? t("network.loading") :
+      state.exitNodesError ? t("network.loadFailed") + " " + viewText(state.exitNodesError) :
+      state.networkFeedback === "saved" ? t("network.saved") :
+      state.exitNodes && candidates.length === 0 ? t("network.empty") :
+      candidates.length > 0 && !candidates.some((device) => device.online) ? t("network.allOffline") : "";
+    const exitError = state.networkError || (state.busyAction !== "exit-node" && state.exitNodesError);
+    setLocalMessage(ui.networkMessage, text, exitError ? "error" : "info");
+    const takeover = exitIpv6Takeover();
+    ui.exitNodeIpv6Takeover.checked = takeover;
+    // On is the default, as in the official app. Off keeps IPv6 on the current
+    // network; a tunnelled ::/0 while off means the daemon cannot apply it (an
+    // older daemon). On without a tunnelled ::/0 means the daemon skipped IPv6.
+    const ipv6Line = !(state.status && state.status.exitNodeConfigured === true) ? ["", "info"] :
+      !takeover && state.status.exitNodeIPv6 === true ? ["network.ipv6Unsupported", "warning"] :
+      !takeover ? ["network.ipv6Physical", "info"] :
+      state.status.exitNodeIPv6 === false ? ["network.ipv6Bypass", "warning"] : ["", "info"];
+    setLocalMessage(ui.exitNodeIpv6, ipv6Line[0] ? t(ipv6Line[0]) : "", ipv6Line[1]);
+    ui.exitNodeRefresh.setAttribute("aria-label", t(state.exitNodesError ? "network.retry" : "network.refresh"));
+    ui.exitNodeRefresh.setAttribute("aria-busy", String(state.exitNodesLoading));
+
+    if (state.status) {
+      ui.advertiseExitNode.checked = state.networkDraft.advertiseExitNode !== null ? state.networkDraft.advertiseExitNode : state.status.advertiseExitNode === true;
+      if (state.networkDraft.routes === null && !ui.advertiseRoutes.matches(":focus")) ui.advertiseRoutes.value = Array.isArray(state.status.advertiseRoutes) ? state.status.advertiseRoutes.join(",") : "";
+      if (state.networkDraft.routes !== null) ui.advertiseRoutes.value = state.networkDraft.routes;
+    }
+    const routesError = state.networkDraft.routes !== null ? validateRoutes(ui.advertiseRoutes.value) : "";
+    ui.advertiseRoutes.setAttribute("aria-invalid", String(Boolean(routesError)));
+    setLocalMessage(ui.advertiseRoutesError, routesError ? t(routesError) : "", "error");
+    setLocalMessage(ui.advertiseMessage, state.advertiseError ? t("network.advertiseFailed") + " " + viewText(state.advertiseError) :
+      state.advertiseFeedback === "saved" ? t("network.advertiseSaved") : "", state.advertiseError ? "error" : "info");
+    ui.advertiseExitDescription.textContent = t(exitAdvertisementBlocked() ? "network.exitAdvertisementBlocked" : "network.exitAdvertisementDescription");
+  }
+
+  function exitIpv6Takeover() {
+    return state.exitIpv6Pending !== null ? state.exitIpv6Pending : Boolean(state.status && state.status.exitNodeIPv6Takeover === true);
+  }
+
+  async function applyExitIpv6(enabled) {
+    if (state.busy || !state.available || !state.pageActive || !state.status || enabled === exitIpv6Takeover()) {
+      updateControls();
+      return;
+    }
+    const version = ++state.networkRequestVersion;
+    state.busy = true;
+    state.busyAction = "exit-ipv6";
+    state.exitIpv6Pending = enabled;
+    state.networkError = null;
+    state.networkFeedback = "";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "exit-node-ipv6", exitNodeIPv6: enabled }));
+      if (!state.pageActive || version !== state.networkRequestVersion) return;
+      state.exitIpv6Pending = null;
+      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+    } catch (error) {
+      if (state.pageActive && version === state.networkRequestVersion) {
+        state.networkError = errorView(error);
+        // The switch file may be saved even when applying failed; re-read it.
+        state.refreshAfterBusy = true;
+        markFreshness("verify");
+      }
+    } finally {
+      state.exitIpv6Pending = null;
+      finishBusy();
+    }
+  }
+
+  function exitAdvertisementBlocked() {
+    return Boolean(state.status && state.status.exitNodeConfigured === true && state.status.advertiseExitNode !== true);
+  }
+
+  async function loadExitNodes() {
+    if (!state.available || !state.pageActive || state.exitNodesLoading) return;
+    const version = ++state.exitNodesRequestVersion;
+    state.exitNodesLoading = true;
+    state.exitNodesError = null;
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "exit-nodes" }));
+      if (version !== state.exitNodesRequestVersion || !state.pageActive) return;
+      state.exitNodes = normalizeDevices(result);
+    } catch (error) {
+      if (version === state.exitNodesRequestVersion && state.pageActive) state.exitNodesError = errorView(error);
+    } finally {
+      if (version === state.exitNodesRequestVersion) {
+        state.exitNodesLoading = false;
+        updateControls();
+      }
+    }
+  }
+
   async function loadDevices() {
     if (!state.available || !state.pageActive) return;
     if (state.busyAction === "devices") return;
@@ -476,10 +682,70 @@
       const result = requireSuccess(await rpc({ action: "devices" }));
       if (version !== state.deviceRequestVersion || !state.pageActive) return;
       state.devices = normalizeDevices(result);
+      renderNetwork();
     } catch (error) {
       if (version === state.deviceRequestVersion && state.pageActive) state.devicesError = errorView(error);
     } finally {
       if (state.pageActive) renderDevices();
+      finishBusy();
+    }
+  }
+
+  async function applyExitNode(target) {
+    if (state.busy || !state.available || !state.pageActive || (target !== "" && !state.settingsConfirmed)) return;
+    const version = ++state.networkRequestVersion;
+    state.busy = true;
+    state.busyAction = "exit-node";
+    state.networkError = null;
+    state.networkFeedback = "";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "exit-node", exitNode: target }));
+      if (!state.pageActive || version !== state.networkRequestVersion) return;
+      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+      state.networkDraft = { ...state.networkDraft, exitNode: null, ...(target ? { advertiseExitNode: null } : {}) };
+      state.networkFeedback = "saved";
+      state.exitNodesLoading = false;
+      loadExitNodes();
+    } catch (error) {
+      if (state.pageActive && version === state.networkRequestVersion) {
+        state.networkError = errorView(error);
+        state.refreshAfterBusy = true;
+        markFreshness("verify");
+      }
+    } finally {
+      finishBusy();
+    }
+  }
+
+  async function saveAdvertisement() {
+    if (state.busy || !state.available || !state.pageActive || !state.settingsConfirmed) return;
+    const routes = ui.advertiseRoutes.value.trim();
+    const advertiseExitNode = ui.advertiseExitNode.checked;
+    if (validateRoutes(routes)) {
+      state.networkDraft.routes = ui.advertiseRoutes.value;
+      updateControls();
+      return;
+    }
+    const version = ++state.networkRequestVersion;
+    state.busy = true;
+    state.busyAction = "advertise";
+    state.advertiseError = null;
+    state.advertiseFeedback = "";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "advertise", advertiseExitNode, advertiseRoutes: routes }));
+      if (!state.pageActive || version !== state.networkRequestVersion) return;
+      state.networkDraft = { ...state.networkDraft, routes: null, advertiseExitNode: null };
+      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+      state.advertiseFeedback = "saved";
+    } catch (error) {
+      if (state.pageActive && version === state.networkRequestVersion) {
+        state.advertiseError = errorView(error);
+        state.refreshAfterBusy = true;
+        markFreshness("verify");
+      }
+    } finally {
       finishBusy();
     }
   }
@@ -647,6 +913,20 @@
     ui.exitLan.disabled = disabled || !state.settingsConfirmed || !exitNodeConfigured;
     ui.exitLanDescription.textContent = t(!state.status ? "settings.exitLanWaiting" :
       exitNodeConfigured ? "settings.exitLanDescription" : "settings.exitLanUnavailable");
+    renderNetwork();
+    const networkDisabled = disabled || !state.settingsConfirmed;
+    const selected = ui.exitNodeSelect.selectedOptions[0];
+    const draft = state.networkDraft;
+    ui.exitNodeSelect.disabled = networkDisabled || !state.exitNodes;
+    ui.exitNodeRefresh.disabled = !state.available || !state.pageActive || state.exitNodesLoading;
+    ui.exitNodeApply.disabled = networkDisabled || !state.exitNodes || !selected || selected.disabled ||
+      selected.value === "" || selected.value === currentExitNode();
+    ui.exitNodeClear.disabled = !state.available || !state.pageActive || state.busy || !exitNodeConfigured;
+    ui.advertiseRoutes.disabled = networkDisabled;
+    ui.exitNodeIpv6Takeover.disabled = disabled || !state.status;
+    ui.advertiseExitNode.disabled = networkDisabled || exitAdvertisementBlocked();
+    ui.advertiseSave.disabled = networkDisabled || (draft.routes === null && draft.advertiseExitNode === null) ||
+      Boolean(draft.routes !== null && validateRoutes(ui.advertiseRoutes.value));
     ui.run.textContent = t(state.busyAction === "command" ? "command.running" : "command.run");
     ui.consoleLabel.textContent = t(state.busyAction === "console" ? "console.opening" : "console.open");
     renderAbout();
@@ -662,6 +942,7 @@
     ui.settingsHint.setAttribute("role", state.settingsError ? "alert" : "status");
     if (!state.status) ui.description.textContent = state.busy ? t("state.reading") : "";
     renderBinary();
+    renderTaildrop();
   }
 
   function encodeRequest(payload) {
@@ -776,6 +1057,134 @@
     ui.loginMessage.setAttribute("role", state.loginError ? "alert" : "status");
   }
 
+  function renderTaildrop() {
+    if (!state.taildropDraftDirty && typeof state.status?.taildropPath === "string" && state.status.taildropPath) {
+      state.taildropPath = state.status.taildropPath.slice(0, 512);
+    }
+    if (!state.taildropDraftDirty && document.activeElement !== ui.taildropPath) ui.taildropPath.value = state.taildropPath;
+    ui.taildropSaveLabel.textContent = t(state.busyAction === "taildrop-path" ? "taildrop.saving" : "taildrop.save");
+    ui.taildropReceiveLabel.textContent = t(state.busyAction === "taildrop-receive" ? "taildrop.receiving" : "taildrop.receive");
+    ui.taildropSave.classList.toggle("is-working", state.busyAction === "taildrop-path");
+    ui.taildropReceive.classList.toggle("is-working", state.busyAction === "taildrop-receive");
+    ui.taildropMessage.textContent = state.taildropError ? viewText(state.taildropError) : "";
+    ui.taildropMessage.hidden = !ui.taildropMessage.textContent;
+    ui.taildropMessage.dataset.kind = state.taildropError ? "error" : "info";
+    ui.taildropMessage.setAttribute("role", state.taildropError ? "alert" : "status");
+    ui.taildropPath.setAttribute("aria-invalid", state.taildropError ? "true" : "false");
+    ui.taildropPath.disabled = !state.available || state.busy || !state.pageActive;
+    ui.taildropBrowse.disabled = !state.available || state.busy || !state.pageActive;
+    ui.taildropBrowser.hidden = !state.taildropBrowserPath;
+    ui.taildropBrowserCurrent.textContent = state.taildropBrowserPath;
+    ui.taildropBrowserUp.disabled = state.taildropBrowserBusy || !state.taildropBrowserPath ||
+      ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
+    ui.taildropChoose.disabled = state.taildropBrowserBusy || !state.taildropBrowserPath ||
+      ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
+    ui.taildropChoose.textContent = t("taildrop.choose");
+    ui.taildropDirectoryList.replaceChildren();
+    if (state.taildropBrowserBusy) {
+      const loading = document.createElement("p");
+      loading.className = "empty-copy";
+      loading.textContent = t("taildrop.browsing");
+      ui.taildropDirectoryList.appendChild(loading);
+    } else if (!state.taildropDirectories.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-copy";
+      empty.textContent = t("taildrop.empty");
+      ui.taildropDirectoryList.appendChild(empty);
+    } else {
+      for (const directory of state.taildropDirectories) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "taildrop-directory";
+        button.textContent = directory.name;
+        button.dataset.path = directory.path;
+        button.setAttribute("role", "option");
+        ui.taildropDirectoryList.appendChild(button);
+      }
+    }
+    if (state.taildropDirectoriesTruncated) {
+      const more = document.createElement("p");
+      more.className = "empty-copy";
+      more.textContent = t("taildrop.more");
+      ui.taildropDirectoryList.appendChild(more);
+    }
+  }
+
+  async function browseTaildrop(path = "") {
+    if (state.busy || state.taildropBrowserBusy || !state.available || !state.pageActive) return;
+    const version = ++state.taildropBrowserRequestVersion;
+    state.busy = true;
+    state.busyAction = "taildrop-browse";
+    state.taildropBrowserBusy = true;
+    state.taildropBrowserPath = path || "/storage/emulated/0";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    updateControls();
+    renderTaildrop();
+    try {
+      const result = requireSuccess(await rpc({ action: "taildrop-list", path: state.taildropBrowserPath }));
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropBrowserPath = typeof result.taildropPath === "string" ? result.taildropPath : state.taildropBrowserPath;
+      state.taildropDirectories = Array.isArray(result.taildropDirectories) ? result.taildropDirectories.filter((item) =>
+        item && typeof item.name === "string" && typeof item.path === "string").slice(0, 128) : [];
+      state.taildropDirectoriesTruncated = result.taildropDirectoriesTruncated === true;
+    } catch (error) {
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropError = errorView(error);
+      state.taildropBrowserPath = "";
+    } finally {
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropBrowserBusy = false;
+      state.busy = false;
+      state.busyAction = "";
+      updateControls();
+      renderTaildrop();
+    }
+  }
+
+  function chooseTaildropDirectory(path) {
+    if (typeof path !== "string" || !path) return;
+    state.taildropPath = path;
+    state.taildropDraftDirty = true;
+    ui.taildropPath.value = path;
+    state.taildropBrowserPath = "";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    renderTaildrop();
+  }
+
+  async function taildropAction(action) {
+    if (state.busy || !state.available || !state.pageActive) return;
+    const value = ui.taildropPath.value.trim();
+    if (value.length > 512 || !value.startsWith("/")) {
+      state.taildropError = { key: "taildrop.invalid" };
+      renderTaildrop();
+      return;
+    }
+    state.taildropError = null;
+    state.busy = true;
+    state.busyAction = action;
+    const version = ++state.taildropActionRequestVersion;
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action, path: value }));
+      if (!state.pageActive || version !== state.taildropActionRequestVersion) return;
+      if (typeof result.taildropPath === "string") {
+        state.taildropPath = result.taildropPath;
+        if (state.status) state.status.taildropPath = result.taildropPath;
+        ui.taildropPath.value = result.taildropPath;
+      }
+      state.taildropDraftDirty = false;
+      state.taildropError = null;
+      message(action === "taildrop-receive" ? "taildrop.received" : "taildrop.saved", "info");
+      renderTaildrop();
+    } catch (error) {
+      if (state.pageActive && version === state.taildropActionRequestVersion) state.taildropError = errorView(error);
+    } finally {
+      finishBusy();
+    }
+  }
+
   function renderFreshness() {
     const values = state.lastUpdated ? {
       time: new Intl.DateTimeFormat(I18n.locale(), { hour: "2-digit", minute: "2-digit" }).format(state.lastUpdated),
@@ -841,6 +1250,7 @@
     }
     syncSettings();
     renderPresentation();
+    renderNetwork();
     updateControls();
   }
 
@@ -1036,6 +1446,13 @@
       if (selected && focus) tab.focus();
     }
     if (name === "devices" && !state.devices && !state.devicesError) loadDevices();
+    if (name === "settings") {
+      loadExitNodes();
+      if (!state.settingsConfirmed) {
+        if (state.busy) state.refreshAfterBusy = true;
+        else refresh(false);
+      }
+    }
   }
 
   document.querySelectorAll("[data-tab]").forEach((tab) => {
@@ -1055,12 +1472,54 @@
   $("refresh").addEventListener("click", () => refresh(true));
   $("refresh-devices").addEventListener("click", () => loadDevices());
   ui.deviceSearch.addEventListener("input", renderDevices);
+  ui.exitNodeApply.addEventListener("click", () => applyExitNode(ui.exitNodeSelect.value));
+  ui.exitNodeClear.addEventListener("click", () => applyExitNode(""));
+  ui.exitNodeRefresh.addEventListener("click", () => {
+    loadExitNodes();
+    if (!state.settingsConfirmed) {
+      if (state.busy) state.refreshAfterBusy = true;
+      else refresh(false);
+    }
+  });
+  ui.advertiseSave.addEventListener("click", saveAdvertisement);
+  ui.exitNodeIpv6Takeover.addEventListener("change", () => applyExitIpv6(ui.exitNodeIpv6Takeover.checked));
+  ui.exitNodeSelect.addEventListener("change", () => {
+    state.networkDraft.exitNode = ui.exitNodeSelect.value;
+    state.networkFeedback = "";
+    state.networkError = null;
+    updateControls();
+  });
+  const editAdvertisement = (field, value) => {
+    state.networkDraft[field] = value;
+    state.advertiseFeedback = "";
+    state.advertiseError = null;
+    updateControls();
+  };
+  ui.advertiseRoutes.addEventListener("input", () => editAdvertisement("routes", ui.advertiseRoutes.value));
+  ui.advertiseExitNode.addEventListener("change", () => editAdvertisement("advertiseExitNode", ui.advertiseExitNode.checked));
   ui.console.addEventListener("click", openConsole);
   ui.about.addEventListener("click", openAbout);
   ui.login.addEventListener("click", startLogin);
   ui.binaryCheck.addEventListener("click", () => runBinaryAction("binary-check"));
   ui.binaryUpdate.addEventListener("click", () => runBinaryAction("binary-update"));
   ui.binaryChannel.addEventListener("change", () => setBinaryChannel(ui.binaryChannel.value));
+  ui.taildropSave.addEventListener("click", () => taildropAction("taildrop-path"));
+  ui.taildropReceive.addEventListener("click", () => taildropAction("taildrop-receive"));
+  ui.taildropPath.addEventListener("input", () => {
+    state.taildropDraftDirty = true;
+    state.taildropPath = ui.taildropPath.value.slice(0, 512);
+  });
+  ui.taildropBrowse.addEventListener("click", () => browseTaildrop(state.taildropPath || ""));
+  ui.taildropBrowserUp.addEventListener("click", () => {
+    if (!state.taildropBrowserPath) return;
+    const parent = state.taildropBrowserPath.replace(/\/[^/]+$/, "") || "/";
+    browseTaildrop(parent === "/storage/emulated" ? "/storage/emulated/0" : parent);
+  });
+  ui.taildropChoose.addEventListener("click", () => chooseTaildropDirectory(state.taildropBrowserPath));
+  ui.taildropDirectoryList.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button[data-path]") : null;
+    if (target) browseTaildrop(target.dataset.path || "");
+  });
   document.addEventListener("click", (event) => {
     if (!(event.target instanceof Element)) return;
     const control = event.target.closest("button.copy-control[data-copy]");
@@ -1105,11 +1564,17 @@
   }, true);
   document.addEventListener("submit", (event) => event.preventDefault());
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") refresh(false);
+    if (document.visibilityState !== "visible") return;
+    refresh(false);
+    if (state.activeTab === "settings") loadExitNodes();
   });
   window.addEventListener("pagehide", () => {
     copyEpoch++;
     state.pageActive = false;
+    if (state.busyAction === "taildrop-browse") {
+      state.busy = false;
+      state.busyAction = "";
+    }
     state.deviceRequestVersion++;
     state.deviceRefreshPending = false;
     state.refreshAfterBusy = false;
@@ -1128,6 +1593,25 @@
     state.binaryError = null;
     state.updateChannel = null;
     state.binaryChannelPending = null;
+    state.taildropPath = "";
+    state.taildropDraftDirty = false;
+    state.taildropError = null;
+    state.taildropBrowserPath = "";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    state.taildropBrowserBusy = false;
+    state.taildropBrowserRequestVersion++;
+    state.taildropActionRequestVersion++;
+    state.networkFeedback = "";
+    state.networkError = null;
+    state.advertiseFeedback = "";
+    state.advertiseError = null;
+    state.networkDraft = { exitNode: null, routes: null, advertiseExitNode: null };
+    state.networkRequestVersion++;
+    state.exitNodesRequestVersion++;
+    state.exitNodes = null;
+    state.exitNodesLoading = false;
+    state.exitNodesError = null;
     state.status = null;
     state.settings = null;
     state.settingsConfirmed = false;
@@ -1146,6 +1630,7 @@
     ui.loginURL.value = "";
     ui.deviceSearch.value = "";
     ui.command.value = "";
+    ui.taildropPath.value = "";
     state.output = { kind: "idle" };
     renderPresentation();
     renderDevices();
@@ -1154,11 +1639,13 @@
     renderNotice();
     renderOutput();
     renderBinary();
+    renderNetwork();
     updateControls();
   });
   window.addEventListener("pageshow", () => {
     if (state.pageActive) return;
     state.pageActive = true;
+    if (state.activeTab === "settings") loadExitNodes();
     if (state.activeTab === "devices") state.deviceRefreshPending = true;
     if (state.busy) state.refreshAfterBusy = true;
     else refresh(false);
@@ -1169,12 +1656,16 @@
   renderPresentation();
   renderOutput();
   renderDevices();
+  renderNetwork();
   renderConsoleMessage();
   updateControls();
   if (state.available) {
     refresh(false);
     setInterval(() => {
-      if (document.visibilityState === "visible") refresh(false);
+      if (document.visibilityState === "visible") {
+        refresh(false);
+        if (state.activeTab === "settings") loadExitNodes();
+      }
     }, 15000);
   }
 })();

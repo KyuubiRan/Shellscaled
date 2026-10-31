@@ -6,7 +6,7 @@
   const requests = () => JSON.parse(fixture.requestsJSON());
   const backend = () => JSON.parse(fixture.statusJSON());
   const assert = (value) => { if (!value) throw new Error("assertion"); };
-  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error)\.[A-Za-z0-9.]+$/;
+  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error|network|taildrop)\.[A-Za-z0-9.]+$/;
   async function until(predicate) {
     const end = Date.now() + 6000;
     while (!predicate()) {
@@ -129,12 +129,54 @@
     const keys = Object.keys(translations.en).sort();
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "run-command", "command-output",
-      "devices-message", "console-label", "about-description", "login-label", "binary-check-label", "binary-update-label", "binary-message"]);
+      "devices-message", "console-label", "about-description", "login-label", "binary-check-label", "binary-update-label", "binary-message",
+      "network-message", "exit-node-summary", "exit-node-ipv6", "advertise-exit-description", "taildrop-message", "taildrop-save-label", "taildrop-receive-label"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
       assert($("preview-notice").hidden && requests().length > 0);
       assert([...$("language").options].map((option) => option.value).join(",") === "system,zh-CN,zh-TW,en");
+    });
+
+    await test("settings-load-exit-nodes-automatically", async () => {
+      const count = () => requests().filter((request) => request.action === "exit-nodes").length;
+      const before = count();
+      click("tab-settings");
+      await until(() => count() > before);
+      await until(() => $("network-refresh").getAttribute("aria-busy") === "false");
+      assert(!$("exit-node-select").disabled);
+      assert($("network-message").textContent !== ShellscaledI18n.t("network.loading"));
+      const refreshBox = $("network-refresh").getBoundingClientRect();
+      assert(refreshBox.width >= 44 && refreshBox.height >= 44);
+      assert($("network-refresh").getAttribute("aria-label").trim());
+      const dns = $("magicdns-status");
+      assert(backend().state === "Running" && !backend().magicDNS);
+      assert(!dns.hidden && dns.dataset.kind === "info" && dns.getAttribute("aria-live") === "polite");
+      assert(dns.textContent === ShellscaledI18n.t("network.dnsOff"));
+      click("tab-overview");
+    });
+
+    await test("exit-node-ipv6-takeover-defaults-on", async () => {
+      await idle();
+      click("tab-settings");
+      await until(() => !$("exit-node-ipv6-takeover").disabled);
+      const toggle = $("exit-node-ipv6-takeover");
+      const line = $("exit-node-ipv6");
+      // The fixture reports no opt-out file, so the exit node takes IPv6 too.
+      assert(backend().exitNodeConfigured === true && backend().exitNodeIPv6Takeover === true && toggle.checked);
+      assert(toggle.getAttribute("role") === "switch" && toggle.closest("#network-role-card"));
+      assert(line.hidden);
+      const ipv6Requests = () => requests().filter((request) => request.action === "exit-node-ipv6");
+      const before = ipv6Requests().length;
+      click("exit-node-ipv6-takeover");
+      await until(() => ipv6Requests().length === before + 1);
+      const request = ipv6Requests().at(-1);
+      assert(request.exitNodeIPv6 === false && Object.keys(request).every((key) => ["action", "locale", "exitNodeIPv6"].includes(key)));
+      await idle();
+      // The fixture rejects the action: the switch returns to the daemon's state with a local error.
+      assert(toggle.checked && !$("network-message").hidden && $("network-message").dataset.kind === "error");
+      assert(line.hidden);
+      click("tab-overview");
     });
 
     for (const locale of locales) {

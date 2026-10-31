@@ -173,7 +173,7 @@ public final class MainActivity extends Activity {
         if (!"login".equals(screenshotTab)) addresses.put("100.64.0.10").put("fd7a:115c:a1e0::10");
         JSONObject result = new JSONObject().put("ok", true).put("state", state)
                 .put("version", binaryVersion)
-                .put("daemonRunning", true).put("exitNodeConfigured", true).put("exitCode", 0)
+                .put("daemonRunning", true).put("exitNodeConfigured", true).put("exitNodeIPv6Takeover", true).put("exitCode", 0)
                 .put("ips", addresses)
                 .put("settings", settings).put("updateChannel", updateChannel);
         if (!loginURL.isEmpty()) result.put("loginURL", loginURL);
@@ -255,7 +255,7 @@ public final class MainActivity extends Activity {
                 }
                 synchronized (guard) {
                     String action = request.getString("action");
-                    if (Arrays.asList("devices", "console", "about", "login", "binary-check", "binary-update").contains(action) && request.length() != 2) {
+                    if (Arrays.asList("devices", "exit-nodes", "console", "about", "login", "binary-check", "binary-update").contains(action) && request.length() != 2) {
                         throw new JSONException("extra-fields");
                     }
                     if ("binary-channel".equals(action) && (request.length() != 3 ||
@@ -330,6 +330,7 @@ public final class MainActivity extends Activity {
                             replyOrHold(callback, binary);
                             return;
                         case "devices":
+                        case "exit-nodes":
                             reply(callback, new JSONObject().put("ok", true).put("devices", devices()));
                             return;
                         case "console":
