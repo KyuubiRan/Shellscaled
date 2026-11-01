@@ -81,7 +81,10 @@ sc_daemon_running() {
 sc_supervisor_running() {
     sc_read_pid "$SC_SUPERVISOR_PID" || return 1
     sc_cmdline=$(tr '\000' ' ' < "/proc/$SC_PID/cmdline" 2>/dev/null) || return 1
-    [ "$sc_cmdline" = "/system/bin/sh $SC_MODDIR/ctl.sh supervise " ]
+    # Some kernels omit the final NUL, so the converted string may or may not
+    # end in a space. Compare without it.
+    sc_cmdline=${sc_cmdline% }
+    [ "$sc_cmdline" = "/system/bin/sh $SC_MODDIR/ctl.sh supervise" ]
 }
 
 sc_disabled() {
