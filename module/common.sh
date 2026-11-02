@@ -289,16 +289,29 @@ sc_magicdns_stop() {
     sc_magicdns_term
 }
 
+# Query only the fixed opt-in of our verified daemon; never expose its environment.
+sc_taildrop_inbox_mode() {
+    sc_daemon_running || return 1
+    tr '\000' '\n' < "/proc/$SC_PID/environ" 2>/dev/null | grep -F -x 'TS_ANDROID_TAILDROP_INBOX=1' >/dev/null
+}
+
 # Safe-point invariant for the live-update freeze (docs/hot-update.md, "Supervisor handover"):
 # never run sleep between spawning a process and sc_record_pid.
 sc_start_daemon() {
-    sc_daemon_running && return 0
+    if sc_daemon_running && sc_taildrop_inbox_mode; then
+        return 0
+    fi
     [ -x "$SC_MODDIR/bin/tailscaled" ] || { sc_log 'The daemon binary is missing.'; return 1; }
+    [ -x "$SC_MODDIR/bin/shellscaled-web" ] || { sc_log 'The Taildrop receiver is missing.'; return 1; }
+    if sc_daemon_running; then
+        sc_log 'Restarting the daemon to enable the private Taildrop inbox.'
+        sc_stop_daemon || return 1
+    fi
     rm -f "$SC_DAEMON_PID" "$SC_SOCKET"
     # No argument contains a space; ctl.sh compares the resulting cmdline
     # before it adopts a running daemon.
     # shellcheck disable=SC2086
-    "$SC_MODDIR/bin/tailscaled" $SC_DAEMON_ARGS \
+    TS_ANDROID_TAILDROP_INBOX=1 "$SC_MODDIR/bin/tailscaled" $SC_DAEMON_ARGS \
         </dev/null >> "$SC_LOGS/daemon.log" 2>&1 &
     sc_new_pid=$!
     sc_record_pid "$SC_DAEMON_PID" "$sc_new_pid" || return 1
