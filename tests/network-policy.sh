@@ -50,8 +50,11 @@ for address in 8.8.8.8 2001:4860:4860::8888; do
     ip route get "$address" uid 10000 | grep -q "dev $VPN_IF" || {
         echo 'Ordinary traffic did not retain the Android VPN route.' >&2; exit 1;
     }
+    ip route get "$address" mark 0x10000000 uid 0 | grep -q "dev $VPN_IF" || {
+        echo 'Binary update traffic did not retain the Android VPN route.' >&2; exit 1;
+    }
 done
 "$MOD/ctl.sh" restart >/dev/null
 ip link show "$VPN_IF" >/dev/null
-echo 'PASS: real Android IPv4/IPv6 policy routes prefer Tailnet, protect daemon transport, retain VPN internet routes, and preserve VpnService across daemon restart.'
+echo 'PASS: real Android IPv4/IPv6 policy routes prefer Tailnet, protect daemon transport, retain VPN internet and update-check routes, and preserve VpnService across daemon restart.'
 echo 'This synthetic-route check does not prove authenticated packet delivery.'
