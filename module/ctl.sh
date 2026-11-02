@@ -50,7 +50,8 @@ sc_start() {
     # initialization finished; otherwise stop it so defaults are applied.
     if sc_daemon_running && [ -S "$SC_SOCKET" ] && [ -f "$SC_STATE/defaults-initialized" ] &&
         cmp -s "/proc/$SC_PID/exe" "$SC_MODDIR/bin/tailscaled" &&
-        [ "$(tr '\000' ' ' < "/proc/$SC_PID/cmdline")" = "$SC_MODDIR/bin/tailscaled $SC_DAEMON_ARGS " ]; then
+        [ "$(tr '\000' ' ' < "/proc/$SC_PID/cmdline")" = "$SC_MODDIR/bin/tailscaled $SC_DAEMON_ARGS " ] &&
+        sc_taildrop_inbox_mode; then
         :
     else
         sc_stop_daemon || return 1
@@ -228,12 +229,17 @@ sc_upgrade_checks() {
 # sleep only in the foreground, so until it reaps that child it is inside
 # the same sleep command.
 sc_upgrade_freeze() {
+    sc_supervisor_running && [ "$SC_PID" = "$1" ] || return 1
+    sc_up_frozen_start=$SC_PID_START
     pgrep -P "$1" -x sleep >/dev/null || return 1
+    sc_supervisor_running && [ "$SC_PID" = "$1" ] &&
+        [ "$SC_PID_START" = "$sc_up_frozen_start" ] || return 1
     sc_up_frozen=$1
     kill -STOP "$1" 2>/dev/null
     sc_up_state=$(cat "/proc/$1/stat" 2>/dev/null)
     sc_up_state=${sc_up_state##*) }
     if [ "${sc_up_state%% *}" = T ] && sc_supervisor_running && [ "$SC_PID" = "$1" ] &&
+        [ "$SC_PID_START" = "$sc_up_frozen_start" ] &&
         pgrep -P "$1" -x sleep >/dev/null; then
         return 0
     fi
@@ -241,16 +247,84 @@ sc_upgrade_freeze() {
     return 1
 }
 
-# Resumes the supervisor while this worker holds it stopped and has not
-# killed it, so every exit before the handover leaves it running.
+# Resume only the supervisor we froze, after its original tree is restored.
+# Older supervisors cannot recognize daemons whose executables moved to trash.
 sc_upgrade_resume() {
-    [ -z "$sc_up_frozen" ] || kill -CONT "$sc_up_frozen" 2>/dev/null
+    if [ -n "$sc_up_frozen" ] && sc_supervisor_running &&
+        [ "$SC_PID" = "$sc_up_frozen" ] && [ "$SC_PID_START" = "$sc_up_frozen_start" ]; then
+        kill -CONT "$sc_up_frozen" 2>/dev/null
+    fi
     sc_up_frozen=
+    sc_up_frozen_start=
+}
+
+# Inspect the token and paths rather than a flag set after mv: a signal may
+# arrive after the rename succeeded but before the next shell assignment.
+sc_upgrade_rollback() {
+    if [ ! -e "$SC_STAGED" ] &&
+        [ "$(cat "$SC_MODDIR/.sc-upgrade" 2>/dev/null)" = "$sc_up_token" ]; then
+        mv "$SC_MODDIR" "$SC_STAGED" || return 1
+    fi
+    if [ -n "$sc_up_trash" ] && [ -d "$sc_up_trash" ]; then
+        [ ! -e "$SC_MODDIR" ] && mv "$sc_up_trash" "$SC_MODDIR" || return 1
+    fi
+    [ -z "$sc_up_trash" ] || [ -d "$SC_MODDIR" ] || return 1
+    [ "$(cat "$SC_STAGED/.sc-upgrade" 2>/dev/null)" = "$sc_up_token" ] || return 1
+    # Manager flags can be written to the promoted tree during the swap.
+    # Preserve those user requests when returning to the original version.
+    if [ -n "$sc_up_trash" ]; then
+        for sc_up_flag in disable remove; do
+            [ ! -e "$SC_STAGED/$sc_up_flag" ] || : > "$SC_MODDIR/$sc_up_flag" || return 1
+        done
+    fi
+    sc_up_swapping=
+    sc_log 'Live update rolled back; the staged update activates at reboot.' || true
+    return 0
+}
+
+# Once the old supervisor has been killed, keep the lock and finish starting
+# its replacement even if a signal was received in that irreversible window.
+sc_upgrade_finish() {
+    sc_up_finished=1
+    rm -f "$SC_SUPERVISOR_PID" "$SC_MODDIR/.sc-upgrade"
+    for sc_up_flag in disable remove; do
+        [ -z "$sc_up_trash" ] || [ ! -e "$sc_up_trash/$sc_up_flag" ] || : > "$SC_MODDIR/$sc_up_flag"
+    done
+    sc_cli_install || sc_error 'Global commands were not installed; module-local commands remain available.'
+    # A fresh install has no old ctl.sh (Magisk leaves only module.prop and update).
+    if [ -n "$sc_up_sup" ] || [ -z "$sc_up_trash" ] || [ ! -f "$sc_up_trash/ctl.sh" ]; then
+        if ! sc_start; then
+            if [ -e "$SC_MODDIR/disable" ] || [ -e "$SC_MODDIR/remove" ]; then
+                sc_magicdns_stop
+                sc_stop_daemon
+            else
+                sc_log 'Live update installed, but startup did not become ready; inspect the service log.'
+                return 1
+            fi
+        fi
+    fi
+    sc_refresh_description
+    sc_log "Live update to $(sed -n 's/^version=//p' "$SC_MODDIR/module.prop") complete."
 }
 
 sc_upgrade_exit() {
+    sc_up_result=$1
+    trap - EXIT
+    trap '' TERM INT HUP
+    if [ -n "$sc_up_swapping" ] && [ -z "$sc_up_committed" ]; then
+        if ! sc_upgrade_rollback; then
+            # A failed recovery must never resume an old supervisor over the
+            # wrong tree and let it start a second daemon.
+            sc_log 'Live update rollback failed; the old supervisor remains stopped. Restore the module tree before resuming it.'
+            sc_up_frozen=
+            sc_up_result=1
+        fi
+    elif [ -n "$sc_up_committed" ] && [ -z "$sc_up_finished" ]; then
+        sc_upgrade_finish || sc_up_result=1
+    fi
     sc_upgrade_resume
     sc_unlock
+    exit "$sc_up_result"
 }
 
 # Live update worker (docs/hot-update.md, "Sequence"): customize.sh starts it
@@ -274,14 +348,25 @@ sc_upgrade() {
         sc_up_wait=$((sc_up_wait + 1))
     done
     sc_lock || return 1
-    trap sc_upgrade_exit EXIT
-    trap 'exit 1' TERM INT HUP
+    sc_up_token=$1
+    sc_up_swapping=
+    sc_up_committed=
+    sc_up_finished=
+    sc_up_signal=
+    sc_up_trash=
+    sc_up_frozen=
+    sc_up_frozen_start=
+    trap 'sc_upgrade_exit "$?"' EXIT
+    # Record cancellation while commands run. Exiting immediately could land
+    # between a successful rename/kill and recording its result.
+    trap 'sc_up_signal=1' TERM INT HUP
     sc_upgrade_checks "$1" || return 1
     rm -rf "$SC_DATA/trash"
     mkdir -p "$SC_DATA/trash"
     sc_up_sup=
     if sc_supervisor_running; then
         sc_up_sup=$SC_PID
+        sc_up_sup_start=$SC_PID_START
         sc_up_wait=0
         until sc_upgrade_freeze "$sc_up_sup"; do
             [ "$sc_up_wait" -lt 50 ] ||
@@ -291,45 +376,43 @@ sc_upgrade() {
         done
         sc_up_taildrop=$(pgrep -P "$sc_up_sup" -f 'shellscaled-web taildrop-auto')
     fi
-    sc_up_trash=
-    [ ! -d "$SC_MODDIR" ] || sc_up_trash=$SC_DATA/trash/$(date +%s)
-    # Rename live to trash (when present), then staged to live; undo on failure.
-    if ! { [ -z "$sc_up_trash" ] || mv "$SC_MODDIR" "$sc_up_trash"; } || ! mv "$SC_STAGED" "$SC_MODDIR"; then
-        [ -z "$sc_up_trash" ] || [ -d "$SC_MODDIR" ] || mv "$sc_up_trash" "$SC_MODDIR"
-        sc_upgrade_resume
-        sc_log 'Live update gave up: a rename failed; the update activates at reboot.'
-        return 1
+    [ -z "$sc_up_signal" ] || return 1
+    [ ! -d "$SC_MODDIR" ] || sc_up_trash=$SC_DATA/trash/$(date +%s).$$
+    # Arm recovery before either rename. The EXIT handler restores both trees
+    # before resuming a supervisor that may still use the old identity checks.
+    sc_up_swapping=1
+    if [ -n "$sc_up_trash" ]; then
+        mv "$SC_MODDIR" "$sc_up_trash" || return 1
     fi
+    [ -z "$sc_up_signal" ] || return 1
+    mv "$SC_STAGED" "$SC_MODDIR" || return 1
+    [ -z "$sc_up_signal" ] || return 1
     if [ -n "$sc_up_sup" ]; then
+        sc_supervisor_running && [ "$SC_PID" = "$sc_up_sup" ] &&
+            [ "$SC_PID_START" = "$sc_up_sup_start" ] || return 1
+        # The final cancellation check precedes the irreversible handover.
+        # Afterwards signals are recorded, and the new supervisor is started
+        # before the worker releases its lock or exits.
+        [ -z "$sc_up_signal" ] || return 1
         # Signal the receiver while its stopped parent cannot reap it, so its
         # PID cannot have been reused.
         # shellcheck disable=SC2086
         [ -z "$sc_up_taildrop" ] || kill -TERM $sc_up_taildrop 2>/dev/null
         # SIGKILL runs no EXIT trap: the daemon, proxy and DNS jumps stay.
-        kill -KILL "$sc_up_sup"
+        kill -KILL "$sc_up_sup" || return 1
+        sc_up_committed=1
         sc_up_frozen=
+        sc_up_frozen_start=
         sc_up_wait=0
         while [ -d "/proc/$sc_up_sup" ] && [ "$sc_up_wait" -lt 50 ]; do
             sleep 0.1
             sc_up_wait=$((sc_up_wait + 1))
         done
-        rm -f "$SC_SUPERVISOR_PID"
+    else
+        sc_up_committed=1
     fi
-    rm -f "$SC_MODDIR/.sc-upgrade"
-    # A flag in the old tree was set after the installer finished.
-    for sc_up_flag in disable remove; do
-        [ -z "$sc_up_trash" ] || [ ! -e "$sc_up_trash/$sc_up_flag" ] || : > "$SC_MODDIR/$sc_up_flag"
-    done
-    sc_cli_install
-    # A fresh install has no old ctl.sh (Magisk leaves only module.prop and update).
-    if [ -n "$sc_up_sup" ] || [ ! -f "$sc_up_trash/ctl.sh" ]; then
-        if ! sc_start && { [ -e "$SC_MODDIR/disable" ] || [ -e "$SC_MODDIR/remove" ]; }; then
-            sc_magicdns_stop
-            sc_stop_daemon
-        fi
-    fi
-    sc_refresh_description
-    sc_log "Live update to $(sed -n 's/^version=//p' "$SC_MODDIR/module.prop") complete."
+    sc_upgrade_finish || return 1
+    [ -z "$sc_up_signal" ]
 }
 
 # A binary update holds the normal control mutex across stop/replace/start.
