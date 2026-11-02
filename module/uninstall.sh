@@ -6,6 +6,7 @@ if ! /system/bin/sh "$SC_MODDIR/ctl.sh" stop; then
     exit 1
 fi
 . "$SC_MODDIR/common.sh" || exit 1
+sc_magicdns_rules_remove
 if ! sc_cli_remove; then
     sc_error 'Global command cleanup could not finish. Private ownership metadata was retained.'
     exit 1

@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
@@ -37,6 +38,8 @@ public final class MainActivity extends Activity {
             "index.html", "app.js", "i18n.js", "styles.css"));
     private final Object guard = new Object();
     private final JSONArray requests = new JSONArray();
+    private final JSONArray transports = new JSONArray();
+    private final Set<String> spawnCallbacks = new HashSet<>();
     private String state = "Running";
     private String loginURL = "";
     private String loginMode = "waiting";
@@ -45,6 +48,9 @@ public final class MainActivity extends Activity {
     private boolean acceptRoutes;
     private boolean shieldsUp;
     private boolean allowLAN;
+    private boolean magicDNS;
+    private boolean magicDNSApplied;
+    private String magicDNSMode = "normal";
     private boolean nextSettingsFails;
     private boolean nextSettingsResponseFails;
     private boolean holdNextSettings;
@@ -52,6 +58,27 @@ public final class MainActivity extends Activity {
     private boolean holdNextStatus;
     private String statusMode = "normal";
     private Runnable statusReply;
+    private String exitNodeTarget = "fixture-workstation";
+    private boolean exitNodeIPv6Takeover = true;
+    private boolean exitNodeIPv6 = true;
+    private boolean advertiseExitNode;
+    private JSONArray advertiseRoutes = new JSONArray();
+    private boolean holdNextExitNodes;
+    private boolean exitNodesOnline = true;
+    private final ArrayList<Runnable> exitNodesReplies = new ArrayList<>();
+    private boolean holdNextNetwork;
+    private boolean nextNetworkFails;
+    private boolean nextNetworkResponseFails;
+    private boolean nextNetworkNeedsStatus;
+    private String ipv6Mode = "normal";
+    private Runnable networkReply;
+    private String taildropPath = "/storage/emulated/0/Download/Taildrop";
+    private boolean taildropFiles = true;
+    private boolean holdNextTaildropBrowse;
+    private Runnable taildropBrowseReply;
+    private boolean holdNextTaildropAction;
+    private boolean nextTaildropActionFails;
+    private Runnable taildropActionReply;
     private boolean nextUpStarts;
     private boolean nextConsoleFails;
     private boolean nextAboutFails;
@@ -79,7 +106,7 @@ public final class MainActivity extends Activity {
         screenshotLocale = getIntent().getStringExtra("locale");
         if (screenshotLocale == null) screenshotLocale = "zh-CN";
         if (screenshotTab != null) {
-            if (!Arrays.asList("overview", "devices", "settings", "command", "login").contains(screenshotTab) ||
+            if (!Arrays.asList("overview", "devices", "taildrop", "settings", "command", "login").contains(screenshotTab) ||
                     !Arrays.asList("zh-CN", "zh-TW", "en").contains(screenshotLocale)) {
                 Log.i(TAG, "SCREENSHOT ERROR invalid-options");
                 finish();
@@ -173,10 +200,21 @@ public final class MainActivity extends Activity {
         if (!"login".equals(screenshotTab)) addresses.put("100.64.0.10").put("fd7a:115c:a1e0::10");
         JSONObject result = new JSONObject().put("ok", true).put("state", state)
                 .put("version", binaryVersion)
-                .put("daemonRunning", true).put("exitNodeConfigured", true).put("exitCode", 0)
+                .put("daemonRunning", true).put("exitNodeConfigured", !exitNodeTarget.isEmpty())
+                .put("exitNodeTarget", exitNodeTarget).put("exitNodeOnline", !exitNodeTarget.isEmpty())
+                .put("exitNodeIPv6Takeover", exitNodeIPv6Takeover).put("exitNodeIPv6", exitNodeIPv6 && !exitNodeTarget.isEmpty())
+                .put("advertiseExitNode", advertiseExitNode).put("advertiseRoutes", new JSONArray(advertiseRoutes.toString()))
+                .put("magicDNSEnabled", magicDNS).put("taildropPath", taildropPath).put("exitCode", 0)
                 .put("ips", addresses)
                 .put("settings", settings).put("updateChannel", updateChannel);
         if (!loginURL.isEmpty()) result.put("loginURL", loginURL);
+        if (!"normal".equals(magicDNSMode)) {
+            boolean pending = !"applied".equals(magicDNSMode);
+            result.put("magicDNS", new JSONObject().put("running", true)
+                    .put("mode", magicDNSApplied ? "tailnet" : "off").put("enabled", magicDNSApplied)
+                    .put("pending", pending).put("applyFailed", "failed".equals(magicDNSMode))
+                    .put("rules", !"failed".equals(magicDNSMode)).put("rules6", true).put("privateDns", "off"));
+        }
         return result;
     }
 
@@ -204,10 +242,11 @@ public final class MainActivity extends Activity {
                 .put(device("fixture-self", "demo-phone", "demo-phone.docs.example",
                         new String[]{"100.64.0.10", "fd7a:115c:a1e0::10"}, true, "android", true))
                 .put(device("fixture-workstation", "workstation", "workstation.docs.example",
-                        new String[]{"100.64.0.20", "fd7a:115c:a1e0::20"}, true, "linux", false))
+                        new String[]{"100.64.0.20", "fd7a:115c:a1e0::20"}, true, "linux", false)
+                        .put("exitNodeOption", true).put("exitNode", "fixture-workstation".equals(exitNodeTarget)))
                 .put(device("fixture-offline", "travel-laptop", "travel-laptop.docs.example",
                         new String[]{"100.64.0.30"}, false, "windows", false)
-                        .put("lastSeen", "2026-01-01T12:00:00Z"));
+                        .put("lastSeen", "2026-01-01T12:00:00Z").put("exitNodeOption", true));
         if (screenshotTab != null) return values;
         return values
                 .put(device("fixture-untrusted", "<img id=\"fixture-device-injected\" src=x onerror=\"alert(1)\">",
@@ -218,6 +257,40 @@ public final class MainActivity extends Activity {
                         new String[]{"100.64.0.50", "fd7a:115c:a1e0::50"}, true, "darwin", false))
                 .put(device("fixture-no-ip", "initializing-device", "", new String[]{}, false, "freebsd", false))
                 .put(device("fixture-unnamed", "", "", new String[]{"100.64.0.70"}, false, "", false));
+    }
+
+    private JSONArray exitNodes() throws JSONException {
+        return new JSONArray()
+                .put(device("fixture-workstation", "workstation", "workstation.docs.example",
+                        new String[]{"100.64.0.20"}, exitNodesOnline, "linux", false)
+                        .put("exitNodeOption", true).put("exitNode", "fixture-workstation".equals(exitNodeTarget)))
+                .put(device("fixture-secondary", "workstation-two", "workstation-two.docs.example",
+                        new String[]{"100.64.0.21"}, true, "linux", false)
+                        .put("exitNodeOption", true).put("exitNode", "fixture-secondary".equals(exitNodeTarget)))
+                .put(device("fixture-offline", "travel-laptop", "travel-laptop.docs.example",
+                        new String[]{"100.64.0.30"}, false, "windows", false).put("exitNodeOption", true));
+    }
+
+    private boolean taildropDirectoryAllowed(String path) {
+        return Arrays.asList("/storage/emulated/0", "/storage/emulated/0/Download",
+                "/storage/emulated/0/Download/Taildrop", "/storage/emulated/0/Download/Other",
+                "/storage/emulated/0/Documents", "/storage/emulated/0/Documents/Inbox").contains(path) ||
+                path.matches("/storage/emulated/0/Download/Folder[0-9]{2}");
+    }
+
+    private JSONArray taildropDirectories(String path) throws JSONException {
+        JSONArray result = new JSONArray();
+        String[] names = "/storage/emulated/0".equals(path) ? new String[]{"Documents", "Download"} :
+                "/storage/emulated/0/Download".equals(path) ? new String[]{"Other", "Taildrop"} :
+                "/storage/emulated/0/Documents".equals(path) ? new String[]{"Inbox"} : new String[]{};
+        for (String name : names) result.put(new JSONObject().put("name", name).put("path", path + "/" + name));
+        if ("/storage/emulated/0/Download".equals(path)) {
+            for (int i = 0; i < 30; i++) {
+                String name = String.format(java.util.Locale.ROOT, "Folder%02d", i);
+                result.put(new JSONObject().put("name", name).put("path", path + "/" + name));
+            }
+        }
+        return result;
     }
 
     private void record(String name, boolean success) {
@@ -240,6 +313,26 @@ public final class MainActivity extends Activity {
 
     public final class FakeKsu {
         @JavascriptInterface public void exec(String command, String options, String callback) {
+            synchronized (guard) { transports.put("exec"); }
+            dispatch(command, options, callback);
+        }
+
+        @JavascriptInterface public void spawn(String command, String args, String options, String callback) {
+            try {
+                JSONArray argv = new JSONArray(args);
+                if (!command.equals("/data/adb/modules/shellscaled/bin/shellscaled-web") || argv.length() != 2 ||
+                        !"rpc".equals(argv.getString(0)) || !"{}".equals(options)) throw new JSONException("spawn-envelope");
+                synchronized (guard) {
+                    transports.put("spawn");
+                    spawnCallbacks.add(callback);
+                }
+                dispatch(RPC + argv.getString(1), options, callback);
+            } catch (JSONException error) {
+                record("bridge-spawn-envelope", false);
+            }
+        }
+
+        private void dispatch(String command, String options, String callback) {
             if (!callback.matches("shellscaled_rpc_[0-9]+_[0-9]+")) {
                 record("bridge-callback", false);
                 return;
@@ -255,7 +348,7 @@ public final class MainActivity extends Activity {
                 }
                 synchronized (guard) {
                     String action = request.getString("action");
-                    if (Arrays.asList("devices", "console", "about", "login", "binary-check", "binary-update").contains(action) && request.length() != 2) {
+                    if (Arrays.asList("devices", "exit-nodes", "console", "about", "login", "binary-check", "binary-update").contains(action) && request.length() != 2) {
                         throw new JSONException("extra-fields");
                     }
                     if ("binary-channel".equals(action) && (request.length() != 3 ||
@@ -332,6 +425,81 @@ public final class MainActivity extends Activity {
                         case "devices":
                             reply(callback, new JSONObject().put("ok", true).put("devices", devices()));
                             return;
+                        case "exit-nodes":
+                            JSONObject nodes = new JSONObject().put("ok", true).put("devices", exitNodes());
+                            if (holdNextExitNodes) {
+                                holdNextExitNodes = false;
+                                exitNodesReplies.add(() -> reply(callback, nodes));
+                            } else reply(callback, nodes);
+                            return;
+                        case "exit-node":
+                        case "advertise":
+                        case "exit-node-ipv6":
+                            boolean networkOK = !nextNetworkFails;
+                            nextNetworkFails = false;
+                            if ("exit-node".equals(action)) {
+                                if (request.length() != 3 || !(request.get("exitNode") instanceof String)) throw new JSONException("exit-node-mask");
+                                String target = request.getString("exitNode");
+                                networkOK &= target.isEmpty() || !advertiseExitNode &&
+                                        Arrays.asList("fixture-workstation", "fixture-secondary").contains(target);
+                                if (networkOK) exitNodeTarget = target;
+                            } else if ("advertise".equals(action)) {
+                                int fields = (request.has("advertiseRoutes") ? 1 : 0) + (request.has("advertiseExitNode") ? 1 : 0);
+                                if (fields == 0 || request.length() != 2 + fields ||
+                                        request.has("advertiseRoutes") && !(request.get("advertiseRoutes") instanceof String) ||
+                                        request.has("advertiseExitNode") && !(request.get("advertiseExitNode") instanceof Boolean)) throw new JSONException("advertise-mask");
+                                networkOK &= !request.optBoolean("advertiseExitNode") || exitNodeTarget.isEmpty();
+                                if (networkOK) {
+                                    if (request.has("advertiseRoutes")) {
+                                        advertiseRoutes = new JSONArray();
+                                        String routes = request.getString("advertiseRoutes");
+                                        if (!routes.isEmpty()) for (String route : routes.split(",")) advertiseRoutes.put(route.trim());
+                                    }
+                                    if (request.has("advertiseExitNode")) advertiseExitNode = request.getBoolean("advertiseExitNode");
+                                }
+                            } else {
+                                if (request.length() != 3 || !(request.get("exitNodeIPv6") instanceof Boolean)) throw new JSONException("ipv6-mask");
+                                if (networkOK) {
+                                    exitNodeIPv6Takeover = request.getBoolean("exitNodeIPv6");
+                                    if ("normal".equals(ipv6Mode)) exitNodeIPv6 = exitNodeIPv6Takeover;
+                                    else if (!exitNodeIPv6Takeover) networkOK = false;
+                                }
+                            }
+                            if (nextNetworkResponseFails) networkOK = false;
+                            nextNetworkResponseFails = false;
+                            JSONObject network = networkOK ? (nextNetworkNeedsStatus ? new JSONObject().put("ok", true) : status()) : new JSONObject().put("ok", false)
+                                    .put("error", "Fixture network action unavailable").put("exitCode", 1);
+                            nextNetworkNeedsStatus = false;
+                            if (holdNextNetwork) {
+                                holdNextNetwork = false;
+                                networkReply = () -> reply(callback, network);
+                            } else reply(callback, network);
+                            return;
+                        case "taildrop-list":
+                        case "taildrop-path":
+                        case "taildrop-receive":
+                            if (request.length() != 3 || !(request.get("path") instanceof String)) throw new JSONException("taildrop-mask");
+                            String path = request.getString("path");
+                            boolean browse = "taildrop-list".equals(action);
+                            boolean taildropOK = taildropDirectoryAllowed(path) && (browse || !"/storage/emulated/0".equals(path));
+                            if (!browse) {
+                                taildropOK &= !nextTaildropActionFails;
+                                nextTaildropActionFails = false;
+                                if (taildropOK) taildropPath = path;
+                                if ("taildrop-receive".equals(action) && !taildropFiles) taildropOK = false;
+                            }
+                            JSONObject taildrop = new JSONObject().put("ok", taildropOK).put("taildropPath", path);
+                            if (browse && taildropOK) taildrop.put("taildropDirectories", taildropDirectories(path));
+                            if (!browse && taildropOK && "taildrop-receive".equals(action)) taildrop.put("taildropReceived", true);
+                            if (!taildropOK) taildrop.put("error", "Fixture Taildrop action unavailable").put("exitCode", 1);
+                            if (browse && holdNextTaildropBrowse) {
+                                holdNextTaildropBrowse = false;
+                                taildropBrowseReply = () -> reply(callback, taildrop);
+                            } else if (!browse && holdNextTaildropAction) {
+                                holdNextTaildropAction = false;
+                                taildropActionReply = () -> reply(callback, taildrop);
+                            } else reply(callback, taildrop);
+                            return;
                         case "console":
                             // Native code owns the fixed external console URL. The fixture opens nothing.
                             JSONObject console = new JSONObject().put("ok", !nextConsoleFails);
@@ -370,6 +538,10 @@ public final class MainActivity extends Activity {
                                             "tailscale version".equals(request.optString("command")) ? "1.104.2\n" : "");
                             reply(callback, result);
                             return;
+                        case "magicdns":
+                            if (request.length() != 3 || !(request.get("magicDNSEnabled") instanceof Boolean)) throw new JSONException("magicdns");
+                            magicDNS = request.getBoolean("magicDNSEnabled");
+                            break;
                         default: throw new JSONException("action");
                     }
                     result = status();
@@ -391,13 +563,28 @@ public final class MainActivity extends Activity {
         }
 
         private void reply(String callback, JSONObject result) {
-            String script = "window[" + JSONObject.quote(callback) + "](" + (result.optBoolean("ok") ? "0" : "1") +
-                    "," + JSONObject.quote(result.toString()) + ",\"\")";
+            String target = "window[" + JSONObject.quote(callback) + "]";
+            String script;
+            synchronized (guard) {
+                if (spawnCallbacks.remove(callback)) {
+                    String json = result.toString();
+                    int split = json.indexOf(',') + 1;
+                    script = target + ".stdout.emit('data'," + JSONObject.quote(json.substring(0, split)) + ");" +
+                            target + ".stdout.emit('data'," + JSONObject.quote(json.substring(split)) + ");" +
+                            target + ".emit('exit'," + (result.optBoolean("ok") ? "0" : "1") + ");";
+                } else {
+                    script = target + "(" + (result.optBoolean("ok") ? "0" : "1") +
+                            "," + JSONObject.quote(result.toString()) + ",\"\")";
+                }
+            }
             web.postDelayed(() -> web.evaluateJavascript(script, null), 30);
         }
     }
 
     public final class TestControl {
+        @JavascriptInterface public String transportsJSON() {
+            synchronized (guard) { return transports.toString(); }
+        }
         @JavascriptInterface public String requestsJSON() {
             synchronized (guard) { return requests.toString(); }
         }
@@ -453,6 +640,13 @@ public final class MainActivity extends Activity {
             if (!Arrays.asList("normal", "error", "stopped", "service-error", "invalid-settings").contains(value)) return;
             synchronized (guard) { statusMode = value; }
         }
+        @JavascriptInterface public void setMagicDNSMode(String value) {
+            if (!Arrays.asList("normal", "pending", "failed", "applied").contains(value)) return;
+            synchronized (guard) {
+                if ("pending".equals(value) || "applied".equals(value)) magicDNSApplied = magicDNS;
+                magicDNSMode = value;
+            }
+        }
         @JavascriptInterface public void holdNextSettings() {
             synchronized (guard) { holdNextSettings = true; }
         }
@@ -468,6 +662,92 @@ public final class MainActivity extends Activity {
         }
         @JavascriptInterface public void holdNextStatus() {
             synchronized (guard) { holdNextStatus = true; }
+        }
+        @JavascriptInterface public void setNetworkRole(String target, boolean advertise, String routes) {
+            if (!Arrays.asList("", "fixture-workstation", "fixture-secondary").contains(target)) return;
+            synchronized (guard) {
+                exitNodeTarget = target;
+                advertiseExitNode = advertise;
+                advertiseRoutes = new JSONArray();
+                if (!routes.isEmpty()) for (String route : routes.split(",")) advertiseRoutes.put(route.trim());
+            }
+        }
+        @JavascriptInterface public void setIPv6Mode(String mode) {
+            if (!Arrays.asList("normal", "unsupported").contains(mode)) return;
+            synchronized (guard) { ipv6Mode = mode; }
+        }
+        @JavascriptInterface public void setTaildropPath(String path) {
+            if (!taildropDirectoryAllowed(path) || "/storage/emulated/0".equals(path)) return;
+            synchronized (guard) { taildropPath = path; }
+        }
+        @JavascriptInterface public void setTaildropFiles(boolean available) {
+            synchronized (guard) { taildropFiles = available; }
+        }
+        @JavascriptInterface public void holdNextTaildropBrowse() {
+            synchronized (guard) { holdNextTaildropBrowse = true; }
+        }
+        @JavascriptInterface public void releaseTaildropBrowse() {
+            synchronized (guard) {
+                if (taildropBrowseReply != null) {
+                    Runnable reply = taildropBrowseReply;
+                    taildropBrowseReply = null;
+                    reply.run();
+                }
+                holdNextTaildropBrowse = false;
+            }
+        }
+        @JavascriptInterface public void holdNextTaildropAction() {
+            synchronized (guard) { holdNextTaildropAction = true; }
+        }
+        @JavascriptInterface public void nextTaildropActionFails() {
+            synchronized (guard) { nextTaildropActionFails = true; }
+        }
+        @JavascriptInterface public void releaseTaildropAction() {
+            synchronized (guard) {
+                if (taildropActionReply != null) {
+                    Runnable reply = taildropActionReply;
+                    taildropActionReply = null;
+                    reply.run();
+                }
+                holdNextTaildropAction = false;
+            }
+        }
+        @JavascriptInterface public void setIPv6Status(boolean takeover, boolean routed) {
+            synchronized (guard) { exitNodeIPv6Takeover = takeover; exitNodeIPv6 = routed; }
+        }
+        @JavascriptInterface public void holdNextExitNodes() {
+            synchronized (guard) { holdNextExitNodes = true; }
+        }
+        @JavascriptInterface public void setExitNodesOnline(boolean online) {
+            synchronized (guard) { exitNodesOnline = online; }
+        }
+        @JavascriptInterface public void releaseExitNodes(int index) {
+            synchronized (guard) {
+                if (index >= 0 && index < exitNodesReplies.size()) exitNodesReplies.remove(index).run();
+                holdNextExitNodes = false;
+            }
+        }
+        @JavascriptInterface public void holdNextNetwork() {
+            synchronized (guard) { holdNextNetwork = true; }
+        }
+        @JavascriptInterface public void nextNetworkFails() {
+            synchronized (guard) { nextNetworkFails = true; }
+        }
+        @JavascriptInterface public void nextNetworkResponseFails() {
+            synchronized (guard) { nextNetworkResponseFails = true; }
+        }
+        @JavascriptInterface public void nextNetworkNeedsStatus() {
+            synchronized (guard) { nextNetworkNeedsStatus = true; }
+        }
+        @JavascriptInterface public void releaseNetwork() {
+            synchronized (guard) {
+                if (networkReply != null) {
+                    Runnable reply = networkReply;
+                    networkReply = null;
+                    reply.run();
+                }
+                holdNextNetwork = false;
+            }
         }
         @JavascriptInterface public void releaseStatus() {
             synchronized (guard) {
@@ -503,6 +783,21 @@ public final class MainActivity extends Activity {
                 web.requestFocus();
                 web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
                 web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+            });
+        }
+        @JavascriptInterface public void pressTabKey(String key) {
+            final int code;
+            switch (key) {
+                case "ArrowRight": code = KeyEvent.KEYCODE_DPAD_RIGHT; break;
+                case "ArrowLeft": code = KeyEvent.KEYCODE_DPAD_LEFT; break;
+                case "Home": code = KeyEvent.KEYCODE_MOVE_HOME; break;
+                case "End": code = KeyEvent.KEYCODE_MOVE_END; break;
+                default: return;
+            }
+            web.post(() -> {
+                web.requestFocus();
+                web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, code));
+                web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, code));
             });
         }
         @JavascriptInterface public void nextChannelFails() {

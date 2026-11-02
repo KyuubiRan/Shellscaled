@@ -7,10 +7,10 @@ then the parent reference. Preserve the owner's configured Git identity/signing.
 ## Source ancestry and updates
 
 The official GitHub fork retains the real Tailscale history through
-`v1.104.2` (`e26db7a5797683ec99ad1516c40b628c7f2dfd71`). The Android changes
+`v1.104.4` (`27047635f237d1f3e0b08c0f487674757f30d2f7`). The Android changes
 are separate commits directly above that release, rather than a disconnected
-snapshot. The original r1 source is retained by `shellscaled-v1.104.2-r1` so
-existing parent commits remain reproducible.
+snapshot. The original 1.104.2 source is retained by the existing module tags so
+previous releases remain reproducible.
 
 Configure `upstream` as `https://github.com/tailscale/tailscale.git` when working
 from a fresh clone. `android-upstream` may reference the original
@@ -150,6 +150,22 @@ names, addresses, search text and clipboard contents are never persisted.
 
 ## Binary-only updates
 
+One action button starts as Check for updates and becomes Update now only after
+a compatible offer is confirmed. Checking and updating disable the button and
+show a spinner before its label; pointer and keyboard activation have local
+ripple feedback. Changing channels invalidates the offer. The module list
+description appends the verified runtime Tailscale version, refreshes after a
+binary transaction, and keeps both KernelSU's override and module.prop in sync.
+
+RPC prefers KernelSU's asynchronous `spawn` bridge, using the fixed helper path
+and two arguments (`rpc` and encoded JSON). Only the helper's existing action
+allowlist executes commands. Streamed output stays bounded and is decoded only
+on process exit. Two animation frames precede bridge entry so pressed/loading
+states can paint; managers without `spawn` retain the `exec` fallback, whose
+native call can still block JavaScript. One explicit binary action can wait for
+an in-flight status read, then runs before another refresh. Leaving the page
+cancels that queued intent; failed mutations are never automatically retried.
+
 The settings card checks only after a user request. Its source is the newest eligible
 public release of [the Android CLI fork](https://github.com/KyuubiRan/tailscale-android-cli),
 using GitHub asset digests and the generated manifest. Users choose stable or preview in Settings, with the choice saved in
@@ -191,13 +207,23 @@ update lock, and reject symlinks or directories in their place.
 ## Root-shell command entries
 
 Enabled modules install exactly two owned links for root `su` shells, without
-editing shared shell profiles. KernelSU's official `su` implementation appends
-its tool directory for interactive shells and `su -c`; module service scripts
-supply the trusted KSU environment used to select it. Magisk inherits the caller's
+editing shared shell profiles. KernelSU and APatch append their tool directories
+(`/data/adb/ksu/bin` and `/data/adb/ap/bin`) for interactive shells and `su -c`;
+module service scripts supply the trusted manager environment used to select
+them. APatch takes precedence over KSU compatibility variables. Missing or
+symlinked manager directories are rejected. Magisk inherits the caller's
 PATH. Its verified existing tool-injection tmpfs is accessed through a temporary
 private bind alias: only that alias is made writable, two links are installed,
 and the alias is detached. The original injected mount remains read-only.
 Neither the system partition nor an extra mounting module is required.
+
+The APatch directory and PATH behavior follow the official
+[11282 module environment](https://github.com/bmax121/APatch/blob/11282/apd/src/module.rs),
+[directory constants](https://github.com/bmax121/APatch/blob/11282/apd/src/defs.rs),
+and [root-shell implementation](https://github.com/bmax121/APatch/blob/11282/apd/src/apd.rs).
+The installer accepts APatch explicitly, without relying on its Magisk version
+compatibility variables. APatch boot/service behavior, WebUI and connectivity
+remain unverified; isolated emulator fixtures do not establish those results.
 
 `tailscale` resolves through the module's wrapper and fixed LocalAPI socket.
 `tailscaled` without arguments starts the managed service; `start`, `stop`,
@@ -250,6 +276,15 @@ the switches, without a global saved notice or manual save control. Leaving the
 page clears the displayed preferences; returning requests current state.
 If reconciliation also fails, the switches remain disabled. An unavailable
 service's default false fields do not count as a confirmed preferences snapshot.
+During a switch write, temporarily disabled controls retain their appearance and
+only the active settings row shows progress. Existing rows and scroll position
+remain in place. Unavailable controls retain their ordinary disabled styling.
+
+Copy operations use local pending/ARIA state without disabling and blurring the
+focused button. Feedback reserves the widest translated label, preserving the
+value column and row height. The DOM clipboard fallback restores the preceding
+focus, selection and scroll position; synthetic tests never access the real
+clipboard.
 
 Command shortcuts show their literal executable and arguments in every locale.
 Only surrounding help, controls and feedback are translated.

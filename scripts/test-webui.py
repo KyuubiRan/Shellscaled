@@ -157,6 +157,7 @@ def main():
             assert desc.returncode == 0
             labels = ("已连接", "已連線", "Connected") if state == "Running" else ("已断开", "已中斷連線", "Disconnected")
             assert any(label in desc.stdout for label in labels)
+            assert "Tailscale v" + changed["version"] in desc.stdout
         print("PASS: up/down preserves preferences and immediately updates module description")
         for expected in ["Stopped", "Running"]:
             assert shell("/data/adb/modules/shellscaled/action.sh").returncode == 0

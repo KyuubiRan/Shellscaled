@@ -66,7 +66,7 @@ python3 scripts/test-webui.py --manager ksu
 
 `python3 scripts/build-webui-fixture.py` 使用已有 SDK 构建隔离的测试 APK。
 在模拟器安装并启动 `dev.shellscaled.webuitest/.MainActivity`，读取
-`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=29 fail=0`。
+`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=45 fail=0`。
 它在真实 Android WebView 中加载原样资源，使用无 root、无网络权限的
 内存桥验证前端，不访问生产账号或 socket。详见 [夹具说明](../tests/webui/README.md)。
 
@@ -82,10 +82,13 @@ python3 scripts/test-webui.py --manager ksu
 Taildrop 的接收、恢复、文件校验及并发测试。已有 Go 版本不足时，通过
 `SHELLSCALED_GO` 指向满足 `tailscale/go.mod` 的已安装工具链。
 
-`tests/control-lock.sh <payload-dir>` 与 `tests/cli-entry.sh <payload-dir>`
+`tests/control-lock.sh <payload-dir>`、`tests/cli-entry.sh <payload-dir>` 与
+`tests/install.sh <payload-dir>`
 使用临时目录验证锁和全局 CLI 行为。通过 guard 推送实际模块脚本及夹具；
 注意把测试的 `cli-entry.sh` 另命名为 `cli-entry-test.sh`，避免覆盖
 payload 中同名的生产入口。它们不操作真实服务、账户、管理器目录或挂载。
+CLI 夹具覆盖 APatch / KernelSU 的选择及目录验证；安装夹具覆盖 APatch 无
+Magisk 兼容变量时的识别，以及离线校验与架构拒绝。这不等同于真实 APatch 启动验收。
 
 
 全局命令的 root 场景必须从 UID 2000 的普通 adb shell 验证，而不是只检查
