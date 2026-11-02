@@ -46,12 +46,21 @@ sc_start() {
         printf 'Shellscaled is already supervised.\n'
         return 0
     fi
-    # A previous supervisor may have been killed during initialization.
-    # Stop its verified orphan so the new supervisor applies defaults before
-    # reporting readiness instead of silently adopting partial startup.
-    sc_stop_daemon || return 1
+    # Adopt a daemon whose binary and arguments are unchanged and whose
+    # initialization finished; otherwise stop it so defaults are applied.
+    if sc_daemon_running && [ -S "$SC_SOCKET" ] && [ -f "$SC_STATE/defaults-initialized" ] &&
+        cmp -s "/proc/$SC_PID/exe" "$SC_MODDIR/bin/tailscaled" &&
+        [ "$(tr '\000' ' ' < "/proc/$SC_PID/cmdline")" = "$SC_MODDIR/bin/tailscaled $SC_DAEMON_ARGS " ]; then
+        :
+    else
+        sc_stop_daemon || return 1
+    fi
+    if sc_magicdns_running && ! { cmp -s "/proc/$SC_PID/exe" "$SC_MODDIR/bin/shellscaled-web" && sc_magicdns_jumps; }; then
+        sc_magicdns_term
+    fi
     rm -f "$SC_STOP" "$SC_SUPERVISOR_PID"
     sc_bound_logs
+    sc_root_cgroup
     nohup /system/bin/sh "$SC_MODDIR/ctl.sh" supervise \
         </dev/null >> "$SC_LOGS/service.log" 2>&1 &
     sc_new_supervisor=$!
@@ -60,7 +69,7 @@ sc_start() {
         return 1
     fi
     sc_start_wait=0
-    while [ "$sc_start_wait" -lt 25 ]; do
+    while [ "$sc_start_wait" -lt 125 ]; do
         if ! sc_supervisor_running; then
             sc_error 'The supervisor exited. Inspect ctl.sh logs service.'
             return 1
@@ -69,7 +78,7 @@ sc_start() {
             printf 'Shellscaled started. Use ctl.sh status for connection state.\n'
             return 0
         fi
-        sleep 1
+        sleep 0.2
         sc_start_wait=$((sc_start_wait + 1))
     done
     sc_error 'Startup is still retrying. Inspect ctl.sh status and logs.'
@@ -140,11 +149,11 @@ sc_supervise() {
     # start records our PID immediately after spawning us; do not run without
     # that ownership record or when invoked directly by accident.
     sc_register_wait=0
-    while [ "$sc_register_wait" -lt 5 ]; do
+    while [ "$sc_register_wait" -lt 50 ]; do
         if sc_supervisor_running && [ "$SC_PID" = "$$" ]; then
             break
         fi
-        sleep 1
+        sleep 0.1
         sc_register_wait=$((sc_register_wait + 1))
     done
     sc_supervisor_running && [ "$SC_PID" = "$$" ] || return 1
@@ -155,6 +164,10 @@ sc_supervise() {
     sc_failures=0
     sc_description_tick=0
     sc_magicdns_daemon_identity=
+    # Keep a proxy that sc_start adopted together with its daemon.
+    if sc_magicdns_running && sc_daemon_running; then
+        sc_magicdns_daemon_identity="$SC_PID.$SC_PID_START"
+    fi
     while ! sc_disabled; do
         if sc_legacy_active; then
             sc_log 'Conflicting magisk-tailscaled module is enabled; stopping.'
@@ -191,6 +204,134 @@ sc_supervise() {
     done
 }
 
+sc_upgrade_alive() {
+    [ -n "$1" ] && sc_alive_start=$(sc_start_time "${1%%.*}") && [ "$sc_alive_start" = "${1#*.}" ]
+}
+
+sc_upgrade_checks() {
+    [ "$(cat "$SC_STAGED/.sc-upgrade" 2>/dev/null)" = "$1" ] ||
+        { sc_log 'Live update gave up: the staged module belongs to another install.'; return 1; }
+    [ ! -e "$SC_STAGED/customize.sh" ] ||
+        { sc_log 'Live update gave up: the installer did not finish.'; return 1; }
+    # Three equal device numbers collapse to one line: mv is then a rename.
+    case "$(stat -c %d /data/adb/modules /data/adb/modules_update "$SC_DATA" | sort -u)" in
+        ''|*[!0-9]*) sc_log 'Live update gave up: the module directories are on different filesystems.'; return 1 ;;
+    esac
+}
+
+# Freezes supervisor $1 at a safe point (docs/hot-update.md, "Supervisor
+# handover"). mksh has no builtin sleep, so a sleep child marks a safe point,
+# but one seen before SIGSTOP may exit before the signal lands. Once the
+# supervisor is stopped it cannot move, so re-verify there: state T, still
+# the recorded supervisor, sleep child still present. A sleep that exits
+# after the freeze stays a zombie, which still counts: the supervisor runs
+# sleep only in the foreground, so until it reaps that child it is inside
+# the same sleep command.
+sc_upgrade_freeze() {
+    pgrep -P "$1" -x sleep >/dev/null || return 1
+    sc_up_frozen=$1
+    kill -STOP "$1" 2>/dev/null
+    sc_up_state=$(cat "/proc/$1/stat" 2>/dev/null)
+    sc_up_state=${sc_up_state##*) }
+    if [ "${sc_up_state%% *}" = T ] && sc_supervisor_running && [ "$SC_PID" = "$1" ] &&
+        pgrep -P "$1" -x sleep >/dev/null; then
+        return 0
+    fi
+    sc_upgrade_resume
+    return 1
+}
+
+# Resumes the supervisor while this worker holds it stopped and has not
+# killed it, so every exit before the handover leaves it running.
+sc_upgrade_resume() {
+    [ -z "$sc_up_frozen" ] || kill -CONT "$sc_up_frozen" 2>/dev/null
+    sc_up_frozen=
+}
+
+sc_upgrade_exit() {
+    sc_upgrade_resume
+    sc_unlock
+}
+
+# Live update worker (docs/hot-update.md, "Sequence"): customize.sh starts it
+# from the staged tree in init's mount namespace with the installer's
+# pid.starttime token and parent PID. The live update activates at reboot
+# whenever this gives up before the swap.
+sc_upgrade() {
+    SC_STAGED=$SC_MODDIR
+    SC_MODDIR=/data/adb/modules/shellscaled
+    sc_root_cgroup
+    sc_up_parent=
+    sc_up_exe=$(readlink "/proc/$2/exe" 2>/dev/null)
+    case "${sc_up_exe##*/}" in
+        ksud|apd|magisk*) sc_up_parent=$2.$(sc_start_time "$2") ;;
+    esac
+    sc_up_wait=0
+    while sc_upgrade_alive "$1" || sc_upgrade_alive "$sc_up_parent"; do
+        [ "$sc_up_wait" -lt 600 ] ||
+            { sc_log 'Live update gave up: the installer did not exit within 120 seconds.'; return 1; }
+        sleep 0.2
+        sc_up_wait=$((sc_up_wait + 1))
+    done
+    sc_lock || return 1
+    trap sc_upgrade_exit EXIT
+    trap 'exit 1' TERM INT HUP
+    sc_upgrade_checks "$1" || return 1
+    rm -rf "$SC_DATA/trash"
+    mkdir -p "$SC_DATA/trash"
+    sc_up_sup=
+    if sc_supervisor_running; then
+        sc_up_sup=$SC_PID
+        sc_up_wait=0
+        until sc_upgrade_freeze "$sc_up_sup"; do
+            [ "$sc_up_wait" -lt 50 ] ||
+                { sc_log 'Live update gave up: the supervisor did not reach a safe point.'; return 1; }
+            sleep 0.2
+            sc_up_wait=$((sc_up_wait + 1))
+        done
+        sc_up_taildrop=$(pgrep -P "$sc_up_sup" -f 'shellscaled-web taildrop-auto')
+    fi
+    sc_up_trash=
+    [ ! -d "$SC_MODDIR" ] || sc_up_trash=$SC_DATA/trash/$(date +%s)
+    # Rename live to trash (when present), then staged to live; undo on failure.
+    if ! { [ -z "$sc_up_trash" ] || mv "$SC_MODDIR" "$sc_up_trash"; } || ! mv "$SC_STAGED" "$SC_MODDIR"; then
+        [ -z "$sc_up_trash" ] || [ -d "$SC_MODDIR" ] || mv "$sc_up_trash" "$SC_MODDIR"
+        sc_upgrade_resume
+        sc_log 'Live update gave up: a rename failed; the update activates at reboot.'
+        return 1
+    fi
+    if [ -n "$sc_up_sup" ]; then
+        # Signal the receiver while its stopped parent cannot reap it, so its
+        # PID cannot have been reused.
+        # shellcheck disable=SC2086
+        [ -z "$sc_up_taildrop" ] || kill -TERM $sc_up_taildrop 2>/dev/null
+        # SIGKILL runs no EXIT trap: the daemon, proxy and DNS jumps stay.
+        kill -KILL "$sc_up_sup"
+        sc_up_frozen=
+        sc_up_wait=0
+        while [ -d "/proc/$sc_up_sup" ] && [ "$sc_up_wait" -lt 50 ]; do
+            sleep 0.1
+            sc_up_wait=$((sc_up_wait + 1))
+        done
+        rm -f "$SC_SUPERVISOR_PID"
+    fi
+    rm -f "$SC_MODDIR/.sc-upgrade"
+    # A flag in the old tree was set after the installer finished.
+    for sc_up_flag in disable remove; do
+        [ -z "$sc_up_trash" ] || [ ! -e "$sc_up_trash/$sc_up_flag" ] || : > "$SC_MODDIR/$sc_up_flag"
+    done
+    sc_cli_install
+    # A fresh install has no old ctl.sh (Magisk leaves only module.prop and update).
+    if [ -n "$sc_up_sup" ] || [ ! -f "$sc_up_trash/ctl.sh" ]; then
+        if ! sc_start && { [ -e "$SC_MODDIR/disable" ] || [ -e "$SC_MODDIR/remove" ]; }; then
+            sc_magicdns_stop
+            sc_stop_daemon
+        fi
+    fi
+    sc_refresh_description
+    sc_log "Live update to $(sed -n 's/^version=//p' "$SC_MODDIR/module.prop") complete."
+}
+
 # A binary update holds the normal control mutex across stop/replace/start.
 # Only a direct child of this module's real helper may reuse its parent's lock;
 # an environment variable alone never grants an unlocked control operation.
@@ -222,7 +363,19 @@ case "${1:-help}" in
     supervise)
         sc_prepare && sc_supervise
         ;;
+    upgrade)
+        [ "$SC_MODDIR" = /data/adb/modules_update/shellscaled ] || exit 1
+        sc_prepare || exit 1
+        exec >> "$SC_LOGS/service.log" 2>&1
+        sc_upgrade "${2:-}" "${3:-}"
+        ;;
     start|stop|restart)
+        # Run lifecycle commands in init's mount namespace (docs/hot-update.md, "Lifecycle commands").
+        if ! [ /proc/$$/ns/mnt -ef /proc/1/ns/mnt ]; then
+            for sc_bb in /data/adb/ksu/bin/busybox /data/adb/magisk/busybox /data/adb/ap/bin/busybox; do
+                [ -x "$sc_bb" ] && exec "$sc_bb" nsenter -t 1 -m -- /system/bin/sh "$SC_MODDIR/ctl.sh" "$@"
+            done
+        fi
         sc_prepare || exit 1
         if ! sc_binary_update_lock; then
             sc_lock || exit 1
