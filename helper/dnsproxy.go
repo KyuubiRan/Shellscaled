@@ -34,13 +34,13 @@ const (
 	magicDNSMaxSuffix     = 16
 )
 
-// magicDNSEnabledFile turns the split resolver on; it is off by default.
+// magicDNSEnabledFile records the requested state; absence defaults to off.
 // A variable for tests.
 var magicDNSEnabledFile = dataDir + "/magicdns-enabled"
 
 func magicDNSEnabled() bool {
-	_, err := os.Stat(magicDNSEnabledFile)
-	return err == nil
+	request, _ := readMagicDNSRequest()
+	return request.Enabled
 }
 
 var (
@@ -61,6 +61,8 @@ type magicDNSState struct {
 	Daemon       string `json:"daemon"`
 	ExitNode     string `json:"exitNode"`
 	Pending      bool   `json:"pending,omitempty"`
+	ApplyFailed  bool   `json:"applyFailed,omitempty"`
+	generation   string // The acknowledged request, never product display data.
 }
 
 // Daemon and ExitNode record the BackendState and prefs.ExitNodeID the mode
@@ -77,6 +79,8 @@ type magicDNSFile struct {
 	Upstream     string `json:"upstream"`
 	Daemon       string `json:"daemon"`
 	ExitNode     string `json:"exitNode"`
+	Generation   string `json:"generation"`
+	ApplyFailed  bool   `json:"applyFailed,omitempty"`
 }
 
 type magicDNSProxy struct {
@@ -97,7 +101,9 @@ type magicDNSProxy struct {
 
 	// Owned by the refresh goroutine.
 	exitID       string
-	enabled      bool // magicDNSEnabled at the last refresh
+	enabled      bool   // Last successfully applied request, not merely read prefs.
+	generation   string // Includes explicit off requests to prevent ABA matches.
+	applyFailed  bool
 	daemon       string
 	prefsExit    string
 	applied      [2]string
@@ -157,7 +163,8 @@ func (p *magicDNSProxy) refresh(ctx context.Context) {
 	mode, suffix, exitNode := "off", "", false
 	// Opt-in: while disabled the mode stays off and the chains empty, so no
 	// DNS is redirected; the proxy still runs for the stale flow reset.
-	enabled := magicDNSEnabled()
+	request, requestErr := readMagicDNSRequest()
+	enabled := requestErr == nil && request.Enabled
 	routes := map[string][]netip.AddrPort{}
 	exitDoH := p.exitDoH
 	p.daemon, p.prefsExit = "", ""
@@ -216,35 +223,69 @@ func (p *magicDNSProxy) refresh(ctx context.Context) {
 	}
 	p.tick++
 
-	p.mu.Lock()
-	p.suffix, p.routes, p.exitDoH = suffix, routes, exitDoH
-	p.mu.Unlock()
-
-	suffixes := dnsSuffixes(suffix, routes)
-	v4, v6 := p.familyRules(mode, suffixes)
-	if !p.applyRules(ctx, 0, v4) && !p.noString && p.familyMode(mode, 0, suffixes) == "tailnet" && xtStringMissing() {
-		// The kernel has no xt_string: tailnet names cannot be matched.
-		p.noString = true
-		mode = selectMagicDNSMode(exitNode, exitDoH != "", true, true, p.conntrackOK(0) || p.conntrackOK(1))
-		v4, v6 = p.familyRules(mode, suffixes)
-		p.applyRules(ctx, 0, v4)
+	err := requestErr
+	if err == nil {
+		err = withMagicDNSControl(ctx, func() error {
+			// Network probes do not own the apply lock. A switch may have changed
+			// while they were waiting; never install that superseded plan.
+			current, err := readMagicDNSRequest()
+			if err != nil {
+				return err
+			}
+			if current != request {
+				if current.Enabled {
+					return errMagicDNSPlanSuperseded
+				}
+				request = current
+			}
+			if !request.Enabled {
+				mode, suffix, routes, exitDoH = "off", "", map[string][]netip.AddrPort{}, ""
+			}
+			p.mu.Lock()
+			p.suffix, p.routes, p.exitDoH = suffix, routes, exitDoH
+			p.mu.Unlock()
+			suffixes := dnsSuffixes(suffix, routes)
+			v4, v6 := p.familyRules(mode, suffixes)
+			ok4 := p.applyRules(ctx, 0, v4)
+			if !ok4 && !p.noString && p.familyMode(mode, 0, suffixes) == "tailnet" && xtStringMissing() {
+				p.noString = true
+				mode = selectMagicDNSMode(exitNode, exitDoH != "", true, true, p.conntrackOK(0) || p.conntrackOK(1))
+				v4, v6 = p.familyRules(mode, suffixes)
+				ok4 = p.applyRules(ctx, 0, v4)
+			}
+			ok6 := true
+			switch {
+			case p.ipv6Fallback:
+				ok6 = p.applyRules(ctx, 1, ipv6FallbackRules(mode, suffixes))
+			case p.listen6 && p.dead6.Load():
+				ok6 = p.applyRules(ctx, 1, nil)
+				if ok6 {
+					p.listen6 = false
+				}
+				p.rulesOK[1] = false
+			case p.listen6:
+				ok6 = p.applyRules(ctx, 1, v6)
+			case p.applied[1] != "\x00":
+				ok6 = p.applyRules(ctx, 1, nil)
+			}
+			p.mu.Lock()
+			p.mode = mode
+			p.applyFailed = !ok4 || !ok6
+			if !p.applyFailed {
+				p.enabled, p.generation = request.Enabled, request.Generation
+			}
+			p.mu.Unlock()
+			return nil
+		})
 	}
-	switch {
-	case p.ipv6Fallback:
-		p.applyRules(ctx, 1, ipv6FallbackRules(mode, suffixes))
-	case p.listen6 && p.dead6.Load():
-		// Nobody reads [::1]:1053 any more: hand IPv6 DNS back to the system.
-		if p.applyRules(ctx, 1, nil) {
-			p.listen6 = false
-		}
-		p.rulesOK[1] = false
-	case p.listen6:
-		p.applyRules(ctx, 1, v6)
+	if err != nil && !errors.Is(err, errMagicDNSPlanSuperseded) {
+		p.applyFailed = true
+		p.logOnce("apply", "cannot apply the current request: "+err.Error())
+	} else if err == nil && !p.applyFailed {
+		p.logOnce("apply", "")
 	}
-
-	p.mu.Lock()
-	p.mode, p.enabled = mode, enabled
-	p.mu.Unlock()
+	// Flow repair is independent of the optional DNS interception and its
+	// request/apply failures. Never hold the preference lock during a sweep.
 	if routingKnown {
 		p.observeExitRouting(routing)
 	}
@@ -543,7 +584,7 @@ func (p *magicDNSProxy) flushRules() {
 
 func (p *magicDNSProxy) writeState(now time.Time) {
 	p.mu.RLock()
-	f := magicDNSFile{Updated: now.Unix(), Mode: p.mode, Enabled: p.enabled, NoString: p.noString, Rules: p.rulesOK[0], Rules6: p.rulesOK[1], IPv6Fallback: p.ipv6Fallback, PrivateDNS: p.privateDNS, Upstream: "system", Daemon: p.daemon, ExitNode: p.prefsExit}
+	f := magicDNSFile{Updated: now.Unix(), Mode: p.mode, Enabled: p.enabled, Generation: p.generation, ApplyFailed: p.applyFailed, NoString: p.noString, Rules: p.rulesOK[0], Rules6: p.rulesOK[1], IPv6Fallback: p.ipv6Fallback, PrivateDNS: p.privateDNS, Upstream: "system", Daemon: p.daemon, ExitNode: p.prefsExit}
 	p.mu.RUnlock()
 	switch f.Mode {
 	case "exit-doh":
@@ -572,7 +613,7 @@ func readMagicDNSState(path string, now time.Time) *magicDNSState {
 		return nil
 	}
 	age := now.Unix() - f.Updated
-	return &magicDNSState{Running: age >= 0 && age <= 20, Mode: f.Mode, Enabled: f.Enabled, NoString: f.NoString, Rules: f.Rules, Rules6: f.Rules6, IPv6Fallback: f.IPv6Fallback, PrivateDNS: f.PrivateDNS, Upstream: f.Upstream, Daemon: f.Daemon, ExitNode: f.ExitNode}
+	return &magicDNSState{Running: age >= 0 && age <= 20, Mode: f.Mode, Enabled: f.Enabled, generation: f.Generation, ApplyFailed: f.ApplyFailed, NoString: f.NoString, Rules: f.Rules, Rules6: f.Rules6, IPv6Fallback: f.IPv6Fallback, PrivateDNS: f.PrivateDNS, Upstream: f.Upstream, Daemon: f.Daemon, ExitNode: f.ExitNode}
 }
 
 // dnsQuestion parses a standard query with exactly one uncompressed question.

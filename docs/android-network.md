@@ -30,7 +30,9 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 ## DNS、防火墙与权限
 
-默认 `accept-dns=false`，Tailscale 自身不接管 Android 的 netd 配置，也不修改 Private DNS。模块可选用一个本地 MagicDNS 代理补上 tailnet 名称解析。该功能默认关闭，在 WebUI“网络角色”卡片中打开（RPC `magicdns`，开关文件 `/data/adb/shellscaled/magicdns-enabled`）；关闭时代理进程仍运行（它同时负责下文的失效连接重置），但两条链保持为空，不拦截任何 DNS。开启后：普通模式下只有 tailnet 名称的查询被交给代理，其他查询原样发往 Android 选定的 DNS 服务器；需要把全部 DNS 交给代理时，非 tailnet 查询仍转发给系统原本选定的那台服务器。IPv4 与 IPv6 的 DNS 查询走同样的路径。
+默认 `accept-dns=false`，Tailscale 自身不接管 Android 的 netd 配置，也不修改 Private DNS。模块可选用一个本地 MagicDNS 代理补上 tailnet 名称解析。该功能默认关闭，在 WebUI“网络角色”卡片中打开（RPC `magicdns`，请求文件 `/data/adb/shellscaled/magicdns-enabled`）；关闭时代理进程仍运行（它同时负责下文的失效连接重置），收到请求后清空两条链，不再拦截 DNS。界面在代理确认完成前显示正在应用，失败时保留提示并重试。开启后：普通模式下只有 tailnet 名称的查询被交给代理，其他查询原样发往 Android 选定的 DNS 服务器；需要把全部 DNS 交给代理时，非 tailnet 查询仍转发给系统原本选定的那台服务器。IPv4 与 IPv6 的 DNS 查询走同样的路径。
+
+请求文件使用原子 JSON 记录 `enabled` 和随机 `generation`，包括关闭请求；不存在时默认为关闭，旧的空文件或 `1` 标记仍解释为开启。代理状态中的 `enabled` 和内部代次仅在所有受控地址族的规则操作成功后确认，区别于 status 顶层表示用户选择的 `magicDNSEnabled`。未确认的代次标为 `pending`，清理失败时增加 `applyFailed` 并重试；界面即使开关已经关闭也显示这些状态。RPC 写请求与代理应用规则共用专用 flock，获取最多等待 2 秒并响应 context 取消。LocalAPI / DoH 探测不持锁，代理应用前在锁内重新核对代次，过期计划不会重新安装规则；只有代理操作链内容，RPC 不另行执行 iptables。
 
 ### MagicDNS 机制
 
@@ -136,6 +138,8 @@ REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是�
 `exit-node-allow-lan-access` 开启时，本地接口前缀可以成为 table 52 的 throw 路由，查表失败后继续 Android 后续规则；关闭时，上游可能把这些前缀送入出口节点。它不会改变显式选网、protected 或 UID 规则。[Android 17 NetworkController](https://android.googlesource.com/platform/system/netd/+/android-17.0.0_r1/server/NetworkController.cpp) 和 [DnsResolver](https://android.googlesource.com/platform/packages/modules/DnsResolver/+/android-17.0.0_r1/res_send.cpp) 会给网络解析请求的 UDP / TCP socket 设置受保护 DNS mark；新版后备 mask 排除这类流量，不能再把 Android 网络 DNS 笼统视为出口节点流量。
 
 ### 失效连接重置
+
+路由观测独立于可选的 DNS 拦截：MagicDNS 关闭、请求记录无效或 DNS 规则应用失败都不会阻止连接重置。重置批次在 MagicDNS 请求锁释放后执行，不会阻塞开关请求获取该锁。
 
 Android 在 VPN 的 UID 范围变化时（`ConnectivityService.updateVpnUidRanges` → `maybeCloseSockets`）调用 netd `destroyLiveTcpSockets`，对受影响 UID 的 TCP socket 发送 `SOCK_DESTROY`，只豁免 VPN App 自身的 UID。官方 Tailscale App 切换出口节点只是原地更新路由，已有连接被黑洞直到超时。
 
