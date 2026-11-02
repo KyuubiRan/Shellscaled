@@ -1019,7 +1019,7 @@ func syncDirectory(path string) error {
 
 func atomicMetadata(path string, data []byte) error {
 	temporary := path + ".update"
-	// Callers hold the binary-update flock. A regular staging file therefore
+	// Callers serialize writes to this path. A regular staging file therefore
 	// belongs to an interrupted transaction, not a concurrent writer. Never
 	// follow or remove a symlink/directory supplied in place of that file.
 	if stat, err := os.Lstat(temporary); err == nil {

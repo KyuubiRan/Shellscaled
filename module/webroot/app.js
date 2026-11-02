@@ -41,10 +41,17 @@
     binaryChannel: $("binary-channel"),
     exitNodeSelect: $("exit-node-select"), exitNodeRefresh: $("network-refresh"), exitNodeApply: $("exit-node-apply"), exitNodeClear: $("exit-node-clear"),
     advertiseRoutes: $("advertise-routes"), advertiseExitNode: $("advertise-exit-node"), advertiseSave: $("advertise-save"),
-    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), exitNodeIpv6: $("exit-node-ipv6"), exitNodeIpv6Takeover: $("exit-node-ipv6-takeover"),
+    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), exitNodeIpv6: $("exit-node-ipv6"), exitNodeIpv6Takeover: $("exit-node-ipv6-takeover"), magicDNSStatus: $("magicdns-status"), magicDNSEnabled: $("magicdns-enabled"),
     advertiseRoutesError: $("advertise-routes-error"), advertiseMessage: $("advertise-message"),
     advertiseExitDescription: $("advertise-exit-description"),
+    taildropPath: $("taildrop-path"), taildropSave: $("taildrop-save"),
+    taildropSaveLabel: $("taildrop-save-label"), taildropReceive: $("taildrop-receive"),
+    taildropReceiveLabel: $("taildrop-receive-label"), taildropMessage: $("taildrop-message"),
+    taildropBrowse: $("taildrop-browse"), taildropBrowser: $("taildrop-browser"),
+    taildropBrowserCurrent: $("taildrop-browser-current"), taildropBrowserUp: $("taildrop-browser-up"),
+    taildropDirectoryList: $("taildrop-directory-list"), taildropChoose: $("taildrop-choose"),
   };
+  let dnsPendingTimer = null;
   const state = {
     available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
     status: null, settings: null, settingsConfirmed: false, pendingSetting: null, settingsError: null,
@@ -58,8 +65,11 @@
     updateChannel: null, binaryChannelPending: null,
     networkFeedback: "", networkError: null, advertiseFeedback: "", advertiseError: null,
     networkDraft: { exitNode: null, routes: null, advertiseExitNode: null },
-    networkRequestVersion: 0, exitIpv6Pending: null,
+    networkRequestVersion: 0, exitIpv6Pending: null, magicDNSPending: null,
     exitNodes: null, exitNodesLoading: false, exitNodesError: null, exitNodesRequestVersion: 0,
+    taildropPath: "", taildropDraftDirty: false, taildropDraftVersion: 0, taildropError: null, taildropBrowserPath: "", taildropDirectories: [],
+    taildropDirectoriesTruncated: false, taildropBrowserBusy: false, taildropBrowserRequestVersion: 0,
+    taildropActionRequestVersion: 0,
   };
   let callbackSequence = 0;
   const copyTimers = new Map();
@@ -558,9 +568,45 @@
     ui.exitNodeSummary.textContent = t(summary[0], { name });
     ui.exitNodeSummary.dataset.kind = summary[1];
 
+    const dns = state.status && state.status.magicDNS;
+    const mode = dns && dns.running === true && typeof dns.mode === "string" ? dns.mode : "off";
+    const suffix = dns && Array.isArray(dns.suffixes) && typeof dns.suffixes[0] === "string" ? dns.suffixes[0] : "";
+    // A stale state file means the proxy stopped while its rules may remain.
+    const stale = dns && dns.running !== true && typeof dns.mode === "string" && dns.mode !== "off";
+    const running = state.status && state.status.state === "Running";
+    // The proxy has not caught up with a connect or exit-node change yet.
+    const pending = state.busyAction === "magicdns" || (running && dns && dns.pending === true);
+    const applyFailed = state.busyAction !== "magicdns" && dns && dns.applyFailed === true;
+    if (pending && !dnsPendingTimer) dnsPendingTimer = setTimeout(() => { dnsPendingTimer = null; refresh(false); }, 2000);
+    if (!pending && dnsPendingTimer) { clearTimeout(dnsPendingTimer); dnsPendingTimer = null; }
+    const dnsLine = applyFailed ? ["network.dnsApplyFailed", "warning"] :
+      pending ? ["network.dnsPending", "muted"] :
+      stale ? ["network.dnsRulesFailed", "warning"] :
+      mode === "off" && dns && dns.noString === true ? ["network.dnsNoString", "warning"] :
+      mode === "off" ? ["network.dnsInactive", "info"] :
+      dns.privateDns === "hostname" ? ["network.dnsPrivateHostname", "warning"] :
+      dns.rules === false || dns.rules6 === false ? ["network.dnsRulesFailed", "warning"] :
+      dns.ipv6Fallback === true ? ["network.dnsIPv4Fallback", "warning"] :
+      state.status.exitNodeConfigured === true && !mode.startsWith("exit") ? ["network.dnsNotViaExit", "warning"] :
+      mode === "exit-passthrough" ? ["network.dnsExitPassthrough", "warning"] :
+      mode.startsWith("exit") ? ["network.dnsViaExit", "info"] :
+      [suffix ? "network.dnsActive" : "network.dnsActiveNoSuffix", "info"];
+    const dnsHint = dnsLine[1] === "info" && mode !== "off" && dns.privateDns === "opportunistic" ? (I18n.locale() === "en" ? " " : "") + t("network.dnsPrivateAuto") : "";
+    const dnsOn = magicDNSOn();
+    ui.magicDNSEnabled.checked = dnsOn;
+    const dnsRow = ui.magicDNSEnabled.closest(".setting-row");
+    dnsRow.dataset.pending = pending ? "true" : "false";
+    dnsRow.setAttribute("aria-busy", pending ? "true" : "false");
+    // Off by default: nothing is redirected. Say so only when an exit node is
+    // in use, since ordinary DNS then stays on the current network.
+    const dnsOffLine = !dnsOn && !stale && state.status && state.status.exitNodeConfigured === true ? t("network.dnsOffExit") : "";
+    const showApplyState = dnsOn || stale || pending || applyFailed;
+    setLocalMessage(ui.magicDNSStatus, !running ? "" : showApplyState ? t(dnsLine[0], { suffix }) + dnsHint : dnsOffLine, showApplyState ? dnsLine[1] : "warning");
+
     const text = state.networkError ? t("network.failed") + " " + viewText(state.networkError) :
       state.busyAction === "exit-node" ? t("network.applying") :
       state.busyAction === "exit-ipv6" ? t("network.ipv6Applying") :
+      state.busyAction === "magicdns" ? t("network.magicDNSApplying") :
       state.exitNodesLoading && !state.exitNodes ? t("network.loading") :
       state.exitNodesError ? t("network.loadFailed") + " " + viewText(state.exitNodesError) :
       state.networkFeedback === "saved" ? t("network.saved") :
@@ -592,6 +638,39 @@
     setLocalMessage(ui.advertiseMessage, state.advertiseError ? t("network.advertiseFailed") + " " + viewText(state.advertiseError) :
       state.advertiseFeedback === "saved" ? t("network.advertiseSaved") : "", state.advertiseError ? "error" : "info");
     ui.advertiseExitDescription.textContent = t(exitAdvertisementBlocked() ? "network.exitAdvertisementBlocked" : "network.exitAdvertisementDescription");
+  }
+
+  function magicDNSOn() {
+    return state.magicDNSPending !== null ? state.magicDNSPending : Boolean(state.status && state.status.magicDNSEnabled === true);
+  }
+
+  async function applyMagicDNS(enabled) {
+    if (state.busy || !state.available || !state.pageActive || !state.status || enabled === magicDNSOn()) {
+      updateControls();
+      return;
+    }
+    const version = ++state.networkRequestVersion;
+    state.busy = true;
+    state.busyAction = "magicdns";
+    state.magicDNSPending = enabled;
+    state.networkError = null;
+    state.networkFeedback = "";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "magicdns", magicDNSEnabled: enabled }));
+      if (!state.pageActive || version !== state.networkRequestVersion) return;
+      state.magicDNSPending = null;
+      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+    } catch (error) {
+      if (state.pageActive && version === state.networkRequestVersion) {
+        state.networkError = errorView(error);
+        state.refreshAfterBusy = true;
+        markFreshness("verify");
+      }
+    } finally {
+      state.magicDNSPending = null;
+      finishBusy();
+    }
   }
 
   function exitIpv6Takeover() {
@@ -942,6 +1021,7 @@
     ui.exitNodeClear.disabled = !state.available || !state.pageActive || state.busy || !exitNodeConfigured;
     ui.advertiseRoutes.disabled = networkDisabled;
     ui.exitNodeIpv6Takeover.disabled = disabled || !state.status;
+    ui.magicDNSEnabled.disabled = disabled || !state.status;
     ui.advertiseExitNode.disabled = networkDisabled || (exitAdvertisementBlocked() && draft.advertiseExitNode !== true);
     ui.advertiseSave.disabled = networkDisabled || (draft.routes === null && draft.advertiseExitNode === null) ||
       (draft.advertiseExitNode === true && exitAdvertisementBlocked()) ||
@@ -965,6 +1045,7 @@
     ui.settingsHint.setAttribute("role", state.settingsError ? "alert" : "status");
     if (!state.status) ui.description.textContent = state.busy ? t("state.reading") : "";
     renderBinary();
+    renderTaildrop();
   }
 
   function encodeRequest(payload) {
@@ -1112,6 +1193,136 @@
     ui.loginMessage.hidden = !ui.loginMessage.textContent;
     ui.loginMessage.dataset.kind = state.loginError ? "error" : "info";
     ui.loginMessage.setAttribute("role", state.loginError ? "alert" : "status");
+  }
+
+  function renderTaildrop() {
+    if (!state.taildropDraftDirty && typeof state.status?.taildropPath === "string" && state.status.taildropPath) {
+      state.taildropPath = state.status.taildropPath.slice(0, 512);
+    }
+    if (!state.taildropDraftDirty && document.activeElement !== ui.taildropPath) ui.taildropPath.value = state.taildropPath;
+    ui.taildropSaveLabel.textContent = t(state.busyAction === "taildrop-path" ? "taildrop.saving" : "taildrop.save");
+    ui.taildropReceiveLabel.textContent = t(state.busyAction === "taildrop-receive" ? "taildrop.receiving" : "taildrop.receive");
+    ui.taildropSave.classList.toggle("is-working", state.busyAction === "taildrop-path");
+    ui.taildropReceive.classList.toggle("is-working", state.busyAction === "taildrop-receive");
+    ui.taildropMessage.textContent = state.taildropError ? viewText(state.taildropError) : "";
+    ui.taildropMessage.hidden = !ui.taildropMessage.textContent;
+    ui.taildropMessage.dataset.kind = state.taildropError ? "error" : "info";
+    ui.taildropMessage.setAttribute("role", state.taildropError ? "alert" : "status");
+    ui.taildropPath.setAttribute("aria-invalid", state.taildropError ? "true" : "false");
+    ui.taildropPath.disabled = !state.available || state.busy || !state.pageActive;
+    ui.taildropBrowse.disabled = !state.available || state.busy || !state.pageActive;
+    ui.taildropBrowser.hidden = !state.taildropBrowserPath;
+    ui.taildropBrowserCurrent.textContent = state.taildropBrowserPath;
+    ui.taildropBrowserUp.disabled = !state.available || state.busy || !state.pageActive || state.taildropBrowserBusy || !state.taildropBrowserPath ||
+      ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
+    ui.taildropChoose.disabled = !state.available || state.busy || !state.pageActive || state.taildropBrowserBusy || !state.taildropBrowserPath ||
+      ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
+    ui.taildropChoose.textContent = t("taildrop.choose");
+    ui.taildropDirectoryList.replaceChildren();
+    if (state.taildropBrowserBusy) {
+      const loading = document.createElement("p");
+      loading.className = "empty-copy";
+      loading.textContent = t("taildrop.browsing");
+      ui.taildropDirectoryList.appendChild(loading);
+    } else if (!state.taildropDirectories.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-copy";
+      empty.textContent = t("taildrop.empty");
+      ui.taildropDirectoryList.appendChild(empty);
+    } else {
+      for (const directory of state.taildropDirectories) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "taildrop-directory";
+        button.textContent = directory.name;
+        button.dataset.path = directory.path;
+        button.disabled = !state.available || state.busy || !state.pageActive;
+        button.setAttribute("role", "option");
+        ui.taildropDirectoryList.appendChild(button);
+      }
+    }
+    if (state.taildropDirectoriesTruncated) {
+      const more = document.createElement("p");
+      more.className = "empty-copy";
+      more.textContent = t("taildrop.more");
+      ui.taildropDirectoryList.appendChild(more);
+    }
+  }
+
+  async function browseTaildrop(path = "") {
+    if (state.busy || state.taildropBrowserBusy || !state.available || !state.pageActive) return;
+    const version = ++state.taildropBrowserRequestVersion;
+    state.busy = true;
+    state.busyAction = "taildrop-browse";
+    state.taildropBrowserBusy = true;
+    state.taildropBrowserPath = path || "/storage/emulated/0";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    updateControls();
+    renderTaildrop();
+    try {
+      const result = requireSuccess(await rpc({ action: "taildrop-list", path: state.taildropBrowserPath }));
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropBrowserPath = typeof result.taildropPath === "string" ? result.taildropPath : state.taildropBrowserPath;
+      state.taildropDirectories = Array.isArray(result.taildropDirectories) ? result.taildropDirectories.filter((item) =>
+        item && typeof item.name === "string" && typeof item.path === "string").slice(0, 128) : [];
+      state.taildropDirectoriesTruncated = result.taildropDirectoriesTruncated === true;
+    } catch (error) {
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropError = errorView(error);
+      state.taildropBrowserPath = "";
+    } finally {
+      if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
+      state.taildropBrowserBusy = false;
+      finishBusy();
+    }
+  }
+
+  function chooseTaildropDirectory(path) {
+    if (state.busy || state.taildropBrowserBusy || !state.available || !state.pageActive || typeof path !== "string" || !path) return;
+    state.taildropDraftVersion++;
+    state.taildropPath = path;
+    state.taildropDraftDirty = true;
+    ui.taildropPath.value = path;
+    state.taildropBrowserPath = "";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    renderTaildrop();
+  }
+
+  async function taildropAction(action) {
+    if (state.busy || !state.available || !state.pageActive) return;
+    const value = ui.taildropPath.value.trim();
+    const draftVersion = state.taildropDraftVersion;
+    if (value.length > 512 || !value.startsWith("/")) {
+      state.taildropError = { key: "taildrop.invalid" };
+      renderTaildrop();
+      return;
+    }
+    state.taildropError = null;
+    state.busy = true;
+    state.busyAction = action;
+    const version = ++state.taildropActionRequestVersion;
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action, path: value }));
+      if (!state.pageActive || version !== state.taildropActionRequestVersion) return;
+      if (typeof result.taildropPath === "string") {
+        if (state.status) state.status.taildropPath = result.taildropPath;
+        if (draftVersion === state.taildropDraftVersion) {
+          state.taildropPath = result.taildropPath;
+          ui.taildropPath.value = result.taildropPath;
+          state.taildropDraftDirty = false;
+        }
+      }
+      state.taildropError = null;
+      message(action === "taildrop-receive" ? "taildrop.received" : "taildrop.saved", "info");
+      renderTaildrop();
+    } catch (error) {
+      if (state.pageActive && version === state.taildropActionRequestVersion) state.taildropError = errorView(error);
+    } finally {
+      finishBusy();
+    }
   }
 
   function renderFreshness() {
@@ -1437,6 +1648,7 @@
   });
   ui.advertiseSave.addEventListener("click", saveAdvertisement);
   ui.exitNodeIpv6Takeover.addEventListener("change", () => applyExitIpv6(ui.exitNodeIpv6Takeover.checked));
+  ui.magicDNSEnabled.addEventListener("change", () => applyMagicDNS(ui.magicDNSEnabled.checked));
   ui.exitNodeSelect.addEventListener("change", () => {
     state.networkDraft.exitNode = ui.exitNodeSelect.value;
     state.networkFeedback = "";
@@ -1456,6 +1668,26 @@
   ui.login.addEventListener("click", startLogin);
   ui.binaryAction.addEventListener("click", () => runBinaryAction(binaryUpdateAvailable() ? "binary-update" : "binary-check"));
   ui.binaryChannel.addEventListener("change", () => setBinaryChannel(ui.binaryChannel.value));
+  ui.taildropSave.addEventListener("click", () => taildropAction("taildrop-path"));
+  ui.taildropReceive.addEventListener("click", () => taildropAction("taildrop-receive"));
+  ui.taildropPath.addEventListener("input", () => {
+    state.taildropDraftVersion++;
+    state.taildropError = null;
+    state.taildropDraftDirty = true;
+    state.taildropPath = ui.taildropPath.value.slice(0, 512);
+    renderTaildrop();
+  });
+  ui.taildropBrowse.addEventListener("click", () => browseTaildrop(state.taildropPath || ""));
+  ui.taildropBrowserUp.addEventListener("click", () => {
+    if (!state.taildropBrowserPath) return;
+    const parent = state.taildropBrowserPath.replace(/\/[^/]+$/, "") || "/";
+    browseTaildrop(parent === "/storage/emulated" ? "/storage/emulated/0" : parent);
+  });
+  ui.taildropChoose.addEventListener("click", () => chooseTaildropDirectory(state.taildropBrowserPath));
+  ui.taildropDirectoryList.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button[data-path]") : null;
+    if (target) browseTaildrop(target.dataset.path || "");
+  });
   document.addEventListener("click", (event) => {
     if (!(event.target instanceof Element)) return;
     const control = event.target.closest("button.copy-control[data-copy]");
@@ -1507,6 +1739,10 @@
   window.addEventListener("pagehide", () => {
     copyEpoch++;
     state.pageActive = false;
+    if (state.busyAction === "taildrop-browse") {
+      state.busy = false;
+      state.busyAction = "";
+    }
     state.deviceRequestVersion++;
     state.deviceRefreshPending = false;
     state.refreshAfterBusy = false;
@@ -1539,6 +1775,16 @@
     state.exitNodes = null;
     state.exitNodesLoading = false;
     state.exitNodesError = null;
+    state.taildropPath = "";
+    state.taildropDraftVersion++;
+    state.taildropDraftDirty = false;
+    state.taildropError = null;
+    state.taildropBrowserPath = "";
+    state.taildropDirectories = [];
+    state.taildropDirectoriesTruncated = false;
+    state.taildropBrowserBusy = false;
+    state.taildropBrowserRequestVersion++;
+    state.taildropActionRequestVersion++;
     state.status = null;
     state.settings = null;
     state.settingsConfirmed = false;
@@ -1557,6 +1803,7 @@
     ui.loginURL.value = "";
     ui.deviceSearch.value = "";
     ui.command.value = "";
+    ui.taildropPath.value = "";
     state.output = { kind: "idle" };
     renderPresentation();
     renderDevices();

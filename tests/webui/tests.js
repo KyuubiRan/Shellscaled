@@ -6,7 +6,7 @@
   const requests = () => JSON.parse(fixture.requestsJSON());
   const backend = () => JSON.parse(fixture.statusJSON());
   const assert = (value, label = "assertion") => { if (!value) throw new Error(label); };
-  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error|network)\.[A-Za-z0-9.]+$/;
+  const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error|network|taildrop)\.[A-Za-z0-9.]+$/;
   async function until(predicate, label = "timeout", end = Date.now() + 6000) {
     while (!predicate()) {
       if (Date.now() > end) throw new Error(label);
@@ -112,6 +112,35 @@
       }
     });
   }
+  const taildropRequests = (action) => requests().filter((request) => request.action === action);
+  function editTaildropPath(value) {
+    $("taildrop-path").value = value;
+    $("taildrop-path").dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  async function taildropSetup(path = "/storage/emulated/0/Download") {
+    await idle();
+    fixture.setTaildropPath(path);
+    await refresh();
+    click("tab-settings");
+    await idle();
+  }
+  async function taildropTest(name, body) {
+    await test(name, async () => {
+      const original = backend().taildropPath;
+      try { await body(); }
+      finally {
+        window.dispatchEvent(new Event("pagehide"));
+        fixture.releaseTaildropBrowse();
+        fixture.releaseTaildropAction();
+        fixture.setTaildropFiles(true);
+        fixture.setTaildropPath(original);
+        await idle();
+        window.dispatchEvent(new Event("pageshow"));
+        await idle();
+        click("tab-overview");
+      }
+    });
+  }
   const binaryLabel = () => $("binary-action-label").textContent;
   async function checkBinary(mode) {
     await idle();
@@ -188,7 +217,8 @@
     const keys = Object.keys(translations.en).sort();
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "run-command", "command-output",
-      "devices-message", "console-label", "about-description", "login-label", "binary-action-label", "binary-message", "network-message", "exit-node-summary", "exit-node-ipv6", "advertise-exit-description"]);
+      "devices-message", "console-label", "about-description", "login-label", "binary-action-label", "binary-message", "network-message", "exit-node-summary", "exit-node-ipv6", "advertise-exit-description",
+      "taildrop-message", "taildrop-save-label", "taildrop-receive-label"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
@@ -272,7 +302,84 @@
       const refreshBox = $("network-refresh").getBoundingClientRect();
       assert(refreshBox.width >= 44 && refreshBox.height >= 44);
       assert($("network-refresh").getAttribute("aria-label").trim());
+      const dns = $("magicdns-status");
+      // MagicDNS is off by default; with an exit node in use, say DNS bypasses it.
+      assert(backend().state === "Running" && !backend().magicDNS && backend().magicDNSEnabled === false && backend().exitNodeConfigured === true);
+      assert(!dns.hidden && dns.dataset.kind === "warning" && dns.getAttribute("aria-live") === "polite");
+      assert(dns.textContent === ShellscaledI18n.t("network.dnsOffExit"));
       click("tab-overview");
+    });
+
+    await test("magicdns-opt-in-defaults-off", async () => {
+      await idle();
+      click("tab-settings");
+      await until(() => !$("magicdns-enabled").disabled);
+      const toggle = $("magicdns-enabled");
+      assert(backend().magicDNSEnabled === false && !toggle.checked);
+      assert(toggle.getAttribute("role") === "switch" && toggle.closest("#network-role-card"));
+      const dnsRequests = () => requests().filter((request) => request.action === "magicdns");
+      for (const enabled of [true, false]) {
+        const before = dnsRequests().length;
+        click("magicdns-enabled");
+        await until(() => dnsRequests().length === before + 1);
+        const request = dnsRequests().at(-1);
+        assert(request.magicDNSEnabled === enabled && Object.keys(request).every((key) => ["action", "locale", "magicDNSEnabled"].includes(key)));
+        await idle();
+        assert(toggle.checked === enabled && backend().magicDNSEnabled === enabled);
+        const status = $("magicdns-status");
+        if (enabled) assert(!status.hidden && status.textContent === ShellscaledI18n.t("network.dnsInactive"));
+        else if (backend().exitNodeConfigured === true) assert(!status.hidden && status.textContent === ShellscaledI18n.t("network.dnsOffExit"));
+        else assert(status.hidden);
+      }
+      click("tab-overview");
+    });
+
+    await test("magicdns-off-keeps-pending-and-failed-cleanup-visible", async () => {
+      const originalLocale = $("language").value;
+      const originalSettings = JSON.stringify(backend().settings);
+      const toggle = $("magicdns-enabled");
+      const row = toggle.closest(".setting-row");
+      const status = $("magicdns-status");
+      const dnsRequests = () => requests().filter((request) => request.action === "magicdns");
+      async function poll() {
+        await idle();
+        const before = statusRequests().length;
+        document.dispatchEvent(new Event("visibilitychange"));
+        await until(() => statusRequests().length > before);
+        await idle();
+      }
+      try {
+        click("tab-settings");
+        for (const locale of ["zh-CN", "zh-TW", "en"]) {
+          await language(locale);
+          fixture.setMagicDNSMode("normal");
+          click("magicdns-enabled");
+          await idle();
+          assert(toggle.checked && backend().magicDNSEnabled);
+          fixture.setMagicDNSMode("pending");
+          const before = dnsRequests().length;
+          click("magicdns-enabled");
+          await until(() => dnsRequests().length === before + 1);
+          await idle();
+          assert(!toggle.checked && !backend().magicDNSEnabled);
+          assert(!status.hidden && status.textContent === ShellscaledI18n.t("network.dnsPending"));
+          assert(row.getAttribute("aria-busy") === "true");
+          fixture.setMagicDNSMode("failed");
+          await poll();
+          assert(!toggle.checked && !status.hidden && status.dataset.kind === "warning");
+          assert(status.textContent === ShellscaledI18n.t("network.dnsApplyFailed"));
+          assert(row.getAttribute("aria-busy") === "true");
+          fixture.setMagicDNSMode("applied");
+          await poll();
+          assert(!toggle.checked && row.getAttribute("aria-busy") === "false");
+          assert(status.hidden || status.textContent === ShellscaledI18n.t("network.dnsOffExit"));
+          assert(dnsRequests().length === before + 1 && JSON.stringify(backend().settings) === originalSettings);
+        }
+      } finally {
+        fixture.setMagicDNSMode("normal");
+        await language(originalLocale);
+        click("tab-overview");
+      }
     });
 
     await networkTest("exit-node-selection-masked-prefs-and-clear", async () => {
@@ -473,6 +580,121 @@
       await idle();
       assert($("advertise-routes").value === "203.0.113.0/24");
       assert($("exit-node-summary").textContent === ShellscaledI18n.t("network.summaryNone"));
+    });
+
+    await taildropTest("taildrop-browser-navigation-and-local-save", async () => {
+      await taildropSetup();
+      const before = taildropRequests("taildrop-list").length;
+      const settings = JSON.stringify(backend().settings);
+      click("taildrop-browse");
+      await until(() => taildropRequests("taildrop-list").length === before + 1, "taildrop-browse-start");
+      await idle();
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download");
+      const entry = $("taildrop-directory-list").querySelector('button[data-path$="/Other"]');
+      assert(entry && !entry.disabled);
+      entry.click();
+      await idle();
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download/Other");
+      click("taildrop-choose");
+      assert($("taildrop-path").value === "/storage/emulated/0/Download/Other" && $("taildrop-browser").hidden);
+      const saves = taildropRequests("taildrop-path").length;
+      click("taildrop-save");
+      await until(() => taildropRequests("taildrop-path").length === saves + 1, "taildrop-save-start");
+      await idle();
+      const request = taildropRequests("taildrop-path").at(-1);
+      assert(Object.keys(request).sort().join() === "action,locale,path" && request.path.endsWith("/Other"));
+      assert(backend().taildropPath === request.path && JSON.stringify(backend().settings) === settings);
+    });
+
+    await taildropTest("taildrop-browse-drains-deferred-devices", async () => {
+      window.dispatchEvent(new Event("pagehide"));
+      window.dispatchEvent(new Event("pageshow"));
+      await taildropSetup();
+      const before = deviceRequests().length;
+      const browses = taildropRequests("taildrop-list").length;
+      fixture.holdNextTaildropBrowse();
+      click("taildrop-browse");
+      await until(() => taildropRequests("taildrop-list").length === browses + 1, "taildrop-browse-held");
+      click("tab-devices");
+      assert(deviceRequests().length === before);
+      fixture.releaseTaildropBrowse();
+      await until(() => deviceRequests().length === before + 1, "taildrop-deferred-devices-start");
+      await idle();
+      assert(cards().length > 0);
+    });
+
+    await taildropTest("taildrop-save-blocks-chooser-and-preserves-newer-draft", async () => {
+      await taildropSetup();
+      click("taildrop-browse");
+      await idle();
+      const entry = $("taildrop-directory-list").querySelector('button[data-path$="/Other"]');
+      assert(entry);
+      entry.click();
+      await idle();
+      const before = taildropRequests("taildrop-path").length;
+      fixture.holdNextTaildropAction();
+      click("taildrop-save");
+      await until(() => taildropRequests("taildrop-path").length === before + 1, "taildrop-save-held");
+      assert($("taildrop-choose").disabled && $("taildrop-browser-up").disabled && $("taildrop-path").disabled);
+      $("taildrop-choose").click();
+      assert($("taildrop-path").value === "/storage/emulated/0/Download");
+      // A later queued input event must also survive an older response.
+      editTaildropPath("/storage/emulated/0/Documents");
+      fixture.releaseTaildropAction();
+      await idle();
+      assert($("taildrop-path").value === "/storage/emulated/0/Documents");
+      assert(backend().taildropPath === "/storage/emulated/0/Download");
+      click("taildrop-save");
+      await until(() => taildropRequests("taildrop-path").length === before + 2, "taildrop-new-draft-save");
+      await idle();
+      assert(backend().taildropPath === "/storage/emulated/0/Documents");
+    });
+
+    await taildropTest("taildrop-receive-spinner-mask-and-local-failure", async () => {
+      await taildropSetup("/storage/emulated/0/Download/Taildrop");
+      const before = taildropRequests("taildrop-receive").length;
+      const settings = JSON.stringify(backend().settings);
+      fixture.holdNextTaildropAction();
+      click("taildrop-receive");
+      await until(() => taildropRequests("taildrop-receive").length === before + 1, "taildrop-receive-held");
+      assert($("taildrop-receive").disabled && $("taildrop-receive").classList.contains("is-working"));
+      assert($("taildrop-receive-label").textContent === ShellscaledI18n.t("taildrop.receiving"));
+      const spinner = $("taildrop-receive").querySelector(".button-spinner");
+      assert(getComputedStyle(spinner).display !== "none" && getComputedStyle(spinner).animationName === "spin");
+      $("taildrop-receive").click();
+      await wait(50);
+      assert(taildropRequests("taildrop-receive").length === before + 1);
+      fixture.releaseTaildropAction();
+      await idle();
+      const request = taildropRequests("taildrop-receive").at(-1);
+      assert(Object.keys(request).sort().join() === "action,locale,path");
+      assert(JSON.stringify(backend().settings) === settings);
+      fixture.setTaildropFiles(false);
+      click("taildrop-receive");
+      await until(() => taildropRequests("taildrop-receive").length === before + 2, "taildrop-empty-receive");
+      await idle();
+      assert(!$("taildrop-message").hidden && $("taildrop-message").dataset.kind === "error");
+    });
+
+    await taildropTest("taildrop-browser-ignores-old-page-response", async () => {
+      await taildropSetup();
+      const before = taildropRequests("taildrop-list").length;
+      fixture.holdNextTaildropBrowse();
+      click("taildrop-browse");
+      await until(() => taildropRequests("taildrop-list").length === before + 1, "taildrop-old-browse-held");
+      window.dispatchEvent(new Event("pagehide"));
+      fixture.setTaildropPath("/storage/emulated/0/Documents");
+      window.dispatchEvent(new Event("pageshow"));
+      await idle();
+      assert($("taildrop-path").value === "/storage/emulated/0/Documents" && $("taildrop-browser").hidden);
+      click("taildrop-browse");
+      await until(() => taildropRequests("taildrop-list").length === before + 2, "taildrop-new-browse-start");
+      await idle();
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Documents");
+      fixture.releaseTaildropBrowse();
+      await wait(100);
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Documents");
+      assert(!$("taildrop-choose").disabled && $("main").getAttribute("aria-busy") === "false");
     });
 
     for (const locale of locales) {

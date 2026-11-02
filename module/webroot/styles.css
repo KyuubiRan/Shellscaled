@@ -125,6 +125,7 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .local-message { font-size: 12px; color: var(--muted); line-height: 1.75; overflow-wrap: anywhere; }
 .local-message[data-kind="error"] { color: var(--danger); }
 .local-message[data-kind="warning"] { color: var(--warning); }
+.local-message[data-kind="muted"] { color: var(--muted); }
 .console-action .local-message, .about-action .local-message { margin: 10px 3px 0; }
 .devices-description { margin: -3px 2px 15px; color: var(--muted); font-size: 12px; }
 .device-search { margin-bottom: 14px; }
@@ -195,6 +196,13 @@ input[type="text"], input[type="search"] { display: block; width: 100%; min-widt
 .setting-row[data-pending="true"] .switch::after { content: ""; position: absolute; width: 14px; height: 14px; top: 7px; left: -23px; border: 2px solid var(--accent); border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .switch input:focus-visible + .switch-track { outline: 3px solid var(--focus); outline-offset: 3px; }
 .settings-feedback { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 14px 2px 24px; }
+.taildrop-path-row { display: flex; gap: 8px; align-items: stretch; }
+.taildrop-path-row .command-input { min-width: 0; flex: 1; }
+.taildrop-browser { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); }
+.taildrop-browser-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; word-break: break-all; }
+.taildrop-directory-list { display: grid; gap: 5px; max-height: 180px; overflow: auto; margin: 8px 0; }
+.taildrop-directory { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); padding: 8px 10px; text-align: left; font: inherit; cursor: pointer; }
+.taildrop-directory:hover, .taildrop-directory:focus-visible { border-color: var(--accent); }
 .settings-feedback[data-kind="error"] { color: var(--danger); }
 .language-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 0; margin-bottom: 24px; padding: 17px 19px; }
 .language-card label { min-width: 0; font-size: 14px; font-weight: 650; }
