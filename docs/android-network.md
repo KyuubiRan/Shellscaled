@@ -129,9 +129,9 @@ REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是�
 
 ### 路由
 
-选择获批准的出口节点后，tailscaled 在 table 52 计算 IPv4 / IPv6 默认路由；下文 IPv6 开关可以移除 IPv6 默认路由。默认路由存在时，13001 后备规则只接管未显式绑定网络、未受保护且不含自有 bypass 位的流量；匹配更早的 Android UID / VPN 规则的流量仍按该规则处理。显式绑定或 protected socket、tailscaled 自身 `0x10020000` socket 保留 Android 路由。出口节点离线时隧道内流量可能不可达，不能把规则安装视为端到端连接成功，也不保证所有流量都经过出口节点。开启前已建立的连接由下文“失效连接重置”立即断开。
+选择获批准的出口节点后，tailscaled 在 table 52 计算 IPv4 / IPv6 默认路由；下文 IPv6 开关可以移除 IPv6 默认路由。默认路由存在时，13001 后备规则只接管未显式绑定网络、未受保护且不含自有 bypass 位的流量；匹配更早的 Android UID / VPN 规则的流量仍按该规则处理。显式绑定或 protected socket、tailscaled 自身 `0x10020000` socket 保留 Android 路由。出口节点离线时隧道内流量可能不可达，不能把规则安装视为端到端连接成功，也不保证所有流量都经过出口节点。开启前已建立的连接由下文“失效连接重置”在代理观测到变化后处理。
 
-已建立连接改路由到 `tailscale0` 后源地址仍是 Wi-Fi / 蜂窝地址，出口节点以 `disallowed source` 丢弃，长连接会挂起直到超时，所以这类连接被立即重置，App 随即重连。
+已建立连接改路由到 `tailscale0` 后源地址仍是 Wi-Fi / 蜂窝地址，出口节点以 `disallowed source` 丢弃，长连接会挂起直到超时，所以代理观测到变化后重置这类连接，让 App 重连。
 
 `exit-node-allow-lan-access` 开启时，本地接口前缀可以成为 table 52 的 throw 路由，查表失败后继续 Android 后续规则；关闭时，上游可能把这些前缀送入出口节点。它不会改变显式选网、protected 或 UID 规则。[Android 17 NetworkController](https://android.googlesource.com/platform/system/netd/+/android-17.0.0_r1/server/NetworkController.cpp) 和 [DnsResolver](https://android.googlesource.com/platform/packages/modules/DnsResolver/+/android-17.0.0_r1/res_send.cpp) 会给网络解析请求的 UDP / TCP socket 设置受保护 DNS mark；新版后备 mask 排除这类流量，不能再把 Android 网络 DNS 笼统视为出口节点流量。
 
@@ -139,12 +139,12 @@ REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是�
 
 Android 在 VPN 的 UID 范围变化时（`ConnectivityService.updateVpnUidRanges` → `maybeCloseSockets`）调用 netd `destroyLiveTcpSockets`，对受影响 UID 的 TCP socket 发送 `SOCK_DESTROY`，只豁免 VPN App 自身的 UID。官方 Tailscale App 切换出口节点只是原地更新路由，已有连接被黑洞直到超时。
 
-本模块在 MagicDNS 代理进程中做同样的重置。每次刷新（5 秒，以及连接 / 断开、切换出口节点或 IPv6 开关后的 SIGUSR1）记录路由状态：出口节点 = BackendState 为 Running 时 prefs 的 `ExitNodeID`；exit6 = 选择了出口节点且 IPv6 opt-out 文件不存在；allowLAN = 选择了出口节点且 `ExitNodeAllowLANAccess`。LocalAPI `status` 或 `prefs` 读取失败时状态未知，不记录。状态与上次不同时（代理启动后的首次观测也算），代理用 `NETLINK_SOCK_DIAG` 列出 IPv4 / IPv6 中除 LISTEN、CLOSE、TIME_WAIT 外的 TCP socket 及其 `INET_DIAG_MARK`，对每个不豁免的 socket 用 `RTM_GETROUTE`（`RTM_F_FIB_MATCH`，带 socket 的源 / 目标地址、TCP 协议和源 / 目标端口、mark、UID 和绑定接口；协议和端口让按 `ipproto` / `sport` / `dport` 匹配的 ip rule 生效，4.17 之前的内核忽略协议和端口）向内核查询它的包现在命中的路由，对必然失效的连接发送 `SOCK_DESTROY`（socket id 原样取自内核的返回，同 Android `InetDiagMessage`），重置数大于 0 或出错时向 `daemon.log` 记一行 `exit node routing changed: reset N stale TCP connections`。判定交给内核的当前路由，所以 Android 在 13001 之前的规则（其他 VPN 的 UID 范围、本机地址的 local 表）、子网路由、allow-LAN 的 throw 路由和 IPv6 开关都自动计入；工作中的连接不受影响，重复执行没有副作用：
+本模块在 MagicDNS 代理进程中按下述规则选择 TCP 连接重连，范围与 Android 按 UID 批量重置不同。每次刷新（5 秒，以及连接 / 断开、切换出口节点或 IPv6 开关后的 SIGUSR1）记录路由状态：出口节点 = BackendState 为 Running 时 prefs 的 `ExitNodeID`；exit6 = 选择了出口节点且 IPv6 opt-out 文件不存在；allowLAN = 选择了出口节点且 `ExitNodeAllowLANAccess`。LocalAPI `status` 或 `prefs` 读取失败时状态未知，不记录。状态与上次不同时（代理启动后的首次观测也算），代理用 `NETLINK_SOCK_DIAG` 列出 IPv4 / IPv6 中除 LISTEN、CLOSE、TIME_WAIT 外的 TCP socket 及其 `INET_DIAG_MARK`，对每个不豁免的 socket 用 `RTM_GETROUTE`（`RTM_F_FIB_MATCH`，带 socket 的源 / 目标地址、TCP 协议和源 / 目标端口、mark、UID 和绑定接口；协议和端口让按 `ipproto` / `sport` / `dport` 匹配的 ip rule 生效，4.17 之前的内核忽略协议和端口）向内核查询它的包现在命中的路由，对选中的连接发送 `SOCK_DESTROY`（socket id 原样取自内核的返回，同 Android `InetDiagMessage`），重置数大于 0 或出错时向 `daemon.log` 记一行 `exit node routing changed: reset N affected TCP connections`。查询会计入 Android 在 13001 之前的 UID / VPN 规则、local 表、子网路由、allow-LAN throw 路由和 IPv6 开关。它不提供连接建立时间，也不能证明所有网络策略下的端到端可达性；每次观察到状态变化只处理一批连接，状态未再变化时不会重复清理：
 
 - 豁免：mark 含 `0x10030000` 任一位（daemon / 代理 socket、显式绑定、`protectedFromVpn`）；内核未返回 mark 的 socket；路由查询失败的 socket。
 - Tailnet 源：源地址是 `tailscale0` 上的地址；运营商 CGNAT 的 `100.x` rmnet 地址因此按物理源处理。v4-mapped 地址按 IPv4 处理。
 - 命中 local 表（目标为本机接口地址）的连接保留；其余连接只有在“经 `tailscale0` 出去”与“Tailnet 源”一致时可用，不一致即重置：出口节点开启后的物理源连接、关闭后或 allow-LAN 开启后改走物理接口的 Tailnet 源连接。
-- 从一个出口节点切换到另一个时，经出口默认路由（前缀长度 0）进入 `tailscale0` 的 Tailnet 源连接也被重置：新出口节点没有它们的 NAT 状态。子网路由和 Tailnet 目标的连接不受影响。
+- 从一个出口节点切换到另一个时，经出口默认路由（前缀长度 0）进入 `tailscale0` 的 Tailnet 源连接也被重置：新出口节点没有旧连接的 NAT 状态。观测存在延迟（通常由 SIGUSR1 唤醒，否则最多等待下一次 5 秒刷新，探测或系统调用还可能增加等待），在新出口已经建立的连接也可能被这一批处理重置，需要再次重连。该批次不额外重置子网路由和 Tailnet 目标的连接。
 
 与 Android 相同只处理 TCP；UDP 流不受影响。需要内核 `CONFIG_INET_DIAG_DESTROY`、`CAP_NET_ADMIN`（代理以 root 运行）以及 SELinux 允许 sock_diag 写操作；不满足时只记一行错误，路由行为不变。
 
@@ -195,7 +195,7 @@ ip route get 1.1.1.1 uid 10123                 # 结果取决于实际 UID / VPN
 ss -tn state established | wc -l               # 切换出口节点前后对比
 ```
 
-期望：切换出口节点后 `daemon.log` 有一行 `exit node routing changed: reset N stale TCP connections`（有可重置的连接时），且没有该行的失败形式。
+期望：切换出口节点后 `daemon.log` 有一行 `exit node routing changed: reset N affected TCP connections`（有可重置的连接时），且没有该行的失败形式。
 
 开启出口节点后分别在 Wi-Fi 和蜂窝下解析公共域名、打开网页、确认 IP 查询站点显示出口节点地址、解析 MagicDNS 名称；关闭出口机器后应显示离线提示，“关闭出口节点”一次即可恢复。
 
@@ -208,3 +208,5 @@ ss -tn state established | wc -l               # 切换出口节点前后对比
 原模块当前 main 最后提交为 `dffc1aee6fa80dd435a95776a37f979e0204e590`，日期 2025-11-04；其 README 仍描述历史 userspace + hev 方案，而当时代码已采用 Android CLI。因此重构以实际源码为依据。
 
 本次核查官方 [stable 包索引](https://pkgs.tailscale.com/stable/) 和 Tailscale `v1.104.4` release 源码，选择相同版本作为模块版本。源码仓库保留官方 release 的历史，再独立维护 Android 补丁，避免把 Android 改动混入上游提交。没有 clone AOSP；仅下载必要的官方单文件。
+
+端口和 UID 策略的内核回归使用原生 netlink 配置合成规则，不依赖 Android `ip` 是否支持 `ipproto` / `dport` 参数。仅在 Medium_Phone 的独立 network namespace 中设置 `SHELLSCALED_NETLINK_TEST=1` 运行 helper 的 `TestRouteLookupPortRule`；测试拒绝 init network namespace，并精确清理自己的规则和接口。

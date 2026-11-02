@@ -11,8 +11,8 @@ import (
 	"syscall"
 )
 
-// After an exit-node routing change, TCP flows that can no longer work are
-// reset with SOCK_DESTROY so apps reconnect over the new path, as Android's
+// After an exit-node routing change, affected TCP flows are reset with
+// SOCK_DESTROY so apps reconnect over the new path, as Android's
 // ConnectivityService does with destroyLiveTcpSockets when VPN UID ranges
 // change. Sockets the daemon owns or that netd marks explicitly selected or
 // protectedFromVpn never enter table 52 and are left alone. For every other
@@ -53,10 +53,11 @@ const (
 	tcpLiveStates = 1<<1 | 1<<2 | 1<<3 | 1<<4 | 1<<5 | 1<<8 | 1<<9 | 1<<11
 )
 
-// classify reports whether a flow is broken on its current route: outside
-// the local table it works only if it leaves through tailscale0 exactly when
-// its source is a tailscale0 address. After switching exit nodes, flows on
-// the exit default route break too: the new node has no NAT state for them.
+// classify selects flows for one reconnect batch after a routing change.
+// Outside the local table, a source/interface mismatch cannot work. Switching
+// exit nodes also selects default-route flows: the new exit lacks their old
+// NAT state. Socket age is unavailable here, so this batch can include a flow
+// established through the new exit before the proxy observed the change.
 func classify(tsSrc bool, rt route, tsIndex uint32, switched bool) bool {
 	viaTS := rt.oif == tsIndex
 	return rt.typ != syscall.RTN_LOCAL && (viaTS != tsSrc || switched && viaTS && rt.dstLen == 0)
@@ -72,9 +73,9 @@ func (p *magicDNSProxy) observeExitRouting(r exitRouting) {
 	p.routing = &r
 	switch n, err := p.sweep(switched); {
 	case err != nil:
-		fmt.Fprintf(os.Stderr, "exit node routing changed: reset %d stale TCP connections, then failed: %v\n", n, err)
+		fmt.Fprintf(os.Stderr, "exit node routing changed: reset %d affected TCP connections, then failed: %v\n", n, err)
 	case n > 0:
-		fmt.Fprintf(os.Stderr, "exit node routing changed: reset %d stale TCP connections\n", n)
+		fmt.Fprintf(os.Stderr, "exit node routing changed: reset %d affected TCP connections\n", n)
 	}
 }
 
@@ -176,7 +177,7 @@ func netlinkSocket(proto int) (int, error) {
 	return fd, err
 }
 
-// sweepStaleFlows destroys the TCP sockets classify marks as broken. A socket
+// sweepStaleFlows destroys the TCP sockets selected for reconnection. A socket
 // whose route lookup fails is kept.
 func sweepStaleFlows(switched bool) (int, error) {
 	ts, err := net.InterfaceByName("tailscale0")
