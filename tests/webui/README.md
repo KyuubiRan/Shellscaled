@@ -87,6 +87,16 @@ and a hidden/disabled sign-in panel after connection or while awaiting approval.
 The visible sign-in panel is also checked in all three languages at 320 CSS pixels.
 No case signs out, authenticates, or opens a real account/browser.
 
+Network-role cases use synthetic exit-node offers and preferences only. They check
+offline-choice rejection, masked selection/clear requests, preservation of
+externally edited advertisement fields, captured drafts that retain later edits,
+route validation and failed-write reconciliation. Held exit-node list snapshots
+complete out of order across pagehide/pageshow; held writes and fallback status
+reads cannot restore a departed page's data. IPv6 cases cover duplicate blocking,
+pending/successful changes and an older daemon that saves the preference but
+cannot apply it. None of these tests installs routes, changes firewall rules,
+accesses a real account or claims packet delivery.
+
 This fixture supplements actual KernelSU bridge and native helper acceptance;
 it does not assert that a root manager, Tailscale or networking works.
 
@@ -107,7 +117,7 @@ Repeat with `devices`, `settings` and `command` for the other tabs. The device
 page uses three harmless documentation examples, excluding the adversarial test
 strings. This mode still has no
 root, networking, real module access, or test overlay. Omit `screenshot` to run
-the normal twenty-nine regression cases again.
+the normal regression cases again.
 
 For a sign-in preview, use `--es screenshot login --es locale zh-CN` (the other
 two languages also work). This stays on the overview tab with synthetic

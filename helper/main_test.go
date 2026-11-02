@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,12 +41,12 @@ func TestCommandBoundary(t *testing.T) {
 
 func TestRPCRejectsUnknownOrMixedRequests(t *testing.T) {
 	encode := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"binary-channel","channel":"stable"}`, `{"action":"binary-channel","channel":"preview","locale":"en"}`, `{"action":"binary-check"}`, `{"action":"binary-update","locale":"en"}`, `{"action":"devices"}`, `{"action":"console","locale":"en"}`, `{"action":"about"}`, `{"action":"about","locale":"en"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`} {
+	for _, raw := range []string{`{"action":"status"}`, `{"action":"status","locale":"system"}`, `{"action":"status","locale":"en"}`, `{"action":"status","locale":"zh-CN"}`, `{"action":"status","locale":"zh-TW"}`, `{"action":"binary-channel","channel":"stable"}`, `{"action":"binary-channel","channel":"preview","locale":"en"}`, `{"action":"binary-check"}`, `{"action":"binary-update","locale":"en"}`, `{"action":"devices"}`, `{"action":"console","locale":"en"}`, `{"action":"about"}`, `{"action":"about","locale":"en"}`, `{"action":"up"}`, `{"action":"down"}`, `{"action":"settings","settings":{"acceptRoutes":false}}`, `{"action":"command","command":"tailscale status"}`, `{"action":"exit-node","exitNode":"100.64.0.2"}`, `{"action":"exit-node","exitNode":""}`, `{"action":"exit-node-ipv6","exitNodeIPv6":true}`, `{"action":"exit-node-ipv6","exitNodeIPv6":false,"locale":"en"}`, `{"action":"advertise","advertiseRoutes":"10.0.0.0/8","advertiseExitNode":true}`, `{"action":"advertise","advertiseRoutes":""}`} {
 		if _, err := decodeRequest(encode(raw)); err != nil {
 			t.Errorf("valid request rejected: %v", err)
 		}
 	}
-	for _, raw := range []string{`{"action":"binary-channel"}`, `{"action":"binary-channel","channel":"prerelease"}`, `{"action":"binary-channel","channel":"../../other"}`, `{"action":"binary-channel","channel":"preview","command":""}`, `{"action":"binary-channel","channel":"stable","settings":null}`, `{"action":"binary-update","channel":"preview"}`, `{"action":"binary-check","channel":null}`, `{"action":"status","channel":"stable"}`, `{"action":"status","Channel":"stable"}`, `{"action":"binary-check","command":""}`, `{"action":"binary-update","settings":null}`, `{"action":"binary-check","url":"https://example.test"}`, `{"action":"binary-update","command":"id"}`, `{"action":"binary-update","settings":{"shieldsUp":true}}`, `{"action":"binary-check","version":"1.2.3"}`, `{"action":"console","command":"id"}`, `{"action":"console","url":"https://example.test"}`, `{"action":"console","settings":{"shieldsUp":true}}`, `{"action":"devices","command":"tailscale status"}`, `{"action":"devices","settings":{"shieldsUp":true}}`, `{"action":"devices","peers":true}`, `{"action":"exec","command":"id"}`, `{"action":"status","locale":"../../other"}`, `{"action":"status","locale":"fr"}`, `{"action":"status","command":"id"}`, `{"action":"settings","settings":{"acceptDNS":true}}`, `{"action":"settings"}`, `{"action":"command","command":"tailscale status","settings":{"shieldsUp":true}}`, `{"action":"status","env":{"PATH":"/evil"}}`, `{"action":"status"} {"action":"up"}`, `null`, `[]`} {
+	for _, raw := range []string{`{"action":"binary-channel"}`, `{"action":"binary-channel","channel":"prerelease"}`, `{"action":"binary-channel","channel":"../../other"}`, `{"action":"binary-channel","channel":"preview","command":""}`, `{"action":"binary-channel","channel":"stable","settings":null}`, `{"action":"binary-update","channel":"preview"}`, `{"action":"binary-check","channel":null}`, `{"action":"status","channel":"stable"}`, `{"action":"status","Channel":"stable"}`, `{"action":"status","command":""}`, `{"action":"binary-check","command":""}`, `{"action":"binary-update","settings":null}`, `{"action":"binary-check","url":"https://example.test"}`, `{"action":"binary-update","command":"id"}`, `{"action":"binary-update","settings":{"shieldsUp":true}}`, `{"action":"binary-check","version":"1.2.3"}`, `{"action":"console","command":"id"}`, `{"action":"console","url":"https://example.test"}`, `{"action":"console","settings":{"shieldsUp":true}}`, `{"action":"devices","command":"tailscale status"}`, `{"action":"devices","settings":{"shieldsUp":true}}`, `{"action":"devices","peers":true}`, `{"action":"exec","command":"id"}`, `{"action":"status","locale":"../../other"}`, `{"action":"status","locale":"fr"}`, `{"action":"status","command":"id"}`, `{"action":"settings","settings":{"acceptDNS":true}}`, `{"action":"settings"}`, `{"action":"command","command":"tailscale status","settings":{"shieldsUp":true}}`, `{"action":"status","env":{"PATH":"/evil"}}`, `{"action":"status"} {"action":"up"}`, `{"action":"exit-node","exitNode":"100.64.0.2","command":""}`, `{"action":"advertise","advertiseRoutes":"0.0.0.0/0"}`, `{"action":"advertise"}`, `{"action":"taildrop-path","path":"/data/adb"}`, `{"action":"exit-node-ipv6"}`, `{"action":"exit-node-ipv6","exitNodeIPv6":null}`, `{"action":"exit-node-ipv6","exitNodeIPv6":"1"}`, `{"action":"exit-node-ipv6","exitNodeIPv6":true,"exitNode":""}`, `{"action":"status","exitNodeIPv6":true}`, `{"action":"exit-node","exitNode":"","exitNodeIPv6":true}`, `null`, `[]`} {
 		if _, err := decodeRequest(encode(raw)); err == nil {
 			t.Errorf("invalid request accepted: %s", raw)
 		}
@@ -123,6 +125,351 @@ func TestMaskedSettingsPreserveUnrelatedPrefs(t *testing.T) {
 	}
 }
 
+func TestAdvertiseRoutesValidation(t *testing.T) {
+	for _, value := range []string{"10.0.0.0/8", "192.168.1.0/24, fd7a:115c:a1e0::/64"} {
+		if routes, err := parseAdvertiseRoutes(value); err != nil || len(routes) == 0 {
+			t.Fatalf("valid routes rejected: %q, %v", value, err)
+		}
+	}
+	for _, value := range []string{"0.0.0.0/0", "10.0.0.1/8", "10.0.0.0/8,10.0.0.0/8" + strings.Repeat(",10.0.0.0/8", 16), "bad"} {
+		if routes, err := parseAdvertiseRoutes(value); err == nil || routes != nil && value == "0.0.0.0/0" {
+			t.Errorf("invalid route accepted: %q", value)
+		}
+	}
+}
+
+func TestAdvertiseRoutesMaskedPatchPreservesRoles(t *testing.T) {
+	var patch map[string]any
+	b := &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"BackendState":"Running","TailscaleIPs":[]}`
+		if r.Method == http.MethodGet && r.URL.Path == "/localapi/v0/prefs" {
+			body = `{"AdvertiseRoutes":["10.0.0.0/8","0.0.0.0/0","::/0"],"RouteAll":true,"ShieldsUp":true}`
+		}
+		if r.Method == http.MethodPatch {
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+	keepExit := false
+	if r := b.setAdvertisement(context.Background(), &keepExit, nil); !r.OK {
+		t.Fatalf("disable exit advertisement failed: %s", r.Error)
+	}
+	if got := patch["AdvertiseRoutes"].([]any); len(got) != 1 || got[0] != "10.0.0.0/8" || patch["AdvertiseRoutesSet"] != true {
+		t.Fatalf("exit disable did not preserve subnet route: %+v", patch)
+	}
+	routes := "192.168.0.0/16"
+	if r := b.setAdvertisement(context.Background(), nil, &routes); !r.OK {
+		t.Fatalf("route update failed: %s", r.Error)
+	}
+	got := patch["AdvertiseRoutes"].([]any)
+	if len(got) != 3 || got[0] != "0.0.0.0/0" || got[1] != "::/0" || got[2] != routes {
+		t.Fatalf("route update did not preserve exit routes: %+v", patch)
+	}
+	clear := ""
+	if r := b.setAdvertisement(context.Background(), nil, &clear); !r.OK {
+		t.Fatalf("route clear failed: %s", r.Error)
+	}
+	got = patch["AdvertiseRoutes"].([]any)
+	if len(got) != 2 || got[0] != "0.0.0.0/0" || got[1] != "::/0" {
+		t.Fatalf("route clear did not preserve exit routes: %+v", patch)
+	}
+}
+
+func TestAdvertisementUsesFreshPrefsAndOnlyChangesAdvertiseRoutes(t *testing.T) {
+	for _, editRoutes := range []bool{false, true} {
+		t.Run(strconv.FormatBool(editRoutes), func(t *testing.T) {
+			reads := 0
+			var patch map[string]any
+			current := []string{"203.0.113.0/24", "0.0.0.0/0", "::/0"}
+			b := &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+				var body any = map[string]any{"BackendState": "Running", "TailscaleIPs": []string{}}
+				switch r.Method + " " + r.URL.Path {
+				case "GET /localapi/v0/prefs":
+					reads++
+					routes := current
+					if reads == 1 {
+						// The status snapshot is older than the read just before PATCH.
+						routes = []string{"198.51.100.0/24"}
+					}
+					body = map[string]any{"AdvertiseRoutes": routes, "RouteAll": true, "ShieldsUp": true,
+						"ExitNodeAllowLANAccess": true, "NetfilterMode": 1, "CorpDNS": false,
+						"Persist": map[string]string{"PrivateNodeKey": "synthetic-role-private-marker"}}
+				case "PATCH /localapi/v0/prefs":
+					if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+						t.Fatal(err)
+					}
+					if len(patch) != 2 || patch["AdvertiseRoutesSet"] != true {
+						t.Fatalf("advertisement changed unrelated preferences: %+v", patch)
+					}
+					current = nil
+					for _, route := range patch["AdvertiseRoutes"].([]any) {
+						current = append(current, route.(string))
+					}
+				case "GET /localapi/v0/status":
+				default:
+					t.Fatal("unexpected role LocalAPI action")
+				}
+				encoded, _ := json.Marshal(body)
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
+			})}}
+			var r response
+			want := []string{"203.0.113.0/24"}
+			if editRoutes {
+				routes := "192.0.2.0/24"
+				r = b.setAdvertisement(context.Background(), nil, &routes)
+				want = []string{"0.0.0.0/0", "::/0", "192.0.2.0/24"}
+			} else {
+				exit := false
+				r = b.setAdvertisement(context.Background(), &exit, nil)
+			}
+			if !r.OK || !reflect.DeepEqual(current, want) || r.Settings != (settings{true, true, true}) {
+				t.Fatalf("fresh unrelated roles/settings were not preserved: %+v %+v", r, current)
+			}
+			encoded, _ := json.Marshal(r)
+			if strings.Contains(string(encoded), "synthetic-role-private-marker") || strings.Contains(string(encoded), "Persist") {
+				t.Fatal("role response included private preferences")
+			}
+		})
+	}
+}
+
+func TestNetworkRPCFieldBoundaries(t *testing.T) {
+	decode := func(raw string) error {
+		_, err := decodeRequest(base64.StdEncoding.EncodeToString([]byte(raw)))
+		return err
+	}
+	for _, raw := range []string{`{"action":"exit-nodes","locale":"en"}`, `{"action":"exit-node","exitNode":"nOn"}`,
+		`{"action":"exit-node","exitNode":""}`, `{"action":"exit-node-ipv6","exitNodeIPv6":false}`,
+		`{"action":"advertise","advertiseExitNode":false}`, `{"action":"advertise","advertiseRoutes":""}`,
+		`{"action":"advertise","advertiseExitNode":true,"advertiseRoutes":"192.0.2.0/24"}`} {
+		if err := decode(raw); err != nil {
+			t.Fatalf("valid explicit role request rejected: %s: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{`{"action":"exit-node"}`, `{"action":"exit-node","exitNode":null}`,
+		`{"action":"exit-node","exitNode":"nOn","exitNodeIPv6":false}`, `{"action":"exit-node","exitNode":false}`,
+		`{"action":"exit-nodes","advertiseRoutes":""}`, `{"action":"exit-node-ipv6"}`, `{"action":"exit-node-ipv6","exitNodeIPv6":null}`,
+		`{"action":"exit-node-ipv6","exitNodeIPv6":false,"settings":null}`, `{"action":"exit-node-ipv6","exitNodeIPv6":"false"}`,
+		`{"action":"advertise"}`, `{"action":"advertise","advertiseExitNode":null}`, `{"action":"advertise","advertiseRoutes":null}`,
+		`{"action":"advertise","advertiseRoutes":"192.0.2.0/24","command":null}`, `{"action":"advertise","AdvertiseExitNode":true}`,
+		`{"action":"advertise","advertiseExitNode":true,"url":"https://example.invalid/"}`} {
+		if err := decode(raw); err == nil {
+			t.Fatalf("malformed/mixed role request accepted: %s", raw)
+		}
+	}
+}
+
+func writeProcFile(t *testing.T, root, name, value string) {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func exitNodeBackend(t *testing.T, prefs string, patches *[]map[string]any) *backend {
+	t.Helper()
+	return &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		body := `{"BackendState":"Running","TailscaleIPs":[]}`
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/localapi/v0/prefs":
+			body = prefs
+		case r.Method == http.MethodGet && r.URL.RawQuery == "peers=true":
+			body = `{"Peer":{"k1":{"ID":"nOn","HostName":"on","TailscaleIPs":["100.64.0.2"],"Online":true,"ExitNodeOption":true},` +
+				`"k2":{"ID":"nOff","HostName":"off","TailscaleIPs":["100.64.0.3"],"Online":false,"ExitNodeOption":true},` +
+				`"k3":{"ID":"nPlain","HostName":"plain","TailscaleIPs":["100.64.0.4"],"Online":true}}}`
+		case r.Method == http.MethodPatch:
+			var patch map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+				t.Fatal(err)
+			}
+			*patches = append(*patches, patch)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+}
+
+func TestSetExitNodeUsesMaskedPrefs(t *testing.T) {
+	root := t.TempDir()
+	defer func(old string) { procRoot = old }(procRoot)
+	procRoot = root
+	var patches []map[string]any
+	b := exitNodeBackend(t, `{"ExitNodeID":"old","RouteAll":true}`, &patches)
+	check := func(target string, all, wlan, currentMode int, wantID string) {
+		t.Helper()
+		writeProcFile(t, root, "sys/net/ipv4/conf/all/rp_filter", strconv.Itoa(all))
+		writeProcFile(t, root, "sys/net/ipv4/conf/wlan0/rp_filter", strconv.Itoa(wlan))
+		patches = nil
+		b := exitNodeBackend(t, `{"ExitNodeID":"old","RouteAll":true,"NetfilterMode":`+strconv.Itoa(currentMode)+`}`, &patches)
+		if r := b.setExitNode(context.Background(), target); !r.OK {
+			t.Fatalf("setExitNode(%q) failed: %s", target, r.Error)
+		}
+		if len(patches) != 1 {
+			t.Fatalf("want one patch, got %+v", patches)
+		}
+		p := patches[0]
+		if len(p) != 4 || p["ExitNodeID"] != wantID || p["ExitNodeIP"] != "" ||
+			p["ExitNodeIDSet"] != true || p["ExitNodeIPSet"] != true {
+			t.Fatalf("unexpected patch for %q (rp_filter %d/%d): %+v", target, all, wlan, p)
+		}
+		for _, key := range []string{"NetfilterMode", "NetfilterModeSet", "ExitNodeAllowLANAccessSet", "CorpDNSSet", "RouteAllSet", "AdvertiseRoutesSet", "AutoExitNodeSet"} {
+			if _, ok := p[key]; ok {
+				t.Fatalf("patch must not touch %s: %+v", key, p)
+			}
+		}
+	}
+	check("nOn", 0, 0, 0, "nOn")
+	check("100.64.0.2", 0, 0, 0, "nOn")
+	check("nOn", 2, 1, 0, "nOn")
+	check("nOn", 0, 0, 1, "nOn")
+	check("nOn", 0, 1, 2, "nOn")
+	for _, mode := range []int{0, 1, 2} {
+		check("", 0, 1, mode, "")
+	}
+	for _, mode := range []int{0, 1} {
+		patches = nil
+		strict := exitNodeBackend(t, `{"NetfilterMode":`+strconv.Itoa(mode)+`}`, &patches)
+		r := strict.setExitNode(context.Background(), "nOn")
+		if r.OK || r.Error != "此设备启用了严格反向路径检查，暂不支持使用出口节点" || len(patches) != 0 {
+			t.Fatalf("strict-rp_filter mode %d must fail without changing preferences: %+v %+v", mode, r, patches)
+		}
+		for _, locale := range []string{"zh-CN", "zh-TW", "en"} {
+			if message := localizedError(r.Error, locale); message == "" || locale == "en" && !strings.Contains(message, "reverse-path") {
+				t.Fatal("strict-rp_filter restriction lacks a native translation")
+			}
+		}
+	}
+
+	for _, target := range []string{"nOff", "nPlain", "nMissing", "100.64.0.9"} {
+		patches = nil
+		if r := b.setExitNode(context.Background(), target); r.OK || len(patches) != 0 {
+			t.Fatalf("target %q must be rejected without a patch: %+v %+v", target, r, patches)
+		}
+	}
+	patches = nil
+	adv := exitNodeBackend(t, `{"AdvertiseRoutes":["0.0.0.0/0","::/0"]}`, &patches)
+	if r := adv.setExitNode(context.Background(), "nOn"); r.OK || len(patches) != 0 {
+		t.Fatalf("advertising device must not use an exit node: %+v %+v", r, patches)
+	}
+}
+
+func TestStatusExitNodeOnlineAndIPv6(t *testing.T) {
+	root := t.TempDir()
+	defer func(old string) { procRoot = old }(procRoot)
+	procRoot = root
+	statusFor := func(st string) response {
+		b := &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+			body := st
+			if r.URL.Path == "/localapi/v0/prefs" {
+				body = `{"ExitNodeID":"nOn"}`
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})}}
+		r, _ := b.statusWithLocal(context.Background())
+		return r
+	}
+	r := statusFor(`{"BackendState":"Running","ExitNodeStatus":{"ID":"nOn","Online":false}}`)
+	if r.ExitNodeIPv6 != nil {
+		t.Fatalf("an unreadable route table must leave exitNodeIPv6 unknown: %+v", r)
+	}
+	writeProcFile(t, root, "net/ipv6_route", "")
+	r = statusFor(`{"BackendState":"Running","ExitNodeStatus":{"ID":"nOn","Online":false}}`)
+	if r.ExitNodeOnline == nil || *r.ExitNodeOnline || r.ExitNodeIPv6 == nil || *r.ExitNodeIPv6 {
+		t.Fatalf("unexpected exit node status: %+v", r)
+	}
+	r = statusFor(`{"BackendState":"Running"}`)
+	if r.ExitNodeOnline == nil || *r.ExitNodeOnline {
+		t.Fatalf("a running node without ExitNodeStatus must report the exit node offline: %+v", r)
+	}
+	r = statusFor(`{"BackendState":"Stopped"}`)
+	if r.ExitNodeOnline != nil {
+		t.Fatalf("a stopped node must omit exitNodeOnline: %+v", r)
+	}
+	if data, _ := json.Marshal(r); strings.Contains(string(data), "exitNodeOnline") {
+		t.Fatalf("exitNodeOnline must be omitted: %s", data)
+	}
+
+	route := "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 00000001 %s\n"
+	writeProcFile(t, root, "net/ipv6_route", fmt.Sprintf(route, "wlan0"))
+	if v := tunnelIPv6Default(); v == nil || *v {
+		t.Fatal("::/0 via wlan0 must not count as tunnelled")
+	}
+	writeProcFile(t, root, "net/ipv6_route", fmt.Sprintf(route, "wlan0")+fmt.Sprintf(route, "tailscale0"))
+	if v := tunnelIPv6Default(); v == nil || !*v {
+		t.Fatal("::/0 via tailscale0 must count as tunnelled")
+	}
+}
+
+func TestSetExitNodeIPv6(t *testing.T) {
+	defer func(old string) { exitNodeIPv6LocalFile = old }(exitNodeIPv6LocalFile)
+	exitNodeIPv6LocalFile = filepath.Join(t.TempDir(), "state", "exit-node-ipv6-local")
+	var reconfigs int
+	reconfigStatus, reconfigBody := 200, "done\n"
+	b := &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		status, body := 200, `{"BackendState":"Running"}`
+		switch r.URL.Path {
+		case "/localapi/v0/prefs":
+			body = `{"ExitNodeID":"nOn"}`
+		case "/localapi/v0/debug":
+			if r.Method != "POST" || r.URL.RawQuery != "action=reconfig" || r.ContentLength > 0 {
+				t.Fatalf("unexpected reconfig request: %s %s", r.Method, r.URL)
+			}
+			reconfigs++
+			status, body = reconfigStatus, reconfigBody
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}}
+	if !exitNodeIPv6Takeover() {
+		t.Fatal("takeover must default to on")
+	}
+	r := b.setExitNodeIPv6(context.Background(), false)
+	if !r.OK || r.ExitNodeIPv6Takeover || reconfigs != 1 {
+		t.Fatalf("disable failed: %+v reconfigs=%d", r, reconfigs)
+	}
+	if data, _ := json.Marshal(r); !strings.Contains(string(data), `"exitNodeIPv6Takeover":false`) {
+		t.Fatalf("takeover must always be reported: %s", data)
+	}
+	info, err := os.Stat(exitNodeIPv6LocalFile)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("opt-out file: %v %v", info, err)
+	}
+	if _, err := os.Stat(exitNodeIPv6LocalFile + ".new"); !os.IsNotExist(err) {
+		t.Fatal("temporary opt-out file left behind")
+	}
+	if r := b.setExitNodeIPv6(context.Background(), true); !r.OK || !r.ExitNodeIPv6Takeover || reconfigs != 2 {
+		t.Fatalf("enable failed: %+v", r)
+	}
+	if r := b.setExitNodeIPv6(context.Background(), true); !r.OK || reconfigs != 3 {
+		t.Fatalf("enabling twice must succeed: %+v", r)
+	}
+	reconfigStatus, reconfigBody = 400, "unknown action \"reconfig\"\n"
+	if r := b.setExitNodeIPv6(context.Background(), true); !r.OK || !r.ExitNodeIPv6Takeover {
+		t.Fatalf("an older daemon already routes IPv6 through the exit node: %+v", r)
+	}
+	r = b.setExitNodeIPv6(context.Background(), false)
+	if r.OK || r.Error != "IPv6 出口设置已保存，需要随本版模块发布的后台服务才能生效" || exitNodeIPv6Takeover() {
+		t.Fatalf("an older daemon must be reported, keeping the saved opt-out: %+v", r)
+	}
+	if got := localizedError(r.Error, "en"); !strings.Contains(got, "daemon shipped with this module") {
+		t.Fatalf("missing translation: %q", got)
+	}
+	reconfigStatus, reconfigBody = 403, "debug access denied\n"
+	if r := b.setExitNodeIPv6(context.Background(), true); r.OK || !exitNodeIPv6Takeover() {
+		t.Fatalf("other LocalAPI failures must be reported: %+v", r)
+	}
+	down := &backend{client: &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial unix: no such file")
+	})}}
+	if r := down.setExitNodeIPv6(context.Background(), false); !r.OK || r.ExitNodeIPv6Takeover || r.DaemonRunning {
+		t.Fatalf("a stopped daemon must still save the opt-out: %+v", r)
+	}
+}
+
 func TestOutputIsBounded(t *testing.T) {
 	var b limitedBuffer
 	input := []byte(strings.Repeat("x", 2<<20))
@@ -140,6 +487,17 @@ func deviceBackend(t *testing.T, body string) *backend {
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
 	})}}
+}
+
+func TestExitNodesExcludeOtherDevices(t *testing.T) {
+	body := `{"Self":{"ID":"self","ExitNodeOption":true},"Peer":{
+		"a":{"ID":"exit","ExitNodeOption":true,"Online":true},
+		"b":{"ID":"ordinary","Online":true}
+	}}`
+	r := deviceBackend(t, body).deviceList(context.Background(), true)
+	if !r.OK || r.Devices == nil || len(*r.Devices) != 1 || (*r.Devices)[0].ID != "exit" {
+		t.Fatal("expected only peer exit nodes")
+	}
 }
 
 func TestDevicesProjectionAndOrdering(t *testing.T) {
