@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"syscall"
 	"testing"
 )
@@ -202,53 +201,156 @@ func TestRefreshSweepsOnRoutingChange(t *testing.T) {
 	step(false) // selecting an exit node is not a switch
 }
 
-// TestRouteLookupPortRule asks the kernel for real; it changes links and ip
-// rules, so run it as root inside a disposable network namespace.
-func TestRouteLookupPortRule(t *testing.T) {
-	if os.Getenv("SHELLSCALED_NETLINK_TEST") != "1" {
-		t.Skip("set SHELLSCALED_NETLINK_TEST=1 to run as root in a disposable network namespace with iproute2")
+// Native netlink keeps this policy regression runnable with Android stock ip.
+// The fixture refuses init's network namespace before changing any links.
+func routeTestExchange(fd int, req []byte) ([]byte, error) {
+	if err := syscall.Sendto(fd, req, 0, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); err != nil {
+		return nil, err
 	}
-	for _, cmd := range []string{
-		"link add rtwan type dummy", "link set rtwan up", "addr add 10.9.0.1/24 dev rtwan",
-		"link add rtts type dummy", "link set rtts up", "addr add 10.9.1.1/24 dev rtts",
-		"route add default via 10.9.0.2 dev rtwan", "route add default via 10.9.1.2 dev rtts table 152",
-		"rule add pref 152 ipproto tcp dport 8443 lookup 152",
-	} {
-		if out, err := exec.Command("ip", strings.Fields(cmd)...).CombinedOutput(); err != nil {
-			t.Fatalf("ip %s: %v %s", cmd, err, out)
+	buf := make([]byte, 64<<10)
+	n, _, err := syscall.Recvfrom(fd, buf, 0)
+	if err != nil {
+		return nil, err
+	}
+	return buf[:n], nil
+}
+
+func routeTestRequest(typ, flags uint16, body, attrs []byte) []byte {
+	b := binary.NativeEndian.AppendUint32(nil, uint32(16+len(body)+len(attrs)))
+	b = binary.NativeEndian.AppendUint16(b, typ)
+	b = binary.NativeEndian.AppendUint16(b, flags)
+	b = append(b, make([]byte, 8)...)
+	b = append(b, body...)
+	return append(b, attrs...)
+}
+
+func routeTestFixture(t *testing.T) (fd, wanIndex, tsIndex int) {
+	t.Helper()
+	if os.Getenv("SHELLSCALED_NETLINK_TEST") != "1" {
+		t.Skip("requires opt-in inside a disposable Android network namespace")
+	}
+	self, err1 := os.Readlink("/proc/self/ns/net")
+	init, err2 := os.Readlink("/proc/1/ns/net")
+	if err1 != nil || err2 != nil || self == init {
+		t.Fatal("refusing non-isolated network namespace")
+	}
+	ip := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("/system/bin/ip", args...).CombinedOutput(); err != nil {
+			t.Fatalf("ip %v: %v: %s", args, err, out)
 		}
 	}
-	fd, err := netlinkSocket(syscall.NETLINK_ROUTE)
+	for i, name := range []string{"scflowwan", "scflowts"} {
+		ip("link", "add", name, "type", "dummy")
+		t.Cleanup(func() {
+			if out, err := exec.Command("/system/bin/ip", "link", "del", name).CombinedOutput(); err != nil {
+				t.Errorf("remove fixture link: %v %s", err, out)
+			}
+		})
+		ip("link", "set", name, "up")
+		ip("addr", "add", []string{"10.9.0.1/24", "10.9.1.1/24"}[i], "dev", name)
+	}
+	ip("route", "add", "default", "via", "10.9.0.2", "dev", "scflowwan")
+	ip("route", "add", "default", "via", "10.9.1.2", "dev", "scflowts", "table", "152")
+	wan, err := net.InterfaceByName("scflowwan")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Close(fd)
-	lookup := func(dport uint16) route {
-		t.Helper()
-		f := tcpFlow{src: netip.MustParseAddr("10.9.0.1"), dst: netip.MustParseAddr("192.0.2.1"), sport: 40000, dport: dport}
-		buf := make([]byte, 4096)
-		if err := syscall.Sendto(fd, routeReq(f), 0, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); err != nil {
-			t.Fatal(err)
+	ts, err := net.InterfaceByName("scflowts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd, err = netlinkSocket(syscall.NETLINK_ROUTE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	// fib_rule_hdr: AF_INET, table 152, FR_ACT_TO_TBL. These constants
+	// and host-order ranges come from Linux uapi/linux/fib_rules.h.
+	body := []byte{afInet, 0, 0, 0, 152, 0, 0, 1, 0, 0, 0, 0}
+	attrs := nlAttr(6, binary.NativeEndian.AppendUint32(nil, 152))    // FRA_PRIORITY
+	attrs = append(attrs, nlAttr(22, []byte{syscall.IPPROTO_TCP})...) // FRA_IP_PROTO
+	ports := binary.NativeEndian.AppendUint16(nil, 8443)
+	ports = binary.NativeEndian.AppendUint16(ports, 8443)
+	attrs = append(attrs, nlAttr(24, ports)...) // FRA_DPORT_RANGE
+	uids := binary.NativeEndian.AppendUint32(nil, 10000)
+	uids = binary.NativeEndian.AppendUint32(uids, 10000)
+	attrs = append(attrs, nlAttr(20, uids)...)      // FRA_UID_RANGE
+	add := routeTestRequest(32, 0x605, body, attrs) // NEW, REQUEST|ACK|CREATE|EXCL
+	reply, err := routeTestExchange(fd, add)
+	if err == nil {
+		err = nlErrno(reply)
+	}
+	if err != nil {
+		t.Fatalf("add native TCP dport/UID rule: %v", err)
+	}
+	t.Cleanup(func() {
+		reply, err := routeTestExchange(fd, routeTestRequest(33, 5, body, attrs))
+		if err == nil {
+			err = nlErrno(reply)
 		}
-		n, _, err := syscall.Recvfrom(fd, buf, 0)
 		if err != nil {
-			t.Fatal(err)
+			t.Errorf("remove native fixture rule: %v", err)
 		}
-		rt, err := parseRoute(buf[:n])
-		if err != nil {
-			t.Fatalf("dport %d: %v", dport, err)
+	})
+	return fd, wan.Index, ts.Index
+}
+
+func routeTestLookup(t *testing.T, fd int, f tcpFlow) route {
+	t.Helper()
+	req := routeReq(f)
+	reply, err := routeTestExchange(fd, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := parseRoute(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rt
+}
+
+func TestRouteLookupPortRule(t *testing.T) {
+	fd, wan, ts := routeTestFixture(t)
+	f := tcpFlow{src: netip.MustParseAddr("10.9.0.1"), dst: netip.MustParseAddr("192.0.2.1"), uid: 10000, sport: 40000, dport: 8443}
+	for _, tc := range []struct {
+		port uint16
+		uid  uint32
+		want int
+	}{{8443, 10000, ts}, {443, 10000, wan}, {8443, 10001, wan}} {
+		f.dport, f.uid = tc.port, tc.uid
+		if rt := routeTestLookup(t, fd, f); rt.oif != uint32(tc.want) || rt.dstLen != 0 {
+			t.Fatalf("dport %d UID %d: route %+v, want ifindex %d", tc.port, tc.uid, rt, tc.want)
 		}
-		return rt
 	}
-	wan, err1 := net.InterfaceByName("rtwan")
-	ts, err2 := net.InterfaceByName("rtts")
-	if err1 != nil || err2 != nil {
-		t.Fatal(err1, err2)
+	// Negative control: remove only the new protocol/port attrs from the
+	// real request. The same 8443/UID10000 flow must miss the TCP port rule.
+	f.dport, f.uid = 8443, 10000
+	req := routeReq(f)
+	clean := append([]byte(nil), req[:28]...)
+	for attrs := req[28:]; len(attrs) >= 4; {
+		size := int(binary.NativeEndian.Uint16(attrs))
+		if size < 4 || size > len(attrs) {
+			t.Fatal("bad request attrs")
+		}
+		aligned := (size + 3) &^ 3
+		if aligned > len(attrs) {
+			t.Fatal("short aligned attr")
+		}
+		typ := binary.NativeEndian.Uint16(attrs[2:]) &^ 0xc000
+		if typ != rtaIPProto && typ != rtaSport && typ != rtaDport {
+			clean = append(clean, attrs[:aligned]...)
+		}
+		attrs = attrs[aligned:]
 	}
-	if rt := lookup(8443); rt.oif != uint32(ts.Index) || rt.dstLen != 0 {
-		t.Errorf("matching flow: %+v, want table 152 default via rtts (%d)", rt, ts.Index)
+	binary.NativeEndian.PutUint32(clean, uint32(len(clean)))
+	reply, err := routeTestExchange(fd, clean)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if rt := lookup(443); rt.oif != uint32(wan.Index) || rt.dstLen != 0 {
-		t.Errorf("other port: %+v, want main default via rtwan (%d)", rt, wan.Index)
+	rt, err := parseRoute(reply)
+	if err != nil || rt.oif != uint32(wan) {
+		t.Fatalf("negative control: route %+v err %v", rt, err)
 	}
+	t.Log("TCP dport and UID policy match; removing protocol/ports misses")
 }
