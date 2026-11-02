@@ -143,6 +143,11 @@
               <span class="switch"><input id="exit-node-ipv6-takeover" type="checkbox" role="switch" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
             </label>
             <p class="local-message" id="exit-node-ipv6" role="status" data-kind="info" data-i18n="network.ipv6Physical" hidden></p>
+            <label class="setting-row network-toggle" for="magicdns-enabled">
+              <span class="setting-copy"><strong data-i18n="network.magicDNS"></strong><span data-i18n="network.magicDNSDescription"></span></span>
+              <span class="switch"><input id="magicdns-enabled" type="checkbox" role="switch" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
+            </label>
+            <p class="local-message" id="magicdns-status" role="status" aria-live="polite" hidden></p>
             <label class="field-label network-routes-label" for="advertise-routes" data-i18n="network.routes"></label>
             <input id="advertise-routes" type="text" data-i18n-placeholder="network.routesPlaceholder" data-requires-bridge disabled spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="advertise-routes-error">
             <p class="local-message" id="advertise-routes-error" data-kind="error" hidden></p>

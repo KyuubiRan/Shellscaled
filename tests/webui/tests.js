@@ -272,6 +272,35 @@
       const refreshBox = $("network-refresh").getBoundingClientRect();
       assert(refreshBox.width >= 44 && refreshBox.height >= 44);
       assert($("network-refresh").getAttribute("aria-label").trim());
+      const dns = $("magicdns-status");
+      // MagicDNS is off by default; with an exit node in use, say DNS bypasses it.
+      assert(backend().state === "Running" && !backend().magicDNS && backend().magicDNSEnabled === false && backend().exitNodeConfigured === true);
+      assert(!dns.hidden && dns.dataset.kind === "warning" && dns.getAttribute("aria-live") === "polite");
+      assert(dns.textContent === ShellscaledI18n.t("network.dnsOffExit"));
+      click("tab-overview");
+    });
+
+    await test("magicdns-opt-in-defaults-off", async () => {
+      await idle();
+      click("tab-settings");
+      await until(() => !$("magicdns-enabled").disabled);
+      const toggle = $("magicdns-enabled");
+      assert(backend().magicDNSEnabled === false && !toggle.checked);
+      assert(toggle.getAttribute("role") === "switch" && toggle.closest("#network-role-card"));
+      const dnsRequests = () => requests().filter((request) => request.action === "magicdns");
+      for (const enabled of [true, false]) {
+        const before = dnsRequests().length;
+        click("magicdns-enabled");
+        await until(() => dnsRequests().length === before + 1);
+        const request = dnsRequests().at(-1);
+        assert(request.magicDNSEnabled === enabled && Object.keys(request).every((key) => ["action", "locale", "magicDNSEnabled"].includes(key)));
+        await idle();
+        assert(toggle.checked === enabled && backend().magicDNSEnabled === enabled);
+        const status = $("magicdns-status");
+        if (enabled) assert(!status.hidden && status.textContent === ShellscaledI18n.t("network.dnsInactive"));
+        else if (backend().exitNodeConfigured === true) assert(!status.hidden && status.textContent === ShellscaledI18n.t("network.dnsOffExit"));
+        else assert(status.hidden);
+      }
       click("tab-overview");
     });
 

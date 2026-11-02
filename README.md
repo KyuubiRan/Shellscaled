@@ -53,6 +53,8 @@ APatch 适配处于实验阶段，请使用包含该适配的预发布版本；A
 
 设置中的「网络角色」可选择、切换和关闭出口节点，也可发布本机为出口节点或输入 CIDR 子网路由。发布后需在 Tailscale 控制台批准；Android 转发、NAT 与 SELinux 的实际可用性需要单独验证。
 
+「MagicDNS 分流解析」开关（默认关闭）在不接管系统 DNS 的情况下解析 tailnet 名称，行为与限制见 [Android 网络说明](docs/android-network.md)。
+
 
 在 `adb shell` 或终端执行 `su` 后，可直接使用 `tailscale`。`tailscaled` 可启动、停止、重启服务或查看状态。
 

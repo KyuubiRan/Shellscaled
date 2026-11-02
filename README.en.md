@@ -55,6 +55,8 @@ Use the module action button in your manager to connect or disconnect. KernelSU 
 
 **Network roles** lets you select, switch or stop using an exit node, advertise this device as an exit node, and advertise CIDR subnet routes. Advertisements require approval in the Tailscale console. Android forwarding, NAT and SELinux behavior require separate validation.
 
+The **MagicDNS split resolver** switch (off by default) resolves tailnet names without taking over system DNS. See [Android networking](docs/android-network.md) for its behavior and limitations.
+
 
 Tap a local address to copy it. The Devices page lets you search visible devices, check online status and copy names or addresses.
 

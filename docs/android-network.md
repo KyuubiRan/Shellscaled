@@ -30,7 +30,96 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 ## DNS、防火墙与权限
 
-默认 `accept-dns=false`，DNS 配置器拒绝接管系统 DNS，不使用旧 fork 的全局 UDP 53 DNAT。保留 netd、Private DNS 与已有 VPN 的解析策略。CGO 构建使用 Android bionic 解析，避免依赖不存在的 Linux `/etc/resolv.conf`。因此本期不提供系统 MagicDNS，也不宣称实现 Tailscale 的分域 DNS。
+默认 `accept-dns=false`，Tailscale 自身不接管 Android 的 netd 配置，也不修改 Private DNS。模块可选用一个本地 MagicDNS 代理补上 tailnet 名称解析。该功能默认关闭，在 WebUI“网络角色”卡片中打开（RPC `magicdns`，开关文件 `/data/adb/shellscaled/magicdns-enabled`）；关闭时代理进程仍运行（开关切换后立即生效），但两条链保持为空，不拦截任何 DNS。开启后：普通模式下只有 tailnet 名称的查询被交给代理，其他查询原样发往 Android 选定的 DNS 服务器；需要把全部 DNS 交给代理时，非 tailnet 查询仍转发给系统原本选定的那台服务器。IPv4 与 IPv6 的 DNS 查询走同样的路径。
+
+### MagicDNS 机制
+
+代理不读取 Android 的 DNS 服务器配置：本移植中 LocalAPI `dns-osconfig` 始终返回 500（Android 的 OS DNS 管理器不支持读取基础配置），Android 8 起也没有 `net.dns*` 属性。代理逐个查询取回它被 REDIRECT 之前的目的地址（见下文“原目的地址转发”）。
+
+内核对象全部归模块所有：
+
+- IPv4：`iptables` `nat` 表链 `shellscaled_dns`，由 `OUTPUT -p udp --dport 53 -j shellscaled_dns` 进入。
+- IPv6：`ip6tables` `nat` 表链 `shellscaled_dns`，同样的跳转。Android GKI 内核提供 IPv6 NAT：Pixel（KernelSU）上 `/proc/net/ip6_tables_targets` 含 `REDIRECT` / `DNAT` / `TPROXY`，`ip6tables -t nat -L OUTPUT` 可用。没有 IPv6 NAT 的内核见下文“缺少 IPv6 NAT 的内核”。
+- 服务脚本创建空链和跳转，停止和卸载时删除；代理只对该链执行 `-F` / `-A`，退出时清空。链初始为空，代理未运行时不会拦截任何 DNS。
+
+代理监听 `127.0.0.1:1053` 和 `[::1]:1053` 两个 socket，处理逻辑相同：nat `OUTPUT` 中的 REDIRECT 把本机发出的包改写到该地址族的回环地址。`[::1]` 无法绑定时记录一行日志，IPv6 链保持为空（IPv6 DNS 留在系统路径），`rules6` 为 false。运行中 `[::1]` 的读取出错退出时同样处理：刷新循环清空 IPv6 链，`rules6` 变为 false，直到代理重启。
+
+IPv6 必须和 IPv4 一样交给代理：双栈网络上 netd 优先使用 IPv6 DNS 服务器。例如双栈蜂窝网络同时下发 IPv6 和 IPv4 DNS 服务器时，tailnet 名称的 A 与 AAAA 查询都发往 IPv6 服务器，只拦截 IPv4 时这类名称无法解析。
+
+**缺少 IPv6 NAT 的内核**
+
+部分内核没有 IPv6 `nat` 表（`ip6tables -t nat -S OUTPUT` 失败），无法把 IPv6 DNS 重定向到 `[::1]:1053`。双栈网络上 netd 优先查询 IPv6 DNS 服务器，tailnet 名称因此超时。
+
+这类内核改用模块自有的 IPv6 `filter` 链 `shellscaled_dns6_fallback`，同样通过一条 UDP/53 OUTPUT 跳转进入，第一条规则同样放行带 bypass 位的查询。被拒绝的查询收到本地 `icmp6-port-unreachable`，Android resolver 随即改问 IPv4 DNS 服务器，再由 IPv4 链交给代理：
+
+- `tailnet`：只拒绝 tailnet 后缀（启用 accept-dns 时也包括 split-DNS 后缀）的查询，普通域名仍走系统路径。tailnet 的 A、AAAA 记录都经 IPv4 入口解析，tailnet IPv6 地址照常可用。
+- `exit-doh` / `exit-passthrough`：拒绝全部 IPv6 UDP/53，所有查询经 IPv4 交给代理，与有 IPv6 NAT 时一样不从物理网络直接查询。
+
+该路径要求网络提供可用的 IPv4 DNS 服务器；只提供 IPv6 DNS 的网络不支持。模块不修改 Android DNS 配置、原生 IPv6 地址和路由。停止、断开和卸载时删除该链。状态附加 `ipv6Fallback:true`，WebUI 提示对 IPv4 DNS 的依赖。
+
+代理每 5 秒读取一次 LocalAPI `status` 和 `dns-config`，按模式重建链内容（仅在变化时）。WebUI 应用或关闭出口节点后，helper 向 `magicdns.pid` 中的进程发送 SIGUSR1（先确认 `/proc/<pid>/exe` 与 helper 自身是同一文件，同 `sc_magicdns_running`），代理立即刷新。除 `off` 外，两条链内容基本相同（`xt_string` 偏移不同；整体重定向时 IPv6 链多一条链路本地 RETURN；某一地址族 conntrack 不可用时见下文），第一条总是 `-m mark --mark 0x10000000/0x1e000000 -j RETURN`：代理自己转发的查询带 `SO_MARK=0x10020000`，由此直接返回，不会再次被 REDIRECT；tailscaled 自身带同一 bypass 位的 UDP/53 也不被拦截。第二条 `-j CONNMARK --save-mark --nfmask 0x1ffff --ctmask 0x1ffff` 把 netd 为该查询设置的 netId 与显式选择位存入连接 mark，供原目的地址转发使用。
+
+- `off`：MagicDNS 未开启、守护进程不可达或未运行、未选出口节点且没有任何 tailnet 后缀，或未选出口节点且内核没有 `xt_string`；链为空。
+- `tailnet`：对 MagicDNS 后缀，以及 accept-dns 打开时 `dns-config` 的 Routes 后缀（合计最多 16 个；`dns-config` 不论 accept-dns 都返回控制面配置，而 tailscaled 只在 accept-dns 打开时应用 split-DNS，所以默认的 accept-dns=false 下只拦截 MagicDNS 后缀），用 `xt_string` 匹配查询中该后缀的 DNS wire 编码，命中的查询 REDIRECT 到 `127.0.0.1:1053` / `[::1]:1053`。匹配窗口从 QNAME 起点开始：IPv4 为 20（IP）+ 8（UDP）+ 12（DNS 头）= 40，即 `--from 40 --to 300`；IPv6 为 40 + 8 + 12 = 60，即 `--from 60 --to 320`（假设没有扩展头，netd 的 DNS 查询不带扩展头）。窗口长 260 字节，容得下最长 255 字节的 QNAME。其他查询完全不经过代理。
+- `exit-doh`：选中出口节点，且对该节点 PeerAPI `/dns-query`（RFC 8484 DoH，Tailscale 自身的出口节点 DNS 路径）的探测返回 200。此时全部 UDP/53（IPv4 和 IPv6）交给代理。进入后每 30 s 复查一次，复查失败即改为 `exit-passthrough`；在此之前单个 DoH 查询失败时，该查询改按原目的地址转发。
+- `exit-passthrough`：选中出口节点，但探测失败（Mullvad 等节点、ACL 未授予 `autogroup:internet` DNS、节点版本过旧或没有 PeerAPI）。链内容与 `exit-doh` 相同，tailnet 名称照常解析，其他名称按原目的地址转发；每次刷新（5 s）重新探测，成功即进入 `exit-doh`。该模式不依赖 `xt_string`。
+
+`tailnet` 模式的 IPv4 规则应用失败，且 `/proc/net/ip_tables_matches` 中没有 `string`（内核没有 `xt_string`）时，未选出口节点的情况下模式为 `off`，不会改为整体接管 UDP/53；状态附加 `noString: true`，WebUI 提示内核缺少 `xt_string`。该判定在代理进程生命周期内保持，不再反复尝试 `xt_string`；其他失败（如 xtables 锁超时）视为暂时性，下次刷新重试。选中出口节点时仍可进入 `exit-doh` / `exit-passthrough`（这两种模式不依赖 `xt_string`）。
+
+`exit-passthrough` 依赖 conntrack 查询。代理在首次需要时分别以 IPv4 和 IPv6 查询一个不存在的连接，返回 ENOENT 的地址族视为可用，两个地址族分别记录。其他错误（SELinux 拒绝、内核无 `CONFIG_NF_CT_NETLINK` 等）记录一行日志，此后该地址族的链不再整体重定向，只装 `tailnet` 的后缀规则（没有 `xt_string` 或没有后缀时为空），另一地址族不受影响；两个地址族都不可用时不再使用该模式：有后缀时用 `tailnet`（没有 `xt_string` 时为 `off`），否则为 `off`。
+
+整体重定向时 IPv6 链在 REDIRECT 之前有一条 `-d fe80::/10 -j RETURN`：conntrack 不含接口作用域，代理无法转发到链路本地服务器（部分路由器经 RA 下发），这类查询留在系统路径。`exit-doh` 下这些查询因此不走 DoH。
+
+代理应答规则：
+
+- MagicDNS 后缀和无解析器的 Routes 后缀：调用 LocalAPI `dns-query`（与 `100.100.100.100` 同一个进程内解析器，不依赖路由）。MagicDNS 后缀下的 SERVFAIL / REFUSED 改写为 NXDOMAIN；A、AAAA、CNAME、MX、NS、PTR、SOA、SRV、TXT 以外的类型直接回 NODATA。
+- 带解析器的 Routes 后缀：按最长后缀匹配，通过 TCP/53 转发给这些解析器。TCP 不会被 UDP 规则再次拦截，所以没有回环；套接字不加 SO_MARK，`100.x` 解析器经 table 52 进入隧道。
+- `exit-doh` 模式下的其他名称：POST 到出口节点 DoH，失败时按原目的地址转发。
+- 其他模式下的其他名称（`exit-passthrough`，以及 `tailnet` 模式下偶然命中规则的非 tailnet 查询）：按原目的地址转发。
+- 任何失败都回 SERVFAIL，非标准查询回 FORMERR；仅在 64 个并发槽占满时丢包（netd 会重试）。超过 512 字节且查询不含 EDNS 的应答截断并置 TC。
+
+### 原目的地址转发
+
+REDIRECT 改写了包头，`IP_RECVORIGDSTADDR` / `IP_ORIGDSTADDR` 报告的是改写后的 `127.0.0.1:1053`（它为 TPROXY 设计），UDP 也没有 `SO_ORIGINAL_DST`。代理因此用 conntrack netlink（`NETLINK_NETFILTER`，`IPCTNL_MSG_CT_GET`）按回复方向元组 `127.0.0.1:1053 → 客户端地址:端口` 查询连接（IPv6 监听上收到的查询用 `nfgenmsg` 族 `AF_INET6`、`CTA_IP_V6_SRC` / `CTA_IP_V6_DST` 和 `[::1]:1053`），取原方向元组的目的地址（`CTA_IP_V4_DST` 或 `CTA_IP_V6_DST`）和端口，以及连接 mark（`CTA_MARK`）。查不到或结果仍是回环地址的 1053 端口时回 SERVFAIL。
+
+转发使用与原目的地址同族的新 UDP socket（`udp4` / `udp6`），`SO_MARK=0x10020000 | (连接 mark & 0x1ffff)`（`SOL_SOCKET` 选项，与地址族无关）：bypass 位与受保护位同 tailscaled 外层 socket，低 17 位是链中 CONNMARK 保存的 netd netId 与显式选择位。带 bypass 位的包跳过 12500 / 13001 与 table 52，再由 Android 显式网络规则（16000）按 netd 为该查询选择的网络出网（例如正在验证的 Wi-Fi），没有 netId 时按默认网络；源地址在 connect 时按该路由选择；两族 nat OUTPUT 中链首的 mark RETURN 规则使它不再进入代理。netd 原本的 DNS socket 带显式选择位和 `protectedFromVpn` 位，不被 13001 捕获（见“Android 策略路由”）；REDIRECT 在 nat `OUTPUT` 完成，与路由规则无关，所以代理仍能收到这些查询。
+
+出口节点下没有 DoH 时，普通 DNS 因此从物理接口直接发往局域网或运营商解析器，不经出口节点。这是有意的：官方 Tailscale Android App 在同样情况下由 tailscaled 经 `VpnService.protect` 保护的 socket 转发到系统解析器，行为等价。代价是这些 DNS 查询对本地网络可见，解析结果按本地网络而非出口节点所在地给出。
+
+### 状态文件与状态接口
+
+代理每次刷新后写 `/data/adb/shellscaled/run/magicdns.json`（0600，先写 `.new` 再改名）：
+
+```json
+{"updated":<unix 秒>,"mode":"off|tailnet|exit-doh|exit-passthrough","enabled":true,"noString":false,"rules":true,"rules6":true,"privateDns":"off|opportunistic|hostname|unknown","upstream":"system|exit-node|passthrough","daemon":"<BackendState>","exitNode":"<prefs.ExitNodeID>"}
+```
+
+`upstream` 为 `system`（`off` / `tailnet`，普通名称不经代理）、`exit-node`（`exit-doh`）或 `passthrough`（`exit-passthrough`，按原目的地址转发）。`enabled` 是本次刷新时开关文件是否存在，`noString` 表示内核没有 `xt_string`。`rules` / `rules6` 表示 IPv4 / IPv6 nat 链内容是否按期望应用（`rules6` 在 `[::1]:1053` 无法监听或监听已停止时为 false；任一为 false 且模式不是 `off` 时，WebUI 显示 MagicDNS 规则未生效）；`-F` 或任一 `-A` 失败时该链被清空，DNS 留在系统路径而不会被黑洞，错误按不同内容各记一行到 `daemon.log`，每次刷新重试直到成功。`privateDns` 每 30 秒用只读的 `cmd settings get global private_dns_mode` 读取。`daemon` / `exitNode` 记录本次决定所依据的 BackendState（LocalAPI 失败时为空）和 prefs 中的出口节点 ID（未选择或未 Running 时为空）；除此之外文件不含后缀、查询名、PeerAPI 地址或解析器地址。RPC `status` 响应的 `magicDNS` 字段转发这些值，并以 `updated` 在 20 秒内作为 `running`；`running` 时若 `enabled` 与当前开关不同、`daemon` 与当前 BackendState 不同，或 Running 时 `exitNode` 与当前 prefs 不同，则附加 `pending: true`，WebUI 显示“MagicDNS 正在更新…”并在 2 秒后重新拉取状态，而不是显示旧模式。连接 / 断开和切换出口节点后 helper 都会用 SIGUSR1 让代理立即刷新。
+
+### 限制
+
+- Private DNS 为指定主机名，或自动模式下 DoT 验证成功时，netd 使用 tcp/853，不产生 UDP/53，tailnet 名称无法解析。模块不修改 Private DNS，也不阻断 DoT。
+- 自带 DoH 的应用（如 Chrome 安全 DNS）绕过拦截。
+- 不解析短名称（只解析完整 FQDN）。
+- 不拦截 TCP/53 查询。
+- 开启 MagicDNS 之前刚查询失败的 tailnet 名称，开启后仍会失败几分钟：Android 的 DNS resolver 缓存了否定应答，模块无法清除该缓存（`ndc resolver flushnet` 在新版 Android 上已不可用）。两台实机上缓存都在数分钟内过期。
+- IPv6 nat 链应用失败（`rules6` 为 false，例如内核缺少 IPv6 NAT）时，IPv6 DNS 留在系统路径：tailnet 名称在 IPv6 优先的网络上失败；出口节点下 IPv6 DNS 进入隧道，通常不可达。
+- 发往 IPv6 链路本地 DNS 服务器（`fe80::/10`）的 tailnet 名称查询只在 `tailnet` 模式下被拦截；整体重定向的模式中这类查询留在系统路径。
+- 系统解析器若本身是 `100.x` 地址，带 bypass mark 的转发无法进入隧道。其他 VPN App 的解析器经显式规则路由，是否可达取决于该 VPN 对 root 与受保护 socket 的 UID 规则。
+- WebUI 之外（命令行、其他客户端）改变出口节点时，在下一次刷新（5 秒内）生效。
+- `xt_string`、`xt_mark`、conntrack netlink 查询（SELinux 与内核 `CONFIG_NF_CT_NETLINK`，IPv4 与 IPv6）、IPv4 / IPv6 REDIRECT 回包路径（`[::1]` 应答经 conntrack 还原为原服务器地址）和各厂商 `nat OUTPUT` 中先于本模块跳转的终止规则都需要在设备上确认。
+
+### 设备验收清单
+
+- `iptables -t nat -S shellscaled_dns` 和 `ip6tables -t nat -S shellscaled_dns`
+- `ip6tables -t nat -L shellscaled_dns -n -v` 在 IPv6 优先的网络上解析 tailnet 名称后，后缀规则的计数增加
+- `ss -ulpn | grep 1053`（或 `netstat -ulpn`）同时有 `127.0.0.1:1053` 和 `[::1]:1053`
+- `cat /data/adb/shellscaled/run/magicdns.json`
+- `cmd settings get global private_dns_mode`
+- `ping -c1 <host>.<suffix>`
+- 结束代理进程后普通网页仍可访问
+- 选择出口节点后普通网页可访问；分别用支持和不支持 DoH 的出口节点检查 `mode` 为 `exit-doh` / `exit-passthrough`
+- `exit-passthrough` 下 `daemon.log` 没有 conntrack 错误，`ping` 公共域名成功；在 IPv6 优先 DNS 的双栈蜂窝网络下重复一次
 
 默认 `netfilter-mode=off`，避免向 Android 的防火墙链插入桌面 Linux 规则。网络角色操作保留现有 NetfilterMode，严格反向路径检查设备的限制见“出口节点”一节。普通本机 Tailnet 连通与转发场景分别验收；没有转发验证不能宣称热点、子网路由器或出口节点可用。
 
@@ -43,6 +132,14 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 选择获批准的出口节点后，tailscaled 在 table 52 计算 IPv4 / IPv6 默认路由；下文 IPv6 开关可以移除 IPv6 默认路由。默认路由存在时，13001 后备规则只接管未显式绑定网络、未受保护且不含自有 bypass 位的流量；匹配更早的 Android UID / VPN 规则的流量仍按该规则处理。显式绑定或 protected socket、tailscaled 自身 `0x10020000` socket 保留 Android 路由。出口节点离线时隧道内流量可能不可达，不能把规则安装视为端到端连接成功，也不保证所有流量都经过出口节点。
 
 `exit-node-allow-lan-access` 开启时，本地接口前缀可以成为 table 52 的 throw 路由，查表失败后继续 Android 后续规则；关闭时，上游可能把这些前缀送入出口节点。它不会改变显式选网、protected 或 UID 规则。[Android 17 NetworkController](https://android.googlesource.com/platform/system/netd/+/android-17.0.0_r1/server/NetworkController.cpp) 和 [DnsResolver](https://android.googlesource.com/platform/packages/modules/DnsResolver/+/android-17.0.0_r1/res_send.cpp) 会给网络解析请求的 UDP / TCP socket 设置受保护 DNS mark；新版后备 mask 排除这类流量，不能再把 Android 网络 DNS 笼统视为出口节点流量。
+
+### DNS
+
+`accept-dns=false` 时 quad-100 解析器只回答 MagicDNS 节点名，不向任何上游转发（`dnsConfigForNetmap` 在 CorpDNS 关闭时提前返回），因此出口节点下的普通 DNS 无法由 tailscaled 提供。开启 MagicDNS 后，出口节点下由下述代理整体接管 UDP/53；未开启时普通 DNS 照常由 netd 发往当前网络的解析器，不经过出口节点，WebUI 在网络角色卡片中提示这一点。
+
+开启 MagicDNS 时，出口节点下的 DNS 由代理处理：出口节点的 PeerAPI DoH 探测成功时进入 `exit-doh`，普通名称经出口节点解析；探测失败时进入 `exit-passthrough`，普通名称由代理带 `SO_MARK=0x10020000` 转发给系统原本选定的解析器，绕过 12500/13001 与 table 52，与 allow-LAN 设置无关（见上文 MagicDNS 机制与原目的地址转发）。tailnet 名称始终走 LocalAPI `dns-query`，不受 mark 影响。
+
+模块判定“出口节点生效”的条件与状态字段 `exitNodeConfigured` 相同：prefs 中 `ExitNodeID != ""`，或 `ExitNodeIP` 非空且不等于 `invalid IP`。WebUI 始终提交 StableNodeID，因此 `ExitNodeStatus.ID` 可用于判定。
 
 ### NetfilterMode
 
@@ -82,7 +179,7 @@ ls -l /data/adb/shellscaled/exit-node-ipv6-local
 ip route get 1.1.1.1 uid 10123                 # 结果取决于实际 UID / VPN 规则
 ```
 
-开启出口节点后分别在 Wi-Fi 和蜂窝下解析公共域名、打开网页、确认 IP 查询站点显示出口节点地址；关闭出口机器后应显示离线提示，“关闭出口节点”一次即可恢复。
+开启出口节点后分别在 Wi-Fi 和蜂窝下解析公共域名、打开网页、确认 IP 查询站点显示出口节点地址、解析 MagicDNS 名称；关闭出口机器后应显示离线提示，“关闭出口节点”一次即可恢复。
 
 ## 上游与维护
 

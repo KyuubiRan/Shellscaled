@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -58,32 +59,35 @@ type request struct {
 	AdvertiseRoutes   *string        `json:"advertiseRoutes,omitempty"`
 	AdvertiseExitNode *bool          `json:"advertiseExitNode,omitempty"`
 	ExitNodeIPv6      *bool          `json:"exitNodeIPv6,omitempty"`
+	MagicDNSEnabled   *bool          `json:"magicDNSEnabled,omitempty"`
 	Settings          *settingsPatch `json:"settings,omitempty"`
 }
 
 type response struct {
-	OK                   bool          `json:"ok"`
-	State                string        `json:"state,omitempty"`
-	Version              string        `json:"version,omitempty"`
-	IPs                  []string      `json:"ips,omitempty"`
-	Settings             settings      `json:"settings"`
-	DaemonRunning        bool          `json:"daemonRunning"`
-	ExitNodeConfigured   bool          `json:"exitNodeConfigured"`
-	ExitNodeOnline       *bool         `json:"exitNodeOnline,omitempty"`
-	ExitNodeIPv6         *bool         `json:"exitNodeIPv6,omitempty"`
-	ExitNodeIPv6Takeover bool          `json:"exitNodeIPv6Takeover"`
-	LoginURL             string        `json:"loginURL,omitempty"`
-	Error                string        `json:"error,omitempty"`
-	ExitCode             int           `json:"exitCode"`
-	Stdout               string        `json:"stdout,omitempty"`
-	Stderr               string        `json:"stderr,omitempty"`
-	Truncated            bool          `json:"truncated,omitempty"`
-	Devices              *[]device     `json:"devices,omitempty"`
-	ExitNodeTarget       string        `json:"exitNodeTarget,omitempty"`
-	AdvertiseExitNode    bool          `json:"advertiseExitNode"`
-	AdvertiseRoutes      []string      `json:"advertiseRoutes,omitempty"`
-	Binary               *binaryStatus `json:"binary,omitempty"`
-	UpdateChannel        string        `json:"updateChannel,omitempty"`
+	OK                   bool           `json:"ok"`
+	State                string         `json:"state,omitempty"`
+	Version              string         `json:"version,omitempty"`
+	IPs                  []string       `json:"ips,omitempty"`
+	Settings             settings       `json:"settings"`
+	DaemonRunning        bool           `json:"daemonRunning"`
+	ExitNodeConfigured   bool           `json:"exitNodeConfigured"`
+	ExitNodeOnline       *bool          `json:"exitNodeOnline,omitempty"`
+	ExitNodeIPv6         *bool          `json:"exitNodeIPv6,omitempty"`
+	ExitNodeIPv6Takeover bool           `json:"exitNodeIPv6Takeover"`
+	MagicDNSEnabled      bool           `json:"magicDNSEnabled"`
+	LoginURL             string         `json:"loginURL,omitempty"`
+	Error                string         `json:"error,omitempty"`
+	ExitCode             int            `json:"exitCode"`
+	Stdout               string         `json:"stdout,omitempty"`
+	Stderr               string         `json:"stderr,omitempty"`
+	Truncated            bool           `json:"truncated,omitempty"`
+	Devices              *[]device      `json:"devices,omitempty"`
+	ExitNodeTarget       string         `json:"exitNodeTarget,omitempty"`
+	AdvertiseExitNode    bool           `json:"advertiseExitNode"`
+	AdvertiseRoutes      []string       `json:"advertiseRoutes,omitempty"`
+	Binary               *binaryStatus  `json:"binary,omitempty"`
+	UpdateChannel        string         `json:"updateChannel,omitempty"`
+	MagicDNS             *magicDNSState `json:"magicDNS,omitempty"`
 }
 
 // Deliberately decode only UI fields. Never return prefs.Persist or account data.
@@ -240,7 +244,7 @@ func (b *backend) status(ctx context.Context) response {
 }
 
 func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
-	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), ExitNodeIPv6Takeover: exitNodeIPv6Takeover()}
+	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), ExitNodeIPv6Takeover: exitNodeIPv6Takeover(), MagicDNS: readMagicDNSState(magicDNSStatePath, time.Now()), MagicDNSEnabled: magicDNSEnabled()}
 	var st localStatus
 	if err := b.api(ctx, "GET", "status?peers=false", nil, &st); err != nil {
 		if _, statErr := os.Stat(socketPath); statErr == nil {
@@ -264,6 +268,10 @@ func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
 	}
 	st.controlURL = p.ControlURL
 	r.Settings = settings{p.RouteAll, p.ShieldsUp, p.ExitNodeAllowLANAccess}
+	// The proxy refreshes every 5 s; until then its mode reflects older state.
+	if m := r.MagicDNS; m != nil && m.Running && (m.Enabled != r.MagicDNSEnabled || m.Daemon != st.BackendState || (st.BackendState == "Running" && m.ExitNode != p.ExitNodeID)) {
+		m.Pending = true
+	}
 	r.ExitNodeConfigured = p.ExitNodeID != "" || (p.ExitNodeIP != "" && p.ExitNodeIP != "invalid IP")
 	if p.ExitNodeID != "" {
 		r.ExitNodeTarget = boundedText(p.ExitNodeID, 128)
@@ -588,6 +596,7 @@ func (b *backend) connection(ctx context.Context, up bool) response {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+	nudgeMagicDNS()
 	return r
 }
 
@@ -700,12 +709,29 @@ func (b *backend) setExitNode(ctx context.Context, target string) response {
 	if err := b.api(ctx, "PATCH", "prefs", p, nil); err != nil {
 		return failed(err.Error())
 	}
+	nudgeMagicDNS()
 	return b.status(ctx)
 }
 
 func exitNodeIPv6Takeover() bool {
 	_, err := os.Stat(exitNodeIPv6LocalFile)
 	return err != nil
+}
+
+// setMagicDNS persists the MagicDNS opt-in; the proxy applies it at once.
+func (b *backend) setMagicDNS(ctx context.Context, enabled bool) response {
+	if enabled {
+		if err := os.MkdirAll(filepath.Dir(magicDNSEnabledFile), 0700); err != nil {
+			return failed("无法保存 MagicDNS 设置")
+		}
+		if err := os.WriteFile(magicDNSEnabledFile, []byte("1\n"), 0600); err != nil {
+			return failed("无法保存 MagicDNS 设置")
+		}
+	} else if err := os.Remove(magicDNSEnabledFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return failed("无法保存 MagicDNS 设置")
+	}
+	nudgeMagicDNS()
+	return b.status(ctx)
 }
 
 // setExitNodeIPv6 persists the IPv6 takeover switch and asks tailscaled to
@@ -1027,6 +1053,7 @@ func decodeRequest(encoded string) (request, error) {
 		"exit-node":      {"action": true, "locale": true, "exitNode": true},
 		"exit-node-ipv6": {"action": true, "locale": true, "exitNodeIPv6": true},
 		"advertise":      {"action": true, "locale": true, "advertiseRoutes": true, "advertiseExitNode": true},
+		"magicdns":       {"action": true, "locale": true, "magicDNSEnabled": true},
 	}
 	if fields, ok := allowedFields[r.Action]; ok {
 		for key := range inputFields {
@@ -1086,6 +1113,10 @@ func decodeRequest(encoded string) (request, error) {
 			if _, err := parseAdvertiseRoutes(*r.AdvertiseRoutes); err != nil {
 				return r, err
 			}
+		}
+	case "magicdns":
+		if r.MagicDNSEnabled == nil {
+			return r, errors.New("请求参数不匹配")
 		}
 	case "settings":
 		if r.Settings == nil || r.Command != "" || r.ExitNode != "" || r.AdvertiseRoutes != nil || r.AdvertiseExitNode != nil {
@@ -1180,6 +1211,15 @@ func main() {
 		os.Exit(1)
 	}
 	b := newBackend(filepath.Dir(filepath.Dir(executable)))
+	if len(os.Args) == 2 && os.Args[1] == "magicdns-proxy" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+		defer stop()
+		if err := b.magicDNSProxy(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	if len(os.Args) == 2 && os.Args[1] == "refresh-description" {
@@ -1229,6 +1269,8 @@ func main() {
 				r = b.setExitNode(ctx, req.ExitNode)
 			case "advertise":
 				r = b.setAdvertisement(ctx, req.AdvertiseExitNode, req.AdvertiseRoutes)
+			case "magicdns":
+				r = b.setMagicDNS(ctx, *req.MagicDNSEnabled)
 			case "command":
 				r = b.command(ctx, req.Command)
 			}

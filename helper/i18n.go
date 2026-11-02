@@ -92,6 +92,7 @@ var messages = map[string][3]string{
 	"子网路由过长":                                      {"子网路由过长。", "子網路由過長。", "The subnet route list is too long."},
 	"子网路由格式无效":                                    {"请输入规范的 CIDR 子网路由；出口能力请使用出口节点开关。", "請輸入標準的 CIDR 子網路由；出口功能請使用出口節點開關。", "Enter canonical CIDR subnet routes. Use the exit node switch to advertise an exit node."},
 	"最多发布 16 条子网路由":                               {"最多发布 16 条子网路由。", "最多公布 16 條子網路由。", "Advertise up to 16 subnet routes."},
+	"无法保存 MagicDNS 设置":                            {"无法保存 MagicDNS 设置。", "無法儲存 MagicDNS 設定。", "Could not save the MagicDNS setting."},
 	"登录链接无效，请刷新后重试":                               {"登录链接无效，请刷新后重试。", "登入連結無效，請重新整理後重試。", "The sign-in link is invalid. Refresh and try again."},
 	"登录链接尚未准备好，请稍后重试":                             {"登录链接尚未准备好，请稍后重试。", "登入連結尚未準備好，請稍後重試。", "The sign-in link is not ready. Try again shortly."},
 	"无法打开登录页面，请安装或启用浏览器后重试":                       {"无法打开登录页面，请安装或启用浏览器后重试。", "無法開啟登入頁面，請安裝或啟用瀏覽器後重試。", "Could not open the sign-in page. Install or enable a browser and try again."},

@@ -48,6 +48,7 @@ public final class MainActivity extends Activity {
     private boolean acceptRoutes;
     private boolean shieldsUp;
     private boolean allowLAN;
+    private boolean magicDNS;
     private boolean nextSettingsFails;
     private boolean nextSettingsResponseFails;
     private boolean holdNextSettings;
@@ -194,7 +195,7 @@ public final class MainActivity extends Activity {
                 .put("exitNodeTarget", exitNodeTarget).put("exitNodeOnline", !exitNodeTarget.isEmpty())
                 .put("exitNodeIPv6Takeover", exitNodeIPv6Takeover).put("exitNodeIPv6", exitNodeIPv6 && !exitNodeTarget.isEmpty())
                 .put("advertiseExitNode", advertiseExitNode).put("advertiseRoutes", new JSONArray(advertiseRoutes.toString()))
-                .put("exitCode", 0)
+                .put("magicDNSEnabled", magicDNS).put("exitCode", 0)
                 .put("ips", addresses)
                 .put("settings", settings).put("updateChannel", updateChannel);
         if (!loginURL.isEmpty()) result.put("loginURL", loginURL);
@@ -470,6 +471,10 @@ public final class MainActivity extends Activity {
                                             "tailscale version".equals(request.optString("command")) ? "1.104.2\n" : "");
                             reply(callback, result);
                             return;
+                        case "magicdns":
+                            if (request.length() != 3 || !(request.get("magicDNSEnabled") instanceof Boolean)) throw new JSONException("magicdns");
+                            magicDNS = request.getBoolean("magicDNSEnabled");
+                            break;
                         default: throw new JSONException("action");
                     }
                     result = status();

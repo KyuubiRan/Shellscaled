@@ -41,10 +41,11 @@
     binaryChannel: $("binary-channel"),
     exitNodeSelect: $("exit-node-select"), exitNodeRefresh: $("network-refresh"), exitNodeApply: $("exit-node-apply"), exitNodeClear: $("exit-node-clear"),
     advertiseRoutes: $("advertise-routes"), advertiseExitNode: $("advertise-exit-node"), advertiseSave: $("advertise-save"),
-    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), exitNodeIpv6: $("exit-node-ipv6"), exitNodeIpv6Takeover: $("exit-node-ipv6-takeover"),
+    networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), exitNodeIpv6: $("exit-node-ipv6"), exitNodeIpv6Takeover: $("exit-node-ipv6-takeover"), magicDNSStatus: $("magicdns-status"), magicDNSEnabled: $("magicdns-enabled"),
     advertiseRoutesError: $("advertise-routes-error"), advertiseMessage: $("advertise-message"),
     advertiseExitDescription: $("advertise-exit-description"),
   };
+  let dnsPendingTimer = null;
   const state = {
     available: trustedEnvironment(), busy: false, busyAction: "", refreshAfterBusy: false,
     status: null, settings: null, settingsConfirmed: false, pendingSetting: null, settingsError: null,
@@ -58,7 +59,7 @@
     updateChannel: null, binaryChannelPending: null,
     networkFeedback: "", networkError: null, advertiseFeedback: "", advertiseError: null,
     networkDraft: { exitNode: null, routes: null, advertiseExitNode: null },
-    networkRequestVersion: 0, exitIpv6Pending: null,
+    networkRequestVersion: 0, exitIpv6Pending: null, magicDNSPending: null,
     exitNodes: null, exitNodesLoading: false, exitNodesError: null, exitNodesRequestVersion: 0,
   };
   let callbackSequence = 0;
@@ -558,9 +559,38 @@
     ui.exitNodeSummary.textContent = t(summary[0], { name });
     ui.exitNodeSummary.dataset.kind = summary[1];
 
+    const dns = state.status && state.status.magicDNS;
+    const mode = dns && dns.running === true && typeof dns.mode === "string" ? dns.mode : "off";
+    const suffix = dns && Array.isArray(dns.suffixes) && typeof dns.suffixes[0] === "string" ? dns.suffixes[0] : "";
+    // A stale state file means the proxy stopped while its rules may remain.
+    const stale = dns && dns.running !== true && typeof dns.mode === "string" && dns.mode !== "off";
+    const running = state.status && state.status.state === "Running";
+    // The proxy has not caught up with a connect or exit-node change yet.
+    const pending = running && dns && dns.pending === true;
+    if (pending && !dnsPendingTimer) dnsPendingTimer = setTimeout(() => { dnsPendingTimer = null; refresh(false); }, 2000);
+    const dnsLine = pending ? ["network.dnsPending", "muted"] :
+      stale ? ["network.dnsRulesFailed", "warning"] :
+      mode === "off" && dns && dns.noString === true ? ["network.dnsNoString", "warning"] :
+      mode === "off" ? ["network.dnsInactive", "info"] :
+      dns.privateDns === "hostname" ? ["network.dnsPrivateHostname", "warning"] :
+      dns.rules === false || dns.rules6 === false ? ["network.dnsRulesFailed", "warning"] :
+      dns.ipv6Fallback === true ? ["network.dnsIPv4Fallback", "warning"] :
+      state.status.exitNodeConfigured === true && !mode.startsWith("exit") ? ["network.dnsNotViaExit", "warning"] :
+      mode === "exit-passthrough" ? ["network.dnsExitPassthrough", "warning"] :
+      mode.startsWith("exit") ? ["network.dnsViaExit", "info"] :
+      [suffix ? "network.dnsActive" : "network.dnsActiveNoSuffix", "info"];
+    const dnsHint = dnsLine[1] === "info" && mode !== "off" && dns.privateDns === "opportunistic" ? (I18n.locale() === "en" ? " " : "") + t("network.dnsPrivateAuto") : "";
+    const dnsOn = magicDNSOn();
+    ui.magicDNSEnabled.checked = dnsOn;
+    // Off by default: nothing is redirected. Say so only when an exit node is
+    // in use, since ordinary DNS then stays on the current network.
+    const dnsOffLine = !dnsOn && !stale && state.status && state.status.exitNodeConfigured === true ? t("network.dnsOffExit") : "";
+    setLocalMessage(ui.magicDNSStatus, !running ? "" : dnsOn || stale ? t(dnsLine[0], { suffix }) + dnsHint : dnsOffLine, dnsOn || stale ? dnsLine[1] : "warning");
+
     const text = state.networkError ? t("network.failed") + " " + viewText(state.networkError) :
       state.busyAction === "exit-node" ? t("network.applying") :
       state.busyAction === "exit-ipv6" ? t("network.ipv6Applying") :
+      state.busyAction === "magicdns" ? t("network.magicDNSApplying") :
       state.exitNodesLoading && !state.exitNodes ? t("network.loading") :
       state.exitNodesError ? t("network.loadFailed") + " " + viewText(state.exitNodesError) :
       state.networkFeedback === "saved" ? t("network.saved") :
@@ -592,6 +622,39 @@
     setLocalMessage(ui.advertiseMessage, state.advertiseError ? t("network.advertiseFailed") + " " + viewText(state.advertiseError) :
       state.advertiseFeedback === "saved" ? t("network.advertiseSaved") : "", state.advertiseError ? "error" : "info");
     ui.advertiseExitDescription.textContent = t(exitAdvertisementBlocked() ? "network.exitAdvertisementBlocked" : "network.exitAdvertisementDescription");
+  }
+
+  function magicDNSOn() {
+    return state.magicDNSPending !== null ? state.magicDNSPending : Boolean(state.status && state.status.magicDNSEnabled === true);
+  }
+
+  async function applyMagicDNS(enabled) {
+    if (state.busy || !state.available || !state.pageActive || !state.status || enabled === magicDNSOn()) {
+      updateControls();
+      return;
+    }
+    const version = ++state.networkRequestVersion;
+    state.busy = true;
+    state.busyAction = "magicdns";
+    state.magicDNSPending = enabled;
+    state.networkError = null;
+    state.networkFeedback = "";
+    updateControls();
+    try {
+      const result = requireSuccess(await rpc({ action: "magicdns", magicDNSEnabled: enabled }));
+      if (!state.pageActive || version !== state.networkRequestVersion) return;
+      state.magicDNSPending = null;
+      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+    } catch (error) {
+      if (state.pageActive && version === state.networkRequestVersion) {
+        state.networkError = errorView(error);
+        state.refreshAfterBusy = true;
+        markFreshness("verify");
+      }
+    } finally {
+      state.magicDNSPending = null;
+      finishBusy();
+    }
   }
 
   function exitIpv6Takeover() {
@@ -942,6 +1005,7 @@
     ui.exitNodeClear.disabled = !state.available || !state.pageActive || state.busy || !exitNodeConfigured;
     ui.advertiseRoutes.disabled = networkDisabled;
     ui.exitNodeIpv6Takeover.disabled = disabled || !state.status;
+    ui.magicDNSEnabled.disabled = disabled || !state.status;
     ui.advertiseExitNode.disabled = networkDisabled || (exitAdvertisementBlocked() && draft.advertiseExitNode !== true);
     ui.advertiseSave.disabled = networkDisabled || (draft.routes === null && draft.advertiseExitNode === null) ||
       (draft.advertiseExitNode === true && exitAdvertisementBlocked()) ||
@@ -1437,6 +1501,7 @@
   });
   ui.advertiseSave.addEventListener("click", saveAdvertisement);
   ui.exitNodeIpv6Takeover.addEventListener("change", () => applyExitIpv6(ui.exitNodeIpv6Takeover.checked));
+  ui.magicDNSEnabled.addEventListener("change", () => applyMagicDNS(ui.magicDNSEnabled.checked));
   ui.exitNodeSelect.addEventListener("change", () => {
     state.networkDraft.exitNode = ui.exitNodeSelect.value;
     state.networkFeedback = "";
