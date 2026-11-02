@@ -7,10 +7,10 @@
   const backend = () => JSON.parse(fixture.statusJSON());
   const assert = (value, label = "assertion") => { if (!value) throw new Error(label); };
   const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error|network)\.[A-Za-z0-9.]+$/;
-  async function until(predicate) {
+  async function until(predicate, label = "timeout") {
     const end = Date.now() + 6000;
     while (!predicate()) {
-      if (Date.now() > end) throw new Error("timeout");
+      if (Date.now() > end) throw new Error(label);
       await wait(25);
     }
   }
@@ -27,7 +27,7 @@
     }
   }
   function click(id) {
-    assert($(id) && !$(id).disabled);
+    assert($(id) && !$(id).disabled, "click-ready-" + id);
     $(id).click();
   }
   async function refresh() {
@@ -80,7 +80,11 @@
     fixture.setNetworkRole(target, advertised, routes);
     await refresh();
     click("tab-settings");
-    await until(() => !$("exit-node-select").disabled);
+    // A cached list keeps the select usable while entering Settings refreshes
+    // exit-nodes independently of the status/busy queue. Start each held-read
+    // scenario only after that initial refresh has finished.
+    await until(() => !$("exit-node-select").disabled && !$("network-refresh").disabled &&
+      $("network-refresh").getAttribute("aria-busy") === "false", "network-setup-ready");
   }
   async function networkTest(name, body) {
     await test(name, async () => {
@@ -406,10 +410,10 @@
       fixture.releaseExitNodes(1);
       await until(() => !$("exit-node-select").disabled);
       const option = () => [...$("exit-node-select").options].find((value) => value.value === "fixture-workstation");
-      assert(option() && !option().disabled);
+      assert(option() && !option().disabled, "fresh-exit-list-online");
       fixture.releaseExitNodes(0);
       await wait(100);
-      assert(option() && !option().disabled && $("network-refresh").getAttribute("aria-busy") === "false");
+      assert(option() && !option().disabled && $("network-refresh").getAttribute("aria-busy") === "false", "stale-exit-list-ignored");
     });
 
     await networkTest("network-write-page-lifecycle-requires-fresh-status", async () => {
@@ -1163,7 +1167,7 @@
       await idle();
       click("tab-settings");
       assert(binaryRequests().length === 0 && !$("binary-action").disabled);
-      assert(document.querySelectorAll(".binary-actions button").length === 1);
+      assert($("binary-update-card").querySelectorAll(".binary-actions button").length === 1, "single-binary-card-action");
       assert(!$("binary-check") && !$("binary-update") && binaryLabel() === ShellscaledI18n.t("binary.check"));
       await language("en");
       click("tab-overview");
