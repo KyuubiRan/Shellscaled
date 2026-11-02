@@ -8,9 +8,9 @@ Shellscaled 直接通过 root 打开 `/dev/net/tun`，由 tailscaled 管理 `tai
 
 ## fwmark 与受保护 socket
 
-[AOSP Fwmark.h](https://android.googlesource.com/platform/system/netd/+/refs/heads/main/include/Fwmark.h) 将低 16 位用于 netId，第 16 位用于显式网络选择，第 17 位用于 `protectedFromVpn`，第 18–19 位用于权限，第 20 位用于计费标记。不能直接照搬桌面 Linux 的 Tailscale mark 分配。
+[AOSP Fwmark.h](https://android.googlesource.com/platform/system/netd/+/android-17.0.0_r1/include/Fwmark.h) 将低 16 位用于 netId，第 16 位用于显式网络选择，第 17 位用于 `protectedFromVpn`，第 18–19 位用于权限，第 20 位用于计费标记。不能直接照搬桌面 Linux 的 Tailscale mark 分配。
 
-Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socket 使用 `SO_MARK=0x10020000`，包含自有 bypass 位和 Android 的受保护位。路由匹配只检查自有 mask 内的 `0x10000000`，保留 netd 的低位语义。原生 VPN App 通常通过 [VpnService.protect](https://developer.android.com/reference/android/net/VpnService#protect(int)) 请求同类保护，root daemon 使用 socket mark 完成。
+Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socket 使用 `SO_MARK=0x10020000`，包含自有 bypass 位和 Android 的受保护位。table 52 的后备规则匹配 `fwmark 0x0/0x10030000`：自有 bypass 位、显式选网位（16）或受保护位（17）任一置位都会跳过此规则，继续使用 Android 的路由。原生 VPN App 通常通过 [VpnService.protect](https://developer.android.com/reference/android/net/VpnService#protect(int)) 请求同类保护，root daemon 使用 socket mark 完成。
 
 模块更新检查使用 `SO_MARK=0x10000000`，只避开 Shellscaled 自己的 TUN 路由，不设置 Android 的 `protectedFromVpn` 位。因此 GitHub 请求仍可经由用户已启用的 Android VPN；只有 tailscaled 自身的外层传输使用完整的 `0x10020000` 保护标记。
 
@@ -18,9 +18,9 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 ## Android 策略路由
 
-[RouteController.h](https://android.googlesource.com/platform/system/netd/+/refs/heads/main/server/RouteController.h) 定义了 AOSP 策略优先级；[RouteController.cpp](https://android.googlesource.com/platform/system/netd/+/refs/heads/main/server/RouteController.cpp) 包含 VPN UID 范围与受保护 mark 的匹配逻辑。典型 secure VPN 优先级为 13000，非 VPN 禁止规则为 14000，显式网络为 16000，隐式网络为 23000，默认网络为 31000。设备厂商可以调整实际行为，模拟器须读取真实规则核对。
+[Android 17 RouteController.h](https://android.googlesource.com/platform/system/netd/+/android-17.0.0_r1/server/RouteController.h) 定义 secure VPN 基础优先级 13000、禁止非 VPN 规则 14000、显式网络 16000，以及 bypassable VPN 的 24000 / 27000 等基础优先级。[RouteController.cpp](https://android.googlesource.com/platform/system/netd/+/android-17.0.0_r1/server/RouteController.cpp) 的 VPN 规则还包含 UID 范围、`iif lo`、protected / explicit mark 谓词和 subpriority；不能只比较一个优先级数字。厂商实现也可能不同，验收时须读取实际规则。
 
-本移植保留 table 52，在优先级 12500 只匹配 Tailnet 的 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，并排除自有 mark。这样 Tailnet 目标可先于普通 VPN 处理。优先级 13001 的规则为非 bypass 流量查询 table 52，位于 secure VPN 之后；表中没有目标路由时，继续使用 Android 的后续规则。未选择出口节点时，不在该表安装互联网默认路由；选择出口节点后的行为见“出口节点”一节。
+本移植保留 table 52，在优先级 12500 匹配 Tailnet 的 `100.64.0.0/10` 和 `fd7a:115c:a1e0::/48`，并排除自有 bypass mark。该规则早于 Android 17 secure VPN 的基础优先级。13001 后备规则只匹配 `fwmark 0x0/0x10030000`；它早于 bypassable VPN 基础优先级，且不能笼统认为晚于所有带 subpriority 的 secure VPN 规则。查表没有目标路由时继续使用 Android 后续规则；未选择出口节点时，该表没有互联网默认路由。
 
 这意味着普通 Tailnet 地址和其他子网路由具有不同优先级。显式绑定到网络的 socket、更高优先级的 UID 规则、VPN lockdown 或其他 root 模块可能影响结果；不能据此推断所有 VPN 都兼容。出口节点也需要单独验收，不能从普通 Tailnet 共存测试推广。
 
@@ -32,7 +32,7 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 默认 `accept-dns=false`，DNS 配置器拒绝接管系统 DNS，不使用旧 fork 的全局 UDP 53 DNAT。保留 netd、Private DNS 与已有 VPN 的解析策略。CGO 构建使用 Android bionic 解析，避免依赖不存在的 Linux `/etc/resolv.conf`。因此本期不提供系统 MagicDNS，也不宣称实现 Tailscale 的分域 DNS。
 
-默认 `netfilter-mode=off`，避免向 Android 的防火墙链插入桌面 Linux 规则；唯一例外见“出口节点”一节的 NetfilterMode 规则。普通本机 Tailnet 连通与转发场景分别验收；没有转发验证不能宣称热点、子网路由器或出口节点可用。
+默认 `netfilter-mode=off`，避免向 Android 的防火墙链插入桌面 Linux 规则。网络角色操作保留现有 NetfilterMode，严格反向路径检查设备的限制见“出口节点”一节。普通本机 Tailnet 连通与转发场景分别验收；没有转发验证不能宣称热点、子网路由器或出口节点可用。
 
 [Android SELinux 文档](https://source.android.com/docs/security/features/selinux) 明确指出 root 也受强制访问控制约束。模拟器测试保持 enforcing，并检查 AVC；不能用切换 permissive 代替权限适配。
 
@@ -40,40 +40,33 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 ### 路由
 
-选择出口节点后，tailscaled 无论 NetfilterMode 取值都会向 table 52 强制写入 `0.0.0.0/0` 和 `::/0`（即使对端未发布出口路由，也宁可黑洞不泄漏）。`::/0` 是否写入由下文“IPv6”一节的开关决定（默认写入）。优先级 13001 的规则（见“Android 策略路由”）因此让所有不带 bypass 位的流量进入隧道，只有 tailscaled 自身带 `0x10020000` 的传输 socket 绕过。
+选择获批准的出口节点后，tailscaled 在 table 52 计算 IPv4 / IPv6 默认路由；下文 IPv6 开关可以移除 IPv6 默认路由。默认路由存在时，13001 后备规则只接管未显式绑定网络、未受保护且不含自有 bypass 位的流量；匹配更早的 Android UID / VPN 规则的流量仍按该规则处理。显式绑定或 protected socket、tailscaled 自身 `0x10020000` socket 保留 Android 路由。出口节点离线时隧道内流量可能不可达，不能把规则安装视为端到端连接成功，也不保证所有流量都经过出口节点。
 
-`exit-node-allow-lan-access` 关闭时，手机自身各接口的前缀（Wi-Fi 局域网 /24、蜂窝前缀、全局 IPv6 /64、`fe80::/64`）也作为路由装入 `tailscale0`，局域网网关和局域网 DNS 都经出口节点转发而不可达。开启时这些前缀变为 table 52 中的 throw 路由，查表失败后继续走 Android 后续规则。throw 只覆盖接口前缀：不在本链路前缀内的运营商 DNS 或公共解析器仍经隧道。
+`exit-node-allow-lan-access` 开启时，本地接口前缀可以成为 table 52 的 throw 路由，查表失败后继续 Android 后续规则；关闭时，上游可能把这些前缀送入出口节点。它不会改变显式选网、protected 或 UID 规则。[Android 17 NetworkController](https://android.googlesource.com/platform/system/netd/+/android-17.0.0_r1/server/NetworkController.cpp) 和 [DnsResolver](https://android.googlesource.com/platform/packages/modules/DnsResolver/+/android-17.0.0_r1/res_send.cpp) 会给网络解析请求的 UDP / TCP socket 设置受保护 DNS mark；新版后备 mask 排除这类流量，不能再把 Android 网络 DNS 笼统视为出口节点流量。
 
 ### NetfilterMode
 
-出口节点的路由在 off / nodivert / on 三种模式下完全相同，客户端不需要 netfilter。on 唯一与客户端相关的作用是 connmark 回写加 `net.ipv4.conf.all.src_valid_mark=1`：table 52 有默认路由后，严格 rp_filter 以 mark 0 校验 tailscaled 的 WireGuard / DERP 回包，13001 不带源地址条件，会把查找送入 `tailscale0`，回包被当作 martian 丢弃，隧道随之中断。
+出口节点的路由配置与 NetfilterMode 是不同设置。上游 on 模式会安装完整 `ts-input` / `ts-forward` 及 connmark 规则，并写入 `src_valid_mark`；其中拒绝来自非 tailscale 接口的 `100.64.0.0/10` 源地址规则可能影响运营商 CGNAT 网络。不能为获得 connmark 支持而自动开启整套桌面防火墙。
 
-因此应用出口节点时 helper 读取 `/proc/sys/net/ipv4/conf/*/rp_filter`（跳过 `all`、`default`、`lo`、`tailscale0`），任一接口 `max(all, iface) == 1` 时设置 `NetfilterMode=2`，否则为 0。关闭出口节点总是设置 0。代价（仅在严格 rp_filter 时承担）：
-
-- `ts-input` 的 `! -i tailscale0 -s 100.64.0.0/10 -j DROP` 可能丢弃使用 CGNAT 地址的运营商流量；
-- `ts-input` / `ts-forward` 插入 INPUT / FORWARD 第一位；
-- 全局写入 `src_valid_mark`；
-- 上游 `AddConnmarkSaveRule` 的幂等检查写死 `ctmask 0xff0000`，Android mask 不匹配，反复开启会叠加重复 mangle 规则（删除逻辑正确）。
-
-命令行白名单仍拒绝 `--netfilter-mode=on`，服务脚本首次初始化仍写 off。
+选用或停用出口节点时，helper 只修改 `ExitNodeID` / `ExitNodeIP` 及其 mask，保留 NetfilterMode 和其他偏好。严格 rp_filter 设备可能在 table 52 有默认路由时丢弃隧道回包：helper 检查各接口的 `max(all, iface)`，任一接口为 1 且现有 NetfilterMode 不为 2 时，在 PATCH 前返回明确的不支持提示。已由用户配置为 2 的设备允许继续，但不会改变该设置。模块不会自行修改全局 sysctl / iptables；首次初始化和命令行白名单仍要求 `netfilter-mode=off`。严格 rp_filter 设备的完整兼容方案尚未提供。
 
 ### 应用前检查
 
-一个已选但离线、未获批准或未发布出口路由的节点会按设计黑洞所有流量。helper 在 PATCH 前从 `status?peers=true` 中查找 `ExitNodeOption` 且在线的对端（目标可为 StableNodeID 或其 Tailscale IP，最终都写 `ExitNodeID`，`ExitNodeIP` 置空），找不到或离线即拒绝；本机正在发布出口节点时也拒绝（tailscaled 不允许同时发布和使用）。关闭出口节点不做任何查询，只发一次 PATCH。状态字段 `exitNodeOnline` 来自 `status` 的 `ExitNodeStatus`，仅在其 ID 与 prefs 的 `ExitNodeID` 一致时给出。
+已选节点离线或缺少可用出口路由时，分配到出口隧道的流量可能不可达。helper 在 PATCH 前从 `status?peers=true` 中查找 `ExitNodeOption` 且在线的对端（目标可为 StableNodeID 或其 Tailscale IP，最终都写 `ExitNodeID`，`ExitNodeIP` 置空），找不到或离线即拒绝；本机正在发布出口节点时也拒绝（tailscaled 不允许同时发布和使用）。关闭出口节点无需查询对端列表，核对本地服务后只发一次角色 PATCH，并保留防火墙偏好。状态字段 `exitNodeOnline` 来自 `status` 的 `ExitNodeStatus`，仅在其 ID 与 prefs 的 `ExitNodeID` 一致时给出。
 
 ### IPv6
 
-出口节点默认同时接管 IPv6，与上游和官方 Tailscale Android App 一致。WebUI 的“出口节点接管 IPv6”开关默认为开；关闭时 helper 创建 opt-out 文件 `/data/adb/shellscaled/exit-node-ipv6-local`：
+出口节点默认请求接管 IPv6，保留上游默认行为；实际是否有 IPv6 默认路由仍需核对。WebUI 的“出口节点接管 IPv6”开关默认为开；关闭时 helper 创建 opt-out 文件 `/data/adb/shellscaled/exit-node-ipv6-local`：
 
 - 文件不存在为开，也是默认值：选中的出口节点同时得到 `::/0`，即上游行为。
-- 文件存在（内容不限）为关：只有 `0.0.0.0/0` 进入出口节点，IPv6（包括手机自身 IPv6 接口前缀）留在物理网络。用于没有 IPv6 互联网的出口节点：这类节点对 IPv6 目标回 `Destination unreachable: No route`，开着时双栈网络上的 IPv6 连接会失败。
-- tailscaled 在每次 `ipnlocal.routerConfigLocked` 时（仅 GOOS=android）`os.Stat` 该文件，不用环境变量，不需重启守护进程；重启后保持，卸载时随 `/data/adb/shellscaled` 删除。安装和升级不创建该文件，开关保持为开。
+- 文件存在（内容不限）为关：只有 `0.0.0.0/0` 进入出口节点，IPv6（包括手机自身 IPv6 接口前缀）继续由 Android 原有网络 / VPN 策略处理。用于没有 IPv6 互联网的出口节点：这类节点对 IPv6 目标回 `Destination unreachable: No route`，开着时双栈网络上的 IPv6 连接会失败。
+- tailscaled 在每次 `ipnlocal.routerConfigLocked` 时（仅 GOOS=android）`os.Stat` 该文件，不用环境变量，不需重启守护进程；重启后保持，卸载时随 `/data/adb/shellscaled` 删除。安装和升级不会重置已有文件；首次安装默认为开。
 
-关闭时 `routerConfigLocked` 从 `rs.Routes` 去掉出口对端 AllowedIPs 带来的 `::/0`，不补 `::/0`，allow-LAN 关闭时只把 IPv4 的接口前缀装入隧道；`0.0.0.0/0`、Tailnet 与子网 IPv6 路由及上面的策略规则都不变。table 52 中没有 `::/0` 时，IPv6 查找在 13001 查表失败，继续使用 Android 的 wwan / wlan 规则并选物理源地址。过滤放在 ipnlocal 而不是 `router_linux.go` 的 `Set()`：routerCfg 不变时 wgengine 不调用 `router.Set`。
+关闭时 `routerConfigLocked` 从 `rs.Routes` 去掉出口对端 AllowedIPs 带来的 `::/0`，不补 `::/0`，allow-LAN 关闭时只把 IPv4 的接口前缀装入隧道；`0.0.0.0/0`、Tailnet 与子网 IPv6 路由及上面的策略规则都不变。table 52 中没有 `::/0` 时，IPv6 查找在 13001 查表失败，继续使用 Android 后续网络 / VPN 规则。过滤放在 ipnlocal 而不是 `router_linux.go` 的 `Set()`：routerCfg 不变时 wgengine 不调用 `router.Set`。
 
 切换后 helper 删除或写入该文件，再向 LocalAPI `POST /localapi/v0/debug?action=reconfig`（空 body）。该动作调用 `LocalBackend.authReconfig()`，routerCfg 变化后 wgengine 调用 `router.Set`，由 cidrDiff 在 table 52 增删 `::/0 dev tailscale0`。重复 PATCH 相同的 `ExitNodeID` 无效（prefs 相同时 `editPrefsLocked` 提前返回，routerCfg 相同时 Reconfig 返回 ErrNoChanges），`force-netmap-update` 也不调用 `authReconfig`。未选出口节点时该调用无副作用，文件状态在下次选择时生效。不含该动作的守护进程（CLI android-v1.104.4-r5 及更早）返回 400 `unknown action`。这类守护进程总让 `::/0` 经过出口节点，所以打开开关时 helper 视为成功；关闭时 helper 提示设置已保存、需要随本版模块发布的后台服务才能生效。
 
-状态语义：`exitNodeIPv6Takeover` 表示 opt-out 文件不存在（默认为真）；`exitNodeIPv6` 检查 `/proc/net/ipv6_route` 中是否有经 `tailscale0` 的 `::/0`。开关为开且 `exitNodeIPv6` 为假时提示 IPv6 不经过出口节点；开关为关时说明 IPv6 使用物理网络，此时 `exitNodeIPv6` 仍为真（守护进程不支持该开关）则改为提示 IPv6 仍经过出口节点。
+状态语义：`exitNodeIPv6Takeover` 表示 opt-out 文件不存在（默认为真）；`exitNodeIPv6` 检查 `/proc/net/ipv6_route` 中是否有经 `tailscale0` 的 `::/0`。开关为开且 `exitNodeIPv6` 为假时提示 IPv6 不经过出口节点；开关为关时说明 IPv6 使用当前网络，此时 `exitNodeIPv6` 仍为真（守护进程不支持该开关）则改为提示 IPv6 仍经过出口节点。
 
 开关为开时，`getV6Available()` 为假仍会使 `::/0` 被静默跳过，IPv6 流量直接出网。条件包括：netfilter runner 创建失败或不支持 IPv6、tailscaled 的 PATH 中没有 `ip6tables`、`disable_ipv6` / `disable_policy` 为 1、IPv6 策略路由不可用、`tailscale0` 禁用 IPv6。守护进程会在启动时记录 `disabling tunneled IPv6 due to ...`。模块只报告不修复（见上面的状态语义）；修复需要改 fork 或全局 sysctl，不在范围内。
 
@@ -86,7 +79,7 @@ cat /proc/sys/net/ipv4/conf/*/rp_filter
 cat /proc/sys/net/ipv6/conf/tailscale0/disable_ipv6
 grep 'disabling tunneled IPv6\|allowing exit node access to local IPs' /data/adb/shellscaled/logs/daemon.log
 ls -l /data/adb/shellscaled/exit-node-ipv6-local
-ip route get 1.1.1.1 uid 10123                 # tailscale0
+ip route get 1.1.1.1 uid 10123                 # 结果取决于实际 UID / VPN 规则
 ```
 
 开启出口节点后分别在 Wi-Fi 和蜂窝下解析公共域名、打开网页、确认 IP 查询站点显示出口节点地址；关闭出口机器后应显示离线提示，“关闭出口节点”一次即可恢复。

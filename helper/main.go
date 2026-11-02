@@ -174,6 +174,7 @@ type localPrefs struct {
 	ExitNodeID             string
 	ExitNodeIP             string
 	AdvertiseRoutes        []string
+	NetfilterMode          int
 }
 
 type backend struct {
@@ -664,7 +665,6 @@ func (b *backend) setExitNode(ctx context.Context, target string) response {
 	p := map[string]any{
 		"ExitNodeIDSet": true, "ExitNodeID": "",
 		"ExitNodeIPSet": true, "ExitNodeIP": "",
-		"NetfilterModeSet": true, "NetfilterMode": 0,
 	}
 	if target != "" {
 		if cur.AdvertiseExitNode {
@@ -685,9 +685,16 @@ func (b *backend) setExitNode(ctx context.Context, target string) response {
 			return failed("所选出口节点离线或不可用")
 		}
 		p["ExitNodeID"] = found.ID
-		// Netfilter only adds the connmark workaround for strict reverse-path filtering.
+		// Desktop netfilter changes global firewall policy. Preserve the existing
+		// mode and reject unsupported strict-rp_filter clients before changing prefs.
 		if strictReversePath() {
-			p["NetfilterMode"] = 2
+			var prefs localPrefs
+			if err := b.api(ctx, "GET", "prefs", nil, &prefs); err != nil {
+				return failed(err.Error())
+			}
+			if prefs.NetfilterMode != 2 {
+				return failed("此设备启用了严格反向路径检查，暂不支持使用出口节点")
+			}
 		}
 	}
 	if err := b.api(ctx, "PATCH", "prefs", p, nil); err != nil {
@@ -1059,6 +1066,9 @@ func decodeRequest(encoded string) (request, error) {
 			if key != "action" && key != "locale" && key != "exitNode" {
 				return r, errors.New("请求参数不匹配")
 			}
+		}
+		if value, ok := inputFields["exitNode"]; !ok || bytes.Equal(value, []byte("null")) {
+			return r, errors.New("请求参数不匹配")
 		}
 		if !validExitNodeTarget(r.ExitNode) {
 			return r, errors.New("出口节点名称或地址无效")

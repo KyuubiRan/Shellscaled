@@ -165,6 +165,7 @@ input[type="text"], input[type="search"] { display: block; width: 100%; min-widt
 .network-role-card { margin-bottom: 24px; }
 .network-select { display: block; width: 100%; min-height: 44px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); color: var(--text); font-size: 13px; }
 .network-select:disabled { opacity: .45; }
+.network-select:disabled.is-pending { opacity: 1; }
 .network-heading { margin-bottom: 0; }
 .icon-button[aria-busy="true"] svg { animation: spin .8s linear infinite; }
 .network-summary { font-size: 13px; font-weight: 650; margin: 10px 0 14px; overflow-wrap: anywhere; }

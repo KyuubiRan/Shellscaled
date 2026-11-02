@@ -177,6 +177,90 @@ func TestAdvertiseRoutesMaskedPatchPreservesRoles(t *testing.T) {
 	}
 }
 
+func TestAdvertisementUsesFreshPrefsAndOnlyChangesAdvertiseRoutes(t *testing.T) {
+	for _, editRoutes := range []bool{false, true} {
+		t.Run(strconv.FormatBool(editRoutes), func(t *testing.T) {
+			reads := 0
+			var patch map[string]any
+			current := []string{"203.0.113.0/24", "0.0.0.0/0", "::/0"}
+			b := &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+				var body any = map[string]any{"BackendState": "Running", "TailscaleIPs": []string{}}
+				switch r.Method + " " + r.URL.Path {
+				case "GET /localapi/v0/prefs":
+					reads++
+					routes := current
+					if reads == 1 {
+						// The status snapshot is older than the read just before PATCH.
+						routes = []string{"198.51.100.0/24"}
+					}
+					body = map[string]any{"AdvertiseRoutes": routes, "RouteAll": true, "ShieldsUp": true,
+						"ExitNodeAllowLANAccess": true, "NetfilterMode": 1, "CorpDNS": false,
+						"Persist": map[string]string{"PrivateNodeKey": "synthetic-role-private-marker"}}
+				case "PATCH /localapi/v0/prefs":
+					if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+						t.Fatal(err)
+					}
+					if len(patch) != 2 || patch["AdvertiseRoutesSet"] != true {
+						t.Fatalf("advertisement changed unrelated preferences: %+v", patch)
+					}
+					current = nil
+					for _, route := range patch["AdvertiseRoutes"].([]any) {
+						current = append(current, route.(string))
+					}
+				case "GET /localapi/v0/status":
+				default:
+					t.Fatal("unexpected role LocalAPI action")
+				}
+				encoded, _ := json.Marshal(body)
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(encoded))), Header: make(http.Header)}, nil
+			})}}
+			var r response
+			want := []string{"203.0.113.0/24"}
+			if editRoutes {
+				routes := "192.0.2.0/24"
+				r = b.setAdvertisement(context.Background(), nil, &routes)
+				want = []string{"0.0.0.0/0", "::/0", "192.0.2.0/24"}
+			} else {
+				exit := false
+				r = b.setAdvertisement(context.Background(), &exit, nil)
+			}
+			if !r.OK || !reflect.DeepEqual(current, want) || r.Settings != (settings{true, true, true}) {
+				t.Fatalf("fresh unrelated roles/settings were not preserved: %+v %+v", r, current)
+			}
+			encoded, _ := json.Marshal(r)
+			if strings.Contains(string(encoded), "synthetic-role-private-marker") || strings.Contains(string(encoded), "Persist") {
+				t.Fatal("role response included private preferences")
+			}
+		})
+	}
+}
+
+func TestNetworkRPCFieldBoundaries(t *testing.T) {
+	decode := func(raw string) error {
+		_, err := decodeRequest(base64.StdEncoding.EncodeToString([]byte(raw)))
+		return err
+	}
+	for _, raw := range []string{`{"action":"exit-nodes","locale":"en"}`, `{"action":"exit-node","exitNode":"nOn"}`,
+		`{"action":"exit-node","exitNode":""}`, `{"action":"exit-node-ipv6","exitNodeIPv6":false}`,
+		`{"action":"advertise","advertiseExitNode":false}`, `{"action":"advertise","advertiseRoutes":""}`,
+		`{"action":"advertise","advertiseExitNode":true,"advertiseRoutes":"192.0.2.0/24"}`} {
+		if err := decode(raw); err != nil {
+			t.Fatalf("valid explicit role request rejected: %s: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{`{"action":"exit-node"}`, `{"action":"exit-node","exitNode":null}`,
+		`{"action":"exit-node","exitNode":"nOn","exitNodeIPv6":false}`, `{"action":"exit-node","exitNode":false}`,
+		`{"action":"exit-nodes","advertiseRoutes":""}`, `{"action":"exit-node-ipv6"}`, `{"action":"exit-node-ipv6","exitNodeIPv6":null}`,
+		`{"action":"exit-node-ipv6","exitNodeIPv6":false,"settings":null}`, `{"action":"exit-node-ipv6","exitNodeIPv6":"false"}`,
+		`{"action":"advertise"}`, `{"action":"advertise","advertiseExitNode":null}`, `{"action":"advertise","advertiseRoutes":null}`,
+		`{"action":"advertise","advertiseRoutes":"192.0.2.0/24","command":null}`, `{"action":"advertise","AdvertiseExitNode":true}`,
+		`{"action":"advertise","advertiseExitNode":true,"url":"https://example.invalid/"}`} {
+		if err := decode(raw); err == nil {
+			t.Fatalf("malformed/mixed role request accepted: %s", raw)
+		}
+	}
+}
+
 func writeProcFile(t *testing.T, root, name, value string) {
 	t.Helper()
 	path := filepath.Join(root, name)
@@ -216,11 +300,12 @@ func TestSetExitNodeUsesMaskedPrefs(t *testing.T) {
 	procRoot = root
 	var patches []map[string]any
 	b := exitNodeBackend(t, `{"ExitNodeID":"old","RouteAll":true}`, &patches)
-	check := func(target string, all, wlan, wantMode int, wantID string) {
+	check := func(target string, all, wlan, currentMode int, wantID string) {
 		t.Helper()
 		writeProcFile(t, root, "sys/net/ipv4/conf/all/rp_filter", strconv.Itoa(all))
 		writeProcFile(t, root, "sys/net/ipv4/conf/wlan0/rp_filter", strconv.Itoa(wlan))
 		patches = nil
+		b := exitNodeBackend(t, `{"ExitNodeID":"old","RouteAll":true,"NetfilterMode":`+strconv.Itoa(currentMode)+`}`, &patches)
 		if r := b.setExitNode(context.Background(), target); !r.OK {
 			t.Fatalf("setExitNode(%q) failed: %s", target, r.Error)
 		}
@@ -228,11 +313,11 @@ func TestSetExitNodeUsesMaskedPrefs(t *testing.T) {
 			t.Fatalf("want one patch, got %+v", patches)
 		}
 		p := patches[0]
-		if p["ExitNodeID"] != wantID || p["ExitNodeIP"] != "" || p["NetfilterMode"] != float64(wantMode) ||
-			p["ExitNodeIDSet"] != true || p["ExitNodeIPSet"] != true || p["NetfilterModeSet"] != true {
+		if len(p) != 4 || p["ExitNodeID"] != wantID || p["ExitNodeIP"] != "" ||
+			p["ExitNodeIDSet"] != true || p["ExitNodeIPSet"] != true {
 			t.Fatalf("unexpected patch for %q (rp_filter %d/%d): %+v", target, all, wlan, p)
 		}
-		for _, key := range []string{"ExitNodeAllowLANAccessSet", "CorpDNSSet", "RouteAllSet", "AdvertiseRoutesSet", "AutoExitNodeSet"} {
+		for _, key := range []string{"NetfilterMode", "NetfilterModeSet", "ExitNodeAllowLANAccessSet", "CorpDNSSet", "RouteAllSet", "AdvertiseRoutesSet", "AutoExitNodeSet"} {
 			if _, ok := p[key]; ok {
 				t.Fatalf("patch must not touch %s: %+v", key, p)
 			}
@@ -241,8 +326,24 @@ func TestSetExitNodeUsesMaskedPrefs(t *testing.T) {
 	check("nOn", 0, 0, 0, "nOn")
 	check("100.64.0.2", 0, 0, 0, "nOn")
 	check("nOn", 2, 1, 0, "nOn")
+	check("nOn", 0, 0, 1, "nOn")
 	check("nOn", 0, 1, 2, "nOn")
-	check("", 0, 1, 0, "")
+	for _, mode := range []int{0, 1, 2} {
+		check("", 0, 1, mode, "")
+	}
+	for _, mode := range []int{0, 1} {
+		patches = nil
+		strict := exitNodeBackend(t, `{"NetfilterMode":`+strconv.Itoa(mode)+`}`, &patches)
+		r := strict.setExitNode(context.Background(), "nOn")
+		if r.OK || r.Error != "此设备启用了严格反向路径检查，暂不支持使用出口节点" || len(patches) != 0 {
+			t.Fatalf("strict-rp_filter mode %d must fail without changing preferences: %+v %+v", mode, r, patches)
+		}
+		for _, locale := range []string{"zh-CN", "zh-TW", "en"} {
+			if message := localizedError(r.Error, locale); message == "" || locale == "en" && !strings.Contains(message, "reverse-path") {
+				t.Fatal("strict-rp_filter restriction lacks a native translation")
+			}
+		}
+	}
 
 	for _, target := range []string{"nOff", "nPlain", "nMissing", "100.64.0.9"} {
 		patches = nil

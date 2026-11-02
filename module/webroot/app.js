@@ -416,7 +416,7 @@
     }
     if (device.exitNodeOption) {
       const role = document.createElement("span");
-      role.className = "badge device-self";
+      role.className = "badge device-role";
       role.textContent = t(device.exitNode ? "network.active" : "network.exitNode");
       badges.appendChild(role);
     }
@@ -612,9 +612,10 @@
     updateControls();
     try {
       const result = requireSuccess(await rpc({ action: "exit-node-ipv6", exitNodeIPv6: enabled }));
+      const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
       if (!state.pageActive || version !== state.networkRequestVersion) return;
       state.exitIpv6Pending = null;
-      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+      renderStatus(status);
     } catch (error) {
       if (state.pageActive && version === state.networkRequestVersion) {
         state.networkError = errorView(error);
@@ -682,6 +683,7 @@
 
   async function applyExitNode(target) {
     if (state.busy || !state.available || !state.pageActive || (target !== "" && !state.settingsConfirmed)) return;
+    const submittedDraft = state.networkDraft.exitNode;
     const version = ++state.networkRequestVersion;
     state.busy = true;
     state.busyAction = "exit-node";
@@ -690,9 +692,10 @@
     updateControls();
     try {
       const result = requireSuccess(await rpc({ action: "exit-node", exitNode: target }));
+      const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
       if (!state.pageActive || version !== state.networkRequestVersion) return;
-      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
-      state.networkDraft = { ...state.networkDraft, exitNode: null, ...(target ? { advertiseExitNode: null } : {}) };
+      if (state.networkDraft.exitNode === submittedDraft) state.networkDraft.exitNode = null;
+      renderStatus(status);
       state.networkFeedback = "saved";
       state.exitNodesLoading = false;
       loadExitNodes();
@@ -709,13 +712,15 @@
 
   async function saveAdvertisement() {
     if (state.busy || !state.available || !state.pageActive || !state.settingsConfirmed) return;
-    const routes = ui.advertiseRoutes.value.trim();
-    const advertiseExitNode = ui.advertiseExitNode.checked;
-    if (validateRoutes(routes)) {
-      state.networkDraft.routes = ui.advertiseRoutes.value;
+    const draft = { ...state.networkDraft };
+    if (draft.routes === null && draft.advertiseExitNode === null) return;
+    if (draft.routes !== null && validateRoutes(draft.routes)) {
       updateControls();
       return;
     }
+    const payload = { action: "advertise" };
+    if (draft.routes !== null) payload.advertiseRoutes = draft.routes.trim();
+    if (draft.advertiseExitNode !== null) payload.advertiseExitNode = draft.advertiseExitNode;
     const version = ++state.networkRequestVersion;
     state.busy = true;
     state.busyAction = "advertise";
@@ -723,10 +728,13 @@
     state.advertiseFeedback = "";
     updateControls();
     try {
-      const result = requireSuccess(await rpc({ action: "advertise", advertiseExitNode, advertiseRoutes: routes }));
+      const result = requireSuccess(await rpc(payload));
+      const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
       if (!state.pageActive || version !== state.networkRequestVersion) return;
-      state.networkDraft = { ...state.networkDraft, routes: null, advertiseExitNode: null };
-      renderStatus(typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" })));
+      for (const field of ["routes", "advertiseExitNode"]) {
+        if (state.networkDraft[field] === draft[field]) state.networkDraft[field] = null;
+      }
+      renderStatus(status);
       state.advertiseFeedback = "saved";
     } catch (error) {
       if (state.pageActive && version === state.networkRequestVersion) {
@@ -934,8 +942,9 @@
     ui.exitNodeClear.disabled = !state.available || !state.pageActive || state.busy || !exitNodeConfigured;
     ui.advertiseRoutes.disabled = networkDisabled;
     ui.exitNodeIpv6Takeover.disabled = disabled || !state.status;
-    ui.advertiseExitNode.disabled = networkDisabled || exitAdvertisementBlocked();
+    ui.advertiseExitNode.disabled = networkDisabled || (exitAdvertisementBlocked() && draft.advertiseExitNode !== true);
     ui.advertiseSave.disabled = networkDisabled || (draft.routes === null && draft.advertiseExitNode === null) ||
+      (draft.advertiseExitNode === true && exitAdvertisementBlocked()) ||
       Boolean(draft.routes !== null && validateRoutes(ui.advertiseRoutes.value));
     ui.run.textContent = t(state.busyAction === "command" ? "command.running" : "command.run");
     ui.consoleLabel.textContent = t(state.busyAction === "console" ? "console.opening" : "console.open");
@@ -1522,7 +1531,10 @@
     state.advertiseFeedback = "";
     state.advertiseError = null;
     state.networkDraft = { exitNode: null, routes: null, advertiseExitNode: null };
+    ui.advertiseRoutes.value = "";
+    ui.advertiseExitNode.checked = false;
     state.networkRequestVersion++;
+    state.exitIpv6Pending = null;
     state.exitNodesRequestVersion++;
     state.exitNodes = null;
     state.exitNodesLoading = false;

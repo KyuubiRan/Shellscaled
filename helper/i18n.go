@@ -85,6 +85,7 @@ var messages = map[string][3]string{
 	"无法保存 IPv6 出口设置": {"无法保存 IPv6 出口设置。", "無法儲存 IPv6 出口設定。", "Could not save the exit node IPv6 setting."},
 	"IPv6 出口设置已保存，需要随本版模块发布的后台服务才能生效":             {"设置已保存，但需要随本版模块发布的服务版本才能生效。", "設定已儲存，但需要隨本版模組發布的服務版本才能生效。", "Saved, but this requires the daemon shipped with this module version to take effect."},
 	"所选出口节点离线或不可用":                                {"所选出口节点离线或不可用。", "所選出口節點離線或無法使用。", "The selected exit node is offline or unavailable."},
+	"此设备启用了严格反向路径检查，暂不支持使用出口节点":                   {"此设备启用了严格反向路径检查，暂不支持使用出口节点。", "此裝置啟用了嚴格反向路徑檢查，暫不支援使用出口節點。", "Exit nodes are not supported on this device with strict reverse-path filtering enabled."},
 	"本机正在发布出口节点，不能同时使用出口节点":                       {"本机正在发布出口节点，不能同时使用出口节点。", "本機正在發布出口節點，無法同時使用出口節點。", "This device is advertising itself as an exit node and cannot use one at the same time."},
 	"出口节点名称或地址无效":                                 {"出口节点名称或地址无效。", "出口節點名稱或位址無效。", "Choose a valid exit node."},
 	"发布设置不能为空":                                    {"请选择要发布的网络角色。", "請選擇要公布的網路角色。", "Choose the network role to advertise."},

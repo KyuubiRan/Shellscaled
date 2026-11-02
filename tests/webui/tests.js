@@ -70,6 +70,40 @@
     assert(request.settings[control.dataset.setting] === value && backend().settings[control.dataset.setting] === value && control.checked === value);
   }
   const binaryRequests = () => requests().filter((request) => request.action.startsWith("binary-"));
+  const networkRequests = (action) => requests().filter((request) => request.action === action);
+  function editRoutes(value) {
+    $("advertise-routes").value = value;
+    $("advertise-routes").dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  async function networkSetup(target = "", advertised = false, routes = "") {
+    await idle();
+    fixture.setNetworkRole(target, advertised, routes);
+    await refresh();
+    click("tab-settings");
+    await until(() => !$("exit-node-select").disabled);
+  }
+  async function networkTest(name, body) {
+    await test(name, async () => {
+      const original = backend();
+      try { await body(); }
+      finally {
+        window.dispatchEvent(new Event("pagehide"));
+        fixture.setStatusMode("normal");
+        fixture.setIPv6Mode("normal");
+        fixture.setExitNodesOnline(true);
+        fixture.setNetworkRole(original.exitNodeTarget, original.advertiseExitNode, original.advertiseRoutes.join(","));
+        fixture.setIPv6Status(original.exitNodeIPv6Takeover, original.exitNodeIPv6);
+        fixture.releaseNetwork();
+        fixture.releaseStatus();
+        fixture.releaseExitNodes(0);
+        fixture.releaseExitNodes(0);
+        await idle();
+        window.dispatchEvent(new Event("pageshow"));
+        await idle();
+        click("tab-overview");
+      }
+    });
+  }
   const binaryLabel = () => $("binary-action-label").textContent;
   async function checkBinary(mode) {
     await idle();
@@ -213,27 +247,204 @@
       click("tab-overview");
     });
 
-    await test("exit-node-ipv6-takeover-defaults-on", async () => {
+    await networkTest("exit-node-selection-masked-prefs-and-clear", async () => {
+      await networkSetup("", false, "10.0.0.0/8");
+      const settings = JSON.stringify(backend().settings);
+      const select = $("exit-node-select");
+      const before = networkRequests("exit-node").length;
+      assert([...select.options].some((option) => option.value === "fixture-offline" && option.disabled));
+      select.value = "fixture-offline";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      assert($("exit-node-apply").disabled);
+      select.value = "fixture-workstation";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      fixture.holdNextNetwork();
+      click("exit-node-apply");
+      await until(() => networkRequests("exit-node").length === before + 1);
+      assert(select.disabled && getComputedStyle(select).opacity === "1");
+      $("exit-node-apply").click();
+      await wait(60);
+      assert(networkRequests("exit-node").length === before + 1);
+      select.value = "fixture-offline";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      fixture.releaseNetwork();
       await idle();
-      click("tab-settings");
-      await until(() => !$("exit-node-ipv6-takeover").disabled);
+      assert(backend().exitNodeTarget === "fixture-workstation" && select.value === "fixture-offline");
+      click("exit-node-clear");
+      await until(() => networkRequests("exit-node").length === before + 2);
+      await idle();
+      const request = networkRequests("exit-node").at(-1);
+      assert(request.exitNode === "" && Object.keys(request).sort().join() === "action,exitNode,locale");
+      assert(!backend().exitNodeConfigured && JSON.stringify(backend().settings) === settings);
+      assert(backend().advertiseRoutes.join() === "10.0.0.0/8");
+    });
+
+    await networkTest("advertise-exit-preserves-external-subnet-edit", async () => {
+      await networkSetup("", false, "10.0.0.0/8");
+      const settings = JSON.stringify(backend().settings);
+      fixture.setNetworkRole("", false, "192.0.2.0/24");
+      const before = networkRequests("advertise").length;
+      click("advertise-exit-node");
+      click("advertise-save");
+      await until(() => networkRequests("advertise").length === before + 1);
+      await idle();
+      const request = networkRequests("advertise").at(-1);
+      assert(request.advertiseExitNode === true && !Object.hasOwn(request, "advertiseRoutes"));
+      assert(backend().advertiseExitNode && backend().advertiseRoutes.join() === "192.0.2.0/24");
+      assert(JSON.stringify(backend().settings) === settings);
+    });
+
+    await networkTest("advertise-routes-preserve-external-exit-edit", async () => {
+      await networkSetup("", false, "10.0.0.0/8");
+      fixture.setNetworkRole("", true, "10.0.0.0/8");
+      editRoutes("192.0.2.0/24");
+      const before = networkRequests("advertise").length;
+      click("advertise-save");
+      await until(() => networkRequests("advertise").length === before + 1);
+      await idle();
+      const request = networkRequests("advertise").at(-1);
+      assert(request.advertiseRoutes === "192.0.2.0/24" && !Object.hasOwn(request, "advertiseExitNode"));
+      assert(backend().advertiseExitNode && $("advertise-exit-node").checked);
+      assert(backend().advertiseRoutes.join() === "192.0.2.0/24");
+    });
+
+    await networkTest("advertise-captures-submitted-draft-and-preserves-later-edits", async () => {
+      await networkSetup();
+      editRoutes("192.0.2.0/24");
+      const before = networkRequests("advertise").length;
+      fixture.holdNextNetwork();
+      click("advertise-save");
+      await until(() => networkRequests("advertise").length === before + 1);
+      editRoutes("203.0.113.0/24");
+      $("advertise-exit-node").checked = true;
+      $("advertise-exit-node").dispatchEvent(new Event("change", { bubbles: true }));
+      fixture.releaseNetwork();
+      await idle();
+      const first = networkRequests("advertise").at(-1);
+      assert(first.advertiseRoutes === "192.0.2.0/24" && !Object.hasOwn(first, "advertiseExitNode"));
+      assert($("advertise-routes").value === "203.0.113.0/24" && $("advertise-exit-node").checked);
+      assert(!$("advertise-save").disabled && !backend().advertiseExitNode);
+      click("advertise-save");
+      await until(() => networkRequests("advertise").length === before + 2);
+      await idle();
+      const second = networkRequests("advertise").at(-1);
+      assert(second.advertiseRoutes === "203.0.113.0/24" && second.advertiseExitNode === true);
+      assert(backend().advertiseExitNode && backend().advertiseRoutes.join() === "203.0.113.0/24");
+    });
+
+    await networkTest("advertise-invalid-routes-and-failure-reconciliation", async () => {
+      await networkSetup();
+      const before = networkRequests("advertise").length;
+      editRoutes("0.0.0.0/0");
+      assert($("advertise-routes").getAttribute("aria-invalid") === "true" && $("advertise-save").disabled);
+      $("advertise-save").click();
+      await wait(50);
+      assert(networkRequests("advertise").length === before);
+      editRoutes("192.0.2.0/24");
+      fixture.nextNetworkResponseFails();
+      fixture.setStatusMode("error");
+      click("advertise-save");
+      await until(() => networkRequests("advertise").length === before + 1);
+      await idle();
+      assert(backend().advertiseRoutes.join() === "192.0.2.0/24");
+      assert($("advertise-routes").disabled && $("advertise-save").disabled && $("exit-node-select").disabled);
+      assert(!$("advertise-message").hidden && $("advertise-message").dataset.kind === "error");
+      fixture.setStatusMode("normal");
+      await refresh();
+      assert(!$("advertise-routes").disabled && $("advertise-routes").value === "192.0.2.0/24");
+    });
+
+    await networkTest("exit-node-ipv6-pending-success-and-duplicate-blocking", async () => {
+      await networkSetup("fixture-workstation");
       const toggle = $("exit-node-ipv6-takeover");
-      const line = $("exit-node-ipv6");
-      // The fixture reports no opt-out file, so the exit node takes IPv6 too.
-      assert(backend().exitNodeConfigured === true && backend().exitNodeIPv6Takeover === true && toggle.checked);
-      assert(toggle.getAttribute("role") === "switch" && toggle.closest("#network-role-card"));
-      assert(line.hidden);
-      const ipv6Requests = () => requests().filter((request) => request.action === "exit-node-ipv6");
-      const before = ipv6Requests().length;
+      assert(toggle.checked && $("exit-node-ipv6").hidden);
+      const before = networkRequests("exit-node-ipv6").length;
+      fixture.holdNextNetwork();
       click("exit-node-ipv6-takeover");
-      await until(() => ipv6Requests().length === before + 1);
-      const request = ipv6Requests().at(-1);
-      assert(request.exitNodeIPv6 === false && Object.keys(request).every((key) => ["action", "locale", "exitNodeIPv6"].includes(key)));
+      await until(() => networkRequests("exit-node-ipv6").length === before + 1);
+      assert(!toggle.checked && toggle.disabled);
+      toggle.click();
+      await wait(60);
+      assert(networkRequests("exit-node-ipv6").length === before + 1);
+      const request = networkRequests("exit-node-ipv6").at(-1);
+      assert(request.exitNodeIPv6 === false && Object.keys(request).sort().join() === "action,exitNodeIPv6,locale");
+      fixture.releaseNetwork();
       await idle();
-      // The fixture rejects the action: the switch returns to the daemon's state with a local error.
-      assert(toggle.checked && !$("network-message").hidden && $("network-message").dataset.kind === "error");
-      assert(line.hidden);
-      click("tab-overview");
+      assert(!toggle.checked && !backend().exitNodeIPv6Takeover && !backend().exitNodeIPv6);
+      assert($("exit-node-ipv6").textContent === ShellscaledI18n.t("network.ipv6Physical"));
+      click("exit-node-ipv6-takeover");
+      await until(() => networkRequests("exit-node-ipv6").length === before + 2);
+      await idle();
+      assert(toggle.checked && $("exit-node-ipv6").hidden);
+    });
+
+    await networkTest("exit-node-ipv6-unsupported-daemon-reconciles-saved-preference", async () => {
+      await networkSetup("fixture-workstation");
+      fixture.setIPv6Mode("unsupported");
+      const before = networkRequests("exit-node-ipv6").length;
+      const statusBefore = statusRequests().length;
+      click("exit-node-ipv6-takeover");
+      await until(() => networkRequests("exit-node-ipv6").length === before + 1 && statusRequests().length > statusBefore);
+      await idle();
+      assert(!$("exit-node-ipv6-takeover").checked && !backend().exitNodeIPv6Takeover && backend().exitNodeIPv6);
+      assert($("exit-node-ipv6").textContent === ShellscaledI18n.t("network.ipv6Unsupported"));
+      assert(!$("network-message").hidden && $("network-message").dataset.kind === "error");
+    });
+
+    await networkTest("exit-node-list-ignores-out-of-order-page-lifecycle-completions", async () => {
+      await networkSetup();
+      fixture.setExitNodesOnline(false);
+      fixture.holdNextExitNodes();
+      const before = networkRequests("exit-nodes").length;
+      click("network-refresh");
+      await until(() => networkRequests("exit-nodes").length === before + 1);
+      window.dispatchEvent(new Event("pagehide"));
+      fixture.setExitNodesOnline(true);
+      fixture.holdNextExitNodes();
+      window.dispatchEvent(new Event("pageshow"));
+      await until(() => networkRequests("exit-nodes").length === before + 2);
+      fixture.releaseExitNodes(1);
+      await until(() => !$("exit-node-select").disabled);
+      const option = () => [...$("exit-node-select").options].find((value) => value.value === "fixture-workstation");
+      assert(option() && !option().disabled);
+      fixture.releaseExitNodes(0);
+      await wait(100);
+      assert(option() && !option().disabled && $("network-refresh").getAttribute("aria-busy") === "false");
+    });
+
+    await networkTest("network-write-page-lifecycle-requires-fresh-status", async () => {
+      await networkSetup("fixture-workstation");
+      fixture.holdNextNetwork();
+      const before = networkRequests("exit-node-ipv6").length;
+      click("exit-node-ipv6-takeover");
+      await until(() => networkRequests("exit-node-ipv6").length === before + 1);
+      window.dispatchEvent(new Event("pagehide"));
+      assert($("advertise-routes").value === "" && $("exit-node-select").disabled);
+      fixture.setNetworkRole("", false, "203.0.113.0/24");
+      window.dispatchEvent(new Event("pageshow"));
+      fixture.releaseNetwork();
+      await idle();
+      assert(!backend().exitNodeConfigured && $("exit-node-summary").textContent === ShellscaledI18n.t("network.summaryNone"));
+      assert(!$("exit-node-ipv6-takeover").checked && $("advertise-routes").value === "203.0.113.0/24");
+    });
+
+    await networkTest("network-fallback-status-cannot-render-after-pagehide", async () => {
+      await networkSetup("fixture-workstation", false, "192.0.2.0/24");
+      fixture.nextNetworkNeedsStatus();
+      fixture.holdNextStatus();
+      const before = statusRequests().length;
+      click("exit-node-ipv6-takeover");
+      await until(() => statusRequests().length > before);
+      window.dispatchEvent(new Event("pagehide"));
+      fixture.setNetworkRole("", false, "203.0.113.0/24");
+      fixture.releaseStatus();
+      await idle();
+      assert($("advertise-routes").value === "" && $("exit-node-select").disabled);
+      assert($("exit-node-summary").textContent === ShellscaledI18n.t("network.waiting"));
+      window.dispatchEvent(new Event("pageshow"));
+      await idle();
+      assert($("advertise-routes").value === "203.0.113.0/24");
+      assert($("exit-node-summary").textContent === ShellscaledI18n.t("network.summaryNone"));
     });
 
     for (const locale of locales) {

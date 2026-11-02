@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
@@ -54,6 +55,20 @@ public final class MainActivity extends Activity {
     private boolean holdNextStatus;
     private String statusMode = "normal";
     private Runnable statusReply;
+    private String exitNodeTarget = "fixture-workstation";
+    private boolean exitNodeIPv6Takeover = true;
+    private boolean exitNodeIPv6 = true;
+    private boolean advertiseExitNode;
+    private JSONArray advertiseRoutes = new JSONArray();
+    private boolean holdNextExitNodes;
+    private boolean exitNodesOnline = true;
+    private final ArrayList<Runnable> exitNodesReplies = new ArrayList<>();
+    private boolean holdNextNetwork;
+    private boolean nextNetworkFails;
+    private boolean nextNetworkResponseFails;
+    private boolean nextNetworkNeedsStatus;
+    private String ipv6Mode = "normal";
+    private Runnable networkReply;
     private boolean nextUpStarts;
     private boolean nextConsoleFails;
     private boolean nextAboutFails;
@@ -175,7 +190,11 @@ public final class MainActivity extends Activity {
         if (!"login".equals(screenshotTab)) addresses.put("100.64.0.10").put("fd7a:115c:a1e0::10");
         JSONObject result = new JSONObject().put("ok", true).put("state", state)
                 .put("version", binaryVersion)
-                .put("daemonRunning", true).put("exitNodeConfigured", true).put("exitNodeIPv6Takeover", true).put("exitCode", 0)
+                .put("daemonRunning", true).put("exitNodeConfigured", !exitNodeTarget.isEmpty())
+                .put("exitNodeTarget", exitNodeTarget).put("exitNodeOnline", !exitNodeTarget.isEmpty())
+                .put("exitNodeIPv6Takeover", exitNodeIPv6Takeover).put("exitNodeIPv6", exitNodeIPv6 && !exitNodeTarget.isEmpty())
+                .put("advertiseExitNode", advertiseExitNode).put("advertiseRoutes", new JSONArray(advertiseRoutes.toString()))
+                .put("exitCode", 0)
                 .put("ips", addresses)
                 .put("settings", settings).put("updateChannel", updateChannel);
         if (!loginURL.isEmpty()) result.put("loginURL", loginURL);
@@ -206,10 +225,11 @@ public final class MainActivity extends Activity {
                 .put(device("fixture-self", "demo-phone", "demo-phone.docs.example",
                         new String[]{"100.64.0.10", "fd7a:115c:a1e0::10"}, true, "android", true))
                 .put(device("fixture-workstation", "workstation", "workstation.docs.example",
-                        new String[]{"100.64.0.20", "fd7a:115c:a1e0::20"}, true, "linux", false))
+                        new String[]{"100.64.0.20", "fd7a:115c:a1e0::20"}, true, "linux", false)
+                        .put("exitNodeOption", true).put("exitNode", "fixture-workstation".equals(exitNodeTarget)))
                 .put(device("fixture-offline", "travel-laptop", "travel-laptop.docs.example",
                         new String[]{"100.64.0.30"}, false, "windows", false)
-                        .put("lastSeen", "2026-01-01T12:00:00Z"));
+                        .put("lastSeen", "2026-01-01T12:00:00Z").put("exitNodeOption", true));
         if (screenshotTab != null) return values;
         return values
                 .put(device("fixture-untrusted", "<img id=\"fixture-device-injected\" src=x onerror=\"alert(1)\">",
@@ -220,6 +240,15 @@ public final class MainActivity extends Activity {
                         new String[]{"100.64.0.50", "fd7a:115c:a1e0::50"}, true, "darwin", false))
                 .put(device("fixture-no-ip", "initializing-device", "", new String[]{}, false, "freebsd", false))
                 .put(device("fixture-unnamed", "", "", new String[]{"100.64.0.70"}, false, "", false));
+    }
+
+    private JSONArray exitNodes() throws JSONException {
+        return new JSONArray()
+                .put(device("fixture-workstation", "workstation", "workstation.docs.example",
+                        new String[]{"100.64.0.20"}, exitNodesOnline, "linux", false)
+                        .put("exitNodeOption", true).put("exitNode", "fixture-workstation".equals(exitNodeTarget)))
+                .put(device("fixture-offline", "travel-laptop", "travel-laptop.docs.example",
+                        new String[]{"100.64.0.30"}, false, "windows", false).put("exitNodeOption", true));
     }
 
     private void record(String name, boolean success) {
@@ -352,8 +381,56 @@ public final class MainActivity extends Activity {
                             replyOrHold(callback, binary);
                             return;
                         case "devices":
-                        case "exit-nodes":
                             reply(callback, new JSONObject().put("ok", true).put("devices", devices()));
+                            return;
+                        case "exit-nodes":
+                            JSONObject nodes = new JSONObject().put("ok", true).put("devices", exitNodes());
+                            if (holdNextExitNodes) {
+                                holdNextExitNodes = false;
+                                exitNodesReplies.add(() -> reply(callback, nodes));
+                            } else reply(callback, nodes);
+                            return;
+                        case "exit-node":
+                        case "advertise":
+                        case "exit-node-ipv6":
+                            boolean networkOK = !nextNetworkFails;
+                            nextNetworkFails = false;
+                            if ("exit-node".equals(action)) {
+                                if (request.length() != 3 || !(request.get("exitNode") instanceof String)) throw new JSONException("exit-node-mask");
+                                String target = request.getString("exitNode");
+                                networkOK &= target.isEmpty() || !advertiseExitNode && "fixture-workstation".equals(target);
+                                if (networkOK) exitNodeTarget = target;
+                            } else if ("advertise".equals(action)) {
+                                int fields = (request.has("advertiseRoutes") ? 1 : 0) + (request.has("advertiseExitNode") ? 1 : 0);
+                                if (fields == 0 || request.length() != 2 + fields ||
+                                        request.has("advertiseRoutes") && !(request.get("advertiseRoutes") instanceof String) ||
+                                        request.has("advertiseExitNode") && !(request.get("advertiseExitNode") instanceof Boolean)) throw new JSONException("advertise-mask");
+                                networkOK &= !request.optBoolean("advertiseExitNode") || exitNodeTarget.isEmpty();
+                                if (networkOK) {
+                                    if (request.has("advertiseRoutes")) {
+                                        advertiseRoutes = new JSONArray();
+                                        String routes = request.getString("advertiseRoutes");
+                                        if (!routes.isEmpty()) for (String route : routes.split(",")) advertiseRoutes.put(route.trim());
+                                    }
+                                    if (request.has("advertiseExitNode")) advertiseExitNode = request.getBoolean("advertiseExitNode");
+                                }
+                            } else {
+                                if (request.length() != 3 || !(request.get("exitNodeIPv6") instanceof Boolean)) throw new JSONException("ipv6-mask");
+                                if (networkOK) {
+                                    exitNodeIPv6Takeover = request.getBoolean("exitNodeIPv6");
+                                    if ("normal".equals(ipv6Mode)) exitNodeIPv6 = exitNodeIPv6Takeover;
+                                    else if (!exitNodeIPv6Takeover) networkOK = false;
+                                }
+                            }
+                            if (nextNetworkResponseFails) networkOK = false;
+                            nextNetworkResponseFails = false;
+                            JSONObject network = networkOK ? (nextNetworkNeedsStatus ? new JSONObject().put("ok", true) : status()) : new JSONObject().put("ok", false)
+                                    .put("error", "Fixture network action unavailable").put("exitCode", 1);
+                            nextNetworkNeedsStatus = false;
+                            if (holdNextNetwork) {
+                                holdNextNetwork = false;
+                                networkReply = () -> reply(callback, network);
+                            } else reply(callback, network);
                             return;
                         case "console":
                             // Native code owns the fixed external console URL. The fixture opens nothing.
@@ -506,6 +583,56 @@ public final class MainActivity extends Activity {
         }
         @JavascriptInterface public void holdNextStatus() {
             synchronized (guard) { holdNextStatus = true; }
+        }
+        @JavascriptInterface public void setNetworkRole(String target, boolean advertise, String routes) {
+            if (!Arrays.asList("", "fixture-workstation").contains(target)) return;
+            synchronized (guard) {
+                exitNodeTarget = target;
+                advertiseExitNode = advertise;
+                advertiseRoutes = new JSONArray();
+                if (!routes.isEmpty()) for (String route : routes.split(",")) advertiseRoutes.put(route.trim());
+            }
+        }
+        @JavascriptInterface public void setIPv6Mode(String mode) {
+            if (!Arrays.asList("normal", "unsupported").contains(mode)) return;
+            synchronized (guard) { ipv6Mode = mode; }
+        }
+        @JavascriptInterface public void setIPv6Status(boolean takeover, boolean routed) {
+            synchronized (guard) { exitNodeIPv6Takeover = takeover; exitNodeIPv6 = routed; }
+        }
+        @JavascriptInterface public void holdNextExitNodes() {
+            synchronized (guard) { holdNextExitNodes = true; }
+        }
+        @JavascriptInterface public void setExitNodesOnline(boolean online) {
+            synchronized (guard) { exitNodesOnline = online; }
+        }
+        @JavascriptInterface public void releaseExitNodes(int index) {
+            synchronized (guard) {
+                if (index >= 0 && index < exitNodesReplies.size()) exitNodesReplies.remove(index).run();
+                holdNextExitNodes = false;
+            }
+        }
+        @JavascriptInterface public void holdNextNetwork() {
+            synchronized (guard) { holdNextNetwork = true; }
+        }
+        @JavascriptInterface public void nextNetworkFails() {
+            synchronized (guard) { nextNetworkFails = true; }
+        }
+        @JavascriptInterface public void nextNetworkResponseFails() {
+            synchronized (guard) { nextNetworkResponseFails = true; }
+        }
+        @JavascriptInterface public void nextNetworkNeedsStatus() {
+            synchronized (guard) { nextNetworkNeedsStatus = true; }
+        }
+        @JavascriptInterface public void releaseNetwork() {
+            synchronized (guard) {
+                if (networkReply != null) {
+                    Runnable reply = networkReply;
+                    networkReply = null;
+                    reply.run();
+                }
+                holdNextNetwork = false;
+            }
         }
         @JavascriptInterface public void releaseStatus() {
             synchronized (guard) {
