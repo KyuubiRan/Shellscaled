@@ -7,16 +7,20 @@
   const backend = () => JSON.parse(fixture.statusJSON());
   const assert = (value, label = "assertion") => { if (!value) throw new Error(label); };
   const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error|network)\.[A-Za-z0-9.]+$/;
-  async function until(predicate, label = "timeout") {
-    const end = Date.now() + 6000;
+  async function until(predicate, label = "timeout", end = Date.now() + 6000) {
     while (!predicate()) {
       if (Date.now() > end) throw new Error(label);
       await wait(25);
     }
   }
-  async function idle() {
-    await until(() => $("main") && $("main").getAttribute("aria-busy") === "false");
+  async function idle(label = "main-idle") {
+    const end = Date.now() + 6000;
+    const ready = () => $("main") && $("main").getAttribute("aria-busy") === "false";
+    await until(ready, label + "-before-paint", end);
     await wait(30);
+    // A periodic refresh may start during the paint wait. Recheck before a
+    // caller dispatches a change that the production busy guard would reject.
+    await until(ready, label + "-after-paint", end);
   }
   async function test(name, body) {
     try { await body(); fixture.report(name, true); }
@@ -37,13 +41,13 @@
     await until(() => requests().length > before);
     await idle();
   }
-  async function language(value) {
-    await idle();
+  async function language(value, label = "language") {
+    await idle(label + "-ready");
     const before = requests().length;
     $("language").value = value;
     $("language").dispatchEvent(new Event("change", { bubbles: true }));
-    await until(() => requests().length > before);
-    await idle();
+    await until(() => requests().length > before, label + "-rpc-start");
+    await idle(label + "-complete");
     assert(requests().at(-1).locale === value);
   }
   function storageIsLanguageOnly() {
@@ -168,7 +172,7 @@
     assert(button && !button.disabled && button.dataset.copy);
     const before = notice();
     button.click();
-    await until(() => !button.dataset.copyPending && !button.disabled && button.dataset.copyState === state);
+    await until(() => !button.dataset.copyPending && !button.disabled && button.dataset.copyState === state, "copy-feedback-" + state);
     const feedback = button.querySelector(".copy-feedback");
     assert(feedback && feedback.getAttribute("aria-live") === "polite");
     assert(feedback.textContent === ShellscaledI18n.t(state === "copied" ? "copy.copied" : "copy.failed"));
@@ -235,6 +239,26 @@
         await refresh();
         assert(JSON.parse(fixture.transportsJSON()).at(-1) === "exec");
       } finally { window.ksu = native; }
+    });
+
+    await test("idle-helper-rechecks-refresh-during-paint-wait", async () => {
+      await idle();
+      const before = statusRequests().length;
+      let resolved = false;
+      fixture.holdNextStatus();
+      const waiting = idle("idle-helper-held-refresh").then(() => { resolved = true; });
+      try {
+        // This starts a refresh after idle's first check, before its 30ms
+        // paint wait finishes, as the periodic poll can do in other cases.
+        document.dispatchEvent(new Event("visibilitychange"));
+        await until(() => statusRequests().length > before, "idle-helper-refresh-start");
+        await wait(50);
+        assert(!resolved && $("main").getAttribute("aria-busy") === "true", "idle-helper-waits-for-refresh");
+      } finally {
+        fixture.releaseStatus();
+        await waiting;
+      }
+      assert(resolved && $("main").getAttribute("aria-busy") === "false", "idle-helper-refresh-complete");
     });
 
     await test("settings-load-exit-nodes-automatically", async () => {
@@ -784,9 +808,11 @@
       const restore = mockClipboard(() => new Promise((resolve, reject) => pending.push({ resolve, reject })), () => false);
       try {
         for (const locale of locales) {
-          await language(locale);
+          await language(locale, "copy-layout-" + locale + "-language");
           click("tab-overview");
           const button = $("addresses").lastElementChild;
+          assert(button && button.isConnected && !button.disabled && button.dataset.copy && !button.dataset.copyPending,
+            "copy-layout-" + locale + "-control-ready");
           const feedback = button.querySelector(".copy-feedback");
           const value = button.querySelector(".copy-value");
           button.scrollIntoView({ block: "center" });
@@ -802,18 +828,18 @@
           const original = JSON.stringify(geometry());
           const before = pending.length;
           button.click();
-          await until(() => pending.length === before + 1);
+          await until(() => pending.length === before + 1, "copy-layout-" + locale + "-write-start");
           assert(!button.disabled && button.getAttribute("aria-disabled") === "true" && button.getAttribute("aria-busy") === "true");
           assert(getComputedStyle(button).opacity === "1" && document.activeElement === button);
           button.click();
           assert(pending.length === before + 1 && JSON.stringify(geometry()) === original);
           pending.at(-1).resolve();
-          await until(() => button.dataset.copyState === "copied");
+          await until(() => button.dataset.copyState === "copied", "copy-layout-" + locale + "-success-feedback");
           assert(JSON.stringify(geometry()) === original && document.activeElement === button && window.scrollY === scroll);
           button.click();
-          await until(() => pending.length === before + 2);
+          await until(() => pending.length === before + 2, "copy-layout-" + locale + "-retry-start");
           pending.at(-1).reject(new Error("synthetic denial"));
-          await until(() => button.dataset.copyState === "failed");
+          await until(() => button.dataset.copyState === "failed", "copy-layout-" + locale + "-failure-feedback");
           assert(JSON.stringify(geometry()) === original && document.activeElement === button && window.scrollY === scroll);
           assert(window.getSelection().toString() === selected);
         }
