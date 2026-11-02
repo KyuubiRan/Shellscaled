@@ -35,8 +35,8 @@
     deviceSearch: $("device-search"), deviceList: $("device-list"), deviceMessage: $("devices-message"),
     deviceSummary: $("devices-summary"), deviceUpdated: $("devices-updated"),
     binaryCurrent: $("binary-current-version"), binaryLatestRow: $("binary-latest-row"),
-    binaryLatest: $("binary-latest-version"), binaryCheck: $("binary-check"), binaryUpdate: $("binary-update"),
-    binaryCheckLabel: $("binary-check-label"), binaryUpdateLabel: $("binary-update-label"),
+    binaryLatest: $("binary-latest-version"), binaryAction: $("binary-action"),
+    binaryActionLabel: $("binary-action-label"),
     binaryMessage: $("binary-message"),
     binaryChannel: $("binary-channel"),
   };
@@ -532,11 +532,11 @@
     const checking = state.busyAction === "binary-check";
     const updating = state.busyAction === "binary-update";
     const savingChannel = state.busyAction === "binary-channel";
-    ui.binaryCheck.disabled = !state.available || state.busy;
-    ui.binaryUpdate.disabled = !state.available || state.busy || !binaryUpdateAvailable();
-    ui.binaryCheckLabel.textContent = t(checking ? "binary.checking" : "binary.check");
-    ui.binaryUpdateLabel.textContent = t(updating ? "binary.updating" : "binary.update");
-    ui.binaryUpdate.classList.toggle("is-working", updating);
+    ui.binaryAction.disabled = !state.available || state.busy || !state.pageActive;
+    ui.binaryActionLabel.textContent = t(updating ? "binary.updating" : checking ? "binary.checking" :
+      binaryUpdateAvailable() ? "binary.update" : "binary.check");
+    ui.binaryAction.classList.toggle("is-working", checking || updating);
+    ui.binaryAction.setAttribute("aria-busy", checking || updating ? "true" : "false");
     let text = "";
     let kind = "info";
     if (savingChannel) text = t("binary.channelSaving");
@@ -627,6 +627,12 @@
 
   function updateControls() {
     const disabled = !state.available || state.busy || !state.pageActive;
+    // Keep serialization and DOM nodes, without dimming the whole page
+    // during a single switch write. Only the active row gets a progress cue.
+    document.querySelectorAll("[data-requires-bridge], #language").forEach((control) => {
+      if (state.busyAction !== "settings") control.classList.remove("is-pending");
+      else if (!control.disabled) control.classList.add("is-pending");
+    });
     document.querySelectorAll("[data-requires-bridge]").forEach((control) => {
       control.disabled = disabled;
     });
@@ -642,6 +648,10 @@
         connected ? "connection.disconnect" : "connection.connect");
     document.querySelectorAll("[data-setting]").forEach((control) => {
       control.disabled = disabled || !state.settingsConfirmed;
+      const pending = state.pendingSetting && state.pendingSetting.key === control.dataset.setting;
+      const row = control.closest(".setting-row");
+      row.dataset.pending = pending ? "true" : "false";
+      row.setAttribute("aria-busy", pending ? "true" : "false");
     });
     const exitNodeConfigured = state.status && state.status.exitNodeConfigured === true;
     ui.exitLan.disabled = disabled || !state.settingsConfirmed || !exitNodeConfigured;
@@ -654,6 +664,10 @@
     ui.language.disabled = state.busy;
     ui.language.value = I18n.preference();
     ui.main.setAttribute("aria-busy", state.busy ? "true" : "false");
+    for (const [id, action] of [["refresh", "status"], ["refresh-devices", "devices"]]) {
+      $(id).classList.toggle("is-working", state.busyAction === action);
+      $(id).setAttribute("aria-busy", state.busyAction === action ? "true" : "false");
+    }
     const settingsMessage = !state.settingsConfirmed && (state.settings || state.settingsError) ? t("settings.unconfirmed") :
       state.settingsError ? t("settings.failed") :
         t(!state.settings ? "settings.unread" : state.busyAction === "settings" ? "settings.applying" : "settings.automatic");
@@ -1038,6 +1052,27 @@
     if (name === "devices" && !state.devices && !state.devicesError) loadDevices();
   }
 
+  function showRipple(event) {
+    if (!(event.target instanceof Element)) return;
+    const control = event.target.closest("button.button, button.icon-button, button.tab, button.about-link");
+    if (!control || control.disabled || (event.type === "click" && event.detail !== 0)) return;
+    const bounds = control.getBoundingClientRect();
+    const size = Math.hypot(bounds.width, bounds.height) * 2;
+    const pointer = event.type === "pointerdown";
+    const x = pointer ? event.clientX - bounds.left : bounds.width / 2;
+    const y = pointer ? event.clientY - bounds.top : bounds.height / 2;
+    const ripple = document.createElement("span");
+    ripple.className = "button-ripple";
+    ripple.setAttribute("aria-hidden", "true");
+    ripple.style.width = ripple.style.height = size + "px";
+    ripple.style.left = x - size / 2 + "px";
+    ripple.style.top = y - size / 2 + "px";
+    control.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 600);
+  }
+
+  document.addEventListener("pointerdown", showRipple, true);
+  document.addEventListener("click", showRipple, true);
   document.querySelectorAll("[data-tab]").forEach((tab) => {
     tab.addEventListener("click", () => selectTab(tab.dataset.tab));
     tab.addEventListener("keydown", (event) => {
@@ -1058,8 +1093,7 @@
   ui.console.addEventListener("click", openConsole);
   ui.about.addEventListener("click", openAbout);
   ui.login.addEventListener("click", startLogin);
-  ui.binaryCheck.addEventListener("click", () => runBinaryAction("binary-check"));
-  ui.binaryUpdate.addEventListener("click", () => runBinaryAction("binary-update"));
+  ui.binaryAction.addEventListener("click", () => runBinaryAction(binaryUpdateAvailable() ? "binary-update" : "binary-check"));
   ui.binaryChannel.addEventListener("change", () => setBinaryChannel(ui.binaryChannel.value));
   document.addEventListener("click", (event) => {
     if (!(event.target instanceof Element)) return;

@@ -413,6 +413,11 @@ func TestBinaryUpdateTransactionAndRollback(t *testing.T) {
 			if runtimeBinaryVersion(f.u.module) != "1.104.2" {
 				t.Error("runtime metadata missing or unverified")
 			}
+			mustWrite(t, filepath.Join(f.u.module, "module.prop"), []byte("version=1.100.0\n"), 0644)
+			b := &backend{module: f.u.module}
+			if !strings.HasSuffix(description("Running", "en", b.moduleVersion()), " · Tailscale v1.104.2") {
+				t.Error("description borrowed the module version after a core update")
+			}
 			currentBuild, _ := os.ReadFile(filepath.Join(f.u.module, "build-info.json"))
 			if !bytes.Equal(currentBuild, originalBuild) {
 				t.Error("installation metadata was rewritten")

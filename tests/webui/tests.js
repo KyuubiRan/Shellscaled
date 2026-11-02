@@ -20,7 +20,10 @@
   }
   async function test(name, body) {
     try { await body(); fixture.report(name, true); }
-    catch (_) { fixture.report(name, false); }
+    catch (error) {
+      const line = /tests\.js:(\d+)/.exec(error.stack || "");
+      fixture.report(name + (line ? " line=" + line[1] : ""), false);
+    }
   }
   function click(id) {
     assert($(id) && !$(id).disabled);
@@ -66,10 +69,23 @@
     assert(request.settings[control.dataset.setting] === value && backend().settings[control.dataset.setting] === value && control.checked === value);
   }
   const binaryRequests = () => requests().filter((request) => request.action.startsWith("binary-"));
+  const binaryLabel = () => $("binary-action-label").textContent;
   async function checkBinary(mode) {
+    await idle();
+    // Changing channel invalidates the previous offer through the real UI.
+    // A ready Update button must never be used as a second Check button.
+    if (binaryLabel() === ShellscaledI18n.t("binary.update")) {
+      const selected = $("binary-channel");
+      const original = selected.value;
+      for (const channel of [original === "stable" ? "preview" : "stable", original]) {
+        selected.value = channel;
+        selected.dispatchEvent(new Event("change", { bubbles: true }));
+        await idle();
+      }
+    }
     fixture.setBinaryMode(mode);
     const before = binaryRequests().length;
-    click("binary-check");
+    click("binary-action");
     await until(() => binaryRequests().length > before);
     await idle();
     assert(binaryRequests().length === before + 1 && binaryRequests().at(-1).action === "binary-check");
@@ -129,7 +145,7 @@
     const keys = Object.keys(translations.en).sort();
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "run-command", "command-output",
-      "devices-message", "console-label", "about-description", "login-label", "binary-check-label", "binary-update-label", "binary-message"]);
+      "devices-message", "console-label", "about-description", "login-label", "binary-action-label", "binary-message"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
@@ -220,11 +236,19 @@
       const controls = [...document.querySelectorAll("[data-setting]")];
       const before = settingsRequests().length;
       const globalNotice = notice();
+      const card = $("panel-settings").querySelector(".settings-card");
+      const rows = [...card.children];
+      const cardTop = card.getBoundingClientRect().top;
       try {
         fixture.holdNextSettings();
         click("shields-up");
         await until(() => settingsRequests().length === before + 1);
         assert($("main").getAttribute("aria-busy") === "true" && controls.every((control) => control.disabled));
+        assert(rows.every((row, index) => row === card.children[index]));
+        assert(card.getBoundingClientRect().top === cardTop);
+        for (const id of ["language", "binary-channel", "binary-action"]) assert(getComputedStyle($(id)).opacity === "1");
+        for (const control of controls) assert(getComputedStyle(control.nextElementSibling).opacity === "1");
+        assert($("shields-up").closest(".setting-row").getAttribute("aria-busy") === "true");
         assert($("shields-up").checked === !original.shieldsUp && $("settings-hint").textContent === ShellscaledI18n.t("settings.applying"));
         for (const control of controls) {
           control.click();
@@ -797,7 +821,9 @@
     await test("binary-check-is-explicit-and-busy", async () => {
       await idle();
       click("tab-settings");
-      assert(binaryRequests().length === 0 && $("binary-update").disabled);
+      assert(binaryRequests().length === 0 && !$("binary-action").disabled);
+      assert(document.querySelectorAll(".binary-actions button").length === 1);
+      assert(!$("binary-check") && !$("binary-update") && binaryLabel() === ShellscaledI18n.t("binary.check"));
       await language("en");
       click("tab-overview");
       click("tab-settings");
@@ -806,16 +832,21 @@
       const globalNotice = notice();
       fixture.holdNextBinary();
       try {
-        click("binary-check");
+        click("binary-action");
         await until(() => binaryRequests().length === 1);
         assert($("main").getAttribute("aria-busy") === "true" && binaryMessage());
-        assert($("binary-check").disabled && $("binary-update").disabled);
-        $("binary-check").click();
-        $("binary-update").click();
+        assert($("binary-action").disabled && $("binary-action").getAttribute("aria-busy") === "true");
+        assert(binaryLabel() === ShellscaledI18n.t("binary.checking"));
+        const spinner = $("binary-action").querySelector(".button-spinner");
+        assert(getComputedStyle(spinner).display !== "none" && getComputedStyle(spinner).animationName === "spin");
+        assert(spinner.getBoundingClientRect().right < $("binary-action-label").getBoundingClientRect().left);
+        assert($("binary-action").querySelector(".button-ripple"));
+        $("binary-action").click();
         await wait(75);
         assert(binaryRequests().length === 1 && notice() === globalNotice);
       } finally { fixture.releaseBinary(); await idle(); }
-      assert(!$("binary-update").disabled && binaryMessage());
+      assert(!$("binary-action").disabled && binaryMessage());
+      assert(binaryLabel() === ShellscaledI18n.t("binary.update") && $("binary-action").getAttribute("aria-busy") === "false");
       assert($("binary-current-version").textContent.includes("1.104.2"));
       assert(!$("binary-latest-row").hidden && $("binary-latest-version").textContent.includes("1.104.4"));
       assert(Object.keys(binaryRequests()[0]).sort().join(",") === "action,locale");
@@ -843,34 +874,34 @@
         assert(channelRequests().length === before + 1);
       }
       assert([...selected.options].map((option) => option.value).filter(Boolean).sort().join(",") === "preview,stable");
-      assert(selected.value === original.updateChannel && !$("binary-update").disabled);
+      assert(selected.value === original.updateChannel && !$("binary-action").disabled);
       try {
         const before = networkActions();
         fixture.holdNextBinary();
         await choose(other);
         assert($("main").getAttribute("aria-busy") === "true" && selected.disabled && binaryMessage());
-        assert($("binary-check").disabled && $("binary-update").disabled);
+        assert($("binary-action").disabled);
         fixture.releaseBinary();
         await idle();
         assert(backend().updateChannel === other && selected.value === other);
-        assert($("binary-update").disabled && $("binary-latest-row").hidden && binaryMessage());
+        assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && $("binary-latest-row").hidden && binaryMessage());
         assert(networkActions() === before && notice() === globalNotice);
         await checkBinary("revision");
         assert($("binary-current-version").textContent === $("binary-latest-version").textContent);
-        assert(!$("binary-update").disabled);
+        assert(!$("binary-action").disabled);
         const revisionChecked = networkActions();
         await language("zh-TW");
         assert(selected.value === other && checkbox.checked === confirmed && !checkbox.disabled);
-        assert(networkActions() === revisionChecked && !$("binary-update").disabled && storageIsLanguageOnly());
+        assert(networkActions() === revisionChecked && !$("binary-action").disabled && storageIsLanguageOnly());
 
         await checkBinary("newer");
-        assert(!$("binary-update").disabled);
+        assert(!$("binary-action").disabled);
         const checked = networkActions();
         fixture.nextChannelFails();
         await choose(original.updateChannel);
         await idle();
         assert(selected.value === other && backend().updateChannel === other);
-        assert($("binary-update").disabled && $("binary-latest-row").hidden);
+        assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && $("binary-latest-row").hidden);
         assert(binaryMessage() && $("binary-message").dataset.kind === "error" && notice() === globalNotice);
         assert(networkActions() === checked && checkbox.checked === confirmed && !checkbox.disabled);
         assert(JSON.stringify(backend().settings) === JSON.stringify(original.settings));
@@ -893,12 +924,13 @@
       const globalNotice = notice();
       for (const mode of ["current", "unsupported", "error"]) {
         await checkBinary(mode);
-        assert($("binary-update").disabled && !$("binary-check").disabled && binaryMessage());
+        assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && binaryMessage());
         if (mode === "unsupported") assert($("binary-latest-row").hidden);
         const before = binaryRequests().length;
-        $("binary-update").click();
-        await wait(50);
-        assert(binaryRequests().length === before && notice() === globalNotice);
+        click("binary-action");
+        await until(() => binaryRequests().length > before);
+        await idle();
+        assert(binaryRequests().length === before + 1 && binaryRequests().at(-1).action === "binary-check" && notice() === globalNotice);
       }
     });
 
@@ -908,12 +940,13 @@
       const globalNotice = notice();
       const settingsCalls = requests().filter((request) => request.action === "settings").length;
       const before = binaryRequests().length;
-      click("binary-update");
+      click("binary-action");
       await until(() => binaryRequests().length > before);
       await idle();
       assert(binaryRequests().length === before + 1 && binaryRequests().at(-1).action === "binary-update");
       assert(Object.keys(binaryRequests().at(-1)).sort().join(",") === "action,locale");
-      assert(binaryMessage() && notice() === globalNotice && !$("binary-check").disabled);
+      assert(binaryMessage() && notice() === globalNotice && !$("binary-action").disabled);
+      assert(binaryLabel() === ShellscaledI18n.t("binary.update"));
       assert(JSON.stringify(backend()) === JSON.stringify(original));
       assert(requests().filter((request) => request.action === "settings").length === settingsCalls);
     });
@@ -933,16 +966,17 @@
       fixture.holdNextBinary();
       try {
         const before = binaryRequests().length;
-        click("binary-update");
+        click("binary-action");
         await until(() => binaryRequests().length > before);
         assert($("main").getAttribute("aria-busy") === "true" && binaryMessage());
-        assert($("binary-update").disabled && $("binary-check").disabled);
-        $("binary-update").click();
+        assert($("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.updating"));
+        assert(getComputedStyle($("binary-action").querySelector(".button-spinner")).display !== "none");
+        $("binary-action").click();
         await wait(50);
         assert(binaryRequests().length === before + 1);
         fixture.releaseBinary();
         await idle();
-        assert($("binary-update").disabled && binaryMessage() && notice() === globalNotice);
+        assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && binaryMessage() && notice() === globalNotice);
         assert($("binary-current-version").textContent.includes("1.104.4"));
         assert(checkbox.checked === confirmed && !checkbox.disabled);
         assert(JSON.stringify(backend().settings) === JSON.stringify(original.settings));

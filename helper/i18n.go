@@ -176,17 +176,21 @@ func stateLabel(state, locale string) string {
 	}
 }
 
-func description(state, locale string) string {
+func description(state, locale, version string) string {
 	hint := [3]string{" · 点击运行连接", " · 點選執行以連線", " · Tap Run to connect"}
 	if state == "Running" || state == "Starting" {
 		hint = [3]string{" · 点击运行断开", " · 點選執行以中斷連線", " · Tap Run to disconnect"}
 	}
+	suffix := ""
+	if stableVersionPattern.MatchString(version) {
+		suffix = " · Tailscale v" + version
+	}
 	switch locale {
 	case "zh-CN":
-		return stateLabel(state, locale) + hint[0]
+		return stateLabel(state, locale) + hint[0] + suffix
 	case "zh-TW":
-		return stateLabel(state, locale) + hint[1]
+		return stateLabel(state, locale) + hint[1] + suffix
 	default:
-		return stateLabel(state, locale) + hint[2]
+		return stateLabel(state, locale) + hint[2] + suffix
 	}
 }

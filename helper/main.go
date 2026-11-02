@@ -792,7 +792,8 @@ func (b *backend) refreshDescription(ctx context.Context) {
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	// UI polls, action presses and the supervisor run in different processes.
 	// Fetch after acquiring the lock so an earlier poll cannot overwrite a later transition.
-	value := description(b.status(ctx).State, savedLocale())
+	status := b.status(ctx)
+	value := description(status.State, savedLocale(), status.Version)
 	boot, _ := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	stamp := "dual-description-v1\n" + string(boot) + value
 	cache := dataDir + "/run/description.cache"
@@ -905,7 +906,7 @@ func main() {
 	r.Error = localizedError(r.Error, b.locale)
 	if len(os.Args) == 2 && os.Args[1] == "toggle" {
 		if r.OK {
-			fmt.Println(description(r.State, b.locale))
+			fmt.Println(description(r.State, b.locale, r.Version))
 		} else {
 			fmt.Println(tr("操作失败", b.locale) + r.Error)
 		}

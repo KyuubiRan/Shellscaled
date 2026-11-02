@@ -1204,6 +1204,10 @@ func (b *backend) binary(ctx context.Context, update bool) response {
 		r.Error = err.Error()
 		r.ExitCode = 1
 	}
+	if update {
+		// Refresh both managers after success or rollback, using the installed core.
+		b.refreshDescription(ctx)
+	}
 	return r
 }
 

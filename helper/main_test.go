@@ -68,8 +68,16 @@ func TestApplicationLocales(t *testing.T) {
 				t.Errorf("missing translation for %q", key)
 			}
 		}
-		if description("Running", locale) == description("Stopped", locale) {
+		if description("Running", locale, "1.104.4") == description("Stopped", locale, "1.104.4") {
 			t.Error("connection descriptions must distinguish up and down")
+		}
+		for _, state := range []string{"Running", "Stopped", "ServiceStopped", "NeedsLogin"} {
+			if !strings.HasSuffix(description(state, locale, "1.104.4"), " · Tailscale v1.104.4") {
+				t.Error("module description must include the installed core version")
+			}
+		}
+		if strings.Contains(description("Running", locale, "1.2.3\ndescription=injected"), "injected") {
+			t.Error("invalid version must not enter module metadata")
 		}
 		if !strings.Contains(localizedError("未开放参数 --socket", locale), "--socket") {
 			t.Error("unsupported option must remain identifiable")

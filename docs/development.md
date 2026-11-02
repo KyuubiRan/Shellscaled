@@ -150,6 +150,13 @@ names, addresses, search text and clipboard contents are never persisted.
 
 ## Binary-only updates
 
+One action button starts as Check for updates and becomes Update now only after
+a compatible offer is confirmed. Checking and updating disable the button and
+show a spinner before its label; pointer and keyboard activation have local
+ripple feedback. Changing channels invalidates the offer. The module list
+description appends the verified runtime Tailscale version, refreshes after a
+binary transaction, and keeps both KernelSU's override and module.prop in sync.
+
 The settings card checks only after a user request. Its source is the newest eligible
 public release of [the Android CLI fork](https://github.com/KyuubiRan/tailscale-android-cli),
 using GitHub asset digests and the generated manifest. Users choose stable or preview in Settings, with the choice saved in
@@ -260,6 +267,9 @@ the switches, without a global saved notice or manual save control. Leaving the
 page clears the displayed preferences; returning requests current state.
 If reconciliation also fails, the switches remain disabled. An unavailable
 service's default false fields do not count as a confirmed preferences snapshot.
+During a switch write, temporarily disabled controls retain their appearance and
+only the active settings row shows progress. Existing rows and scroll position
+remain in place. Unavailable controls retain their ordinary disabled styling.
 
 Command shortcuts show their literal executable and arguments in every locale.
 Only surrounding help, controls and feedback are translated.

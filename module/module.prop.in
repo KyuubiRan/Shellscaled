@@ -3,5 +3,5 @@ name=Shellscaled
 version=@VERSION@
 versionCode=@VERSION_CODE@
 author=KyuubiRan
-description=Tailscale for Android
+description=Tailscale for Android · Tailscale v@VERSION@
 architecture=@ARCH@

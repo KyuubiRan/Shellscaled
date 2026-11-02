@@ -34,6 +34,10 @@ language-only storage, one connection button, cancellation while connecting,
 immediate single-field switch requests, serialized busy interactions, failure
 rollback with a fresh status, and preservation of unrelated external preference
 changes. Delayed status snapshots exercise the same global serialization boundary.
+Held writes also check that rows and their position remain unchanged and that
+temporarily disabled controls keep their opacity. The single update action is
+checked for ripple feedback, a spinning icon before the label, duplicate-click
+blocking, Check → Update transitions, channel invalidation and error retries.
 Confirmed settings survive language switches and device refreshes.
 Fault cases also apply a setting before returning an error and then fail status
 reads: all setting switches remain disabled until a valid live preferences
