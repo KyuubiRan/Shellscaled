@@ -44,6 +44,15 @@ that the first click during a status read queues exactly one check. An exec-only
 bridge covers the compatibility fallback. Copy tests hold/reject synthetic
 clipboard promises and check focus, brightness, selection, scroll and geometry
 through all translated feedback states.
+Transient success feedback clears when leaving a tab, and delayed completions
+cannot restore an old page's notice even after returning to that tab. One shared
+3.15-second Android WebView wait checks expiration of exit-node, advertisement,
+binary-check and global refresh success together. Confirmed preferences, latest
+binary version and the Update action must remain after the notices expire; a
+refresh cannot recreate the expired text. Showing or hiding the fixed global
+notice must not shift the page layout. Held status errors also stay with their
+origin page. Copy cases cover completed feedback, pending writes and rejections
+across tab changes, including an old completion arriving during a newer copy.
 Confirmed settings survive language switches and device refreshes.
 Fault cases also apply a setting before returning an error and then fail status
 reads: all setting switches remain disabled until a valid live preferences
@@ -53,7 +62,8 @@ the displayed settings. A pending change across pagehide/pageshow likewise
 requires a successful fresh read before another edit is allowed. Command
 examples display the four literal commands in every language, the language card
 comes first, and manual saving is absent. Coverage also includes text-only output,
-all four tabs in three languages at 320/360 CSS-pixel viewport widths, and removal
+all five tabs in three languages at 320/360 CSS-pixel viewport widths, their
+native Android key navigation/order/wrapping and unclipped labels, and removal
 of compatibility/developer copy. The device fixture includes online/offline,
 unnamed, addressless, long-name, dual-stack and HTML-shaped synthetic examples.
 Search, per-field copying, localized control-only feedback, Clipboard API mocks,
@@ -88,7 +98,12 @@ The visible sign-in panel is also checked in all three languages at 320 CSS pixe
 No case signs out, authenticates, or opens a real account/browser.
 
 Network-role cases use synthetic exit-node offers and preferences only. They check
-offline-choice rejection, masked selection/clear requests, preservation of
+that enabling the exit-node switch only opens an empty picker, closing an
+unconfigured picker sends no write, and selecting either online offer immediately
+applies exactly once. Offline/unknown choices are rejected. Held writes show the
+row spinner and disable repeat changes; switching off clears the confirmed
+selection through a masked request. Failed responses require a fresh status read,
+including responses that fail after applying the write. Cases also check preservation of
 externally edited advertisement fields, captured drafts that retain later edits,
 route validation and failed-write reconciliation. Held exit-node list snapshots
 complete out of order across pagehide/pageshow; held writes and fallback status
@@ -97,11 +112,23 @@ pending/successful changes and an older daemon that saves the preference but
 cannot apply it. None of these tests installs routes, changes firewall rules,
 accesses a real account or claims packet delivery.
 
-Taildrop cases use an in-memory directory tree, saved path and waiting-file flag.
-They cover browsing and choosing folders, strict path-only RPCs, device refresh
-queued behind a held browse, disabled chooser controls during writes, later
-drafts surviving old save replies, receive spinners/duplicate blocking, empty
-queue errors and old-page browser completions. These fixtures cannot read shared
+Taildrop cases use an in-memory directory tree, saved path and waiting-file flag
+on its own tab. The saved path is read-only and choosing the current directory
+saves it immediately through a strict path-only RPC. Held saves show the choose
+button's spinner, block duplicates and keep the old confirmed path until completion;
+failed saves retain the browsed location for retry across a language change.
+The tree includes 30 synthetic folders so a real Android WebView can check scroll,
+focus and directory-node identity over a complete 16-second wait: the Taildrop
+tab must not poll status or exit nodes while choosing. An explicit status refresh
+must retain unchanged directory DOM and scroll. Other cases cover parent-folder
+navigation, device refresh queued behind a held browse, receive spinners/duplicate
+blocking, empty queue errors and old-page browser completions.
+Taildrop's saved/received successes each schedule a 3000ms timeout. A WebView-only
+timer wrapper captures those callbacks to verify expiration and that an already
+queued old timeout cannot erase newer feedback, without extra three-second
+waits. Both successes clear immediately when leaving the tab. Held saves and
+receives still apply their data but do not restore success text on another page
+or after a tab roundtrip; retry errors remain local to Taildrop. These fixtures cannot read shared
 storage, receive a real file or call the module helper. The separate native
 `TestTaildropAndroidSharedStorage` is explicitly enabled only on Medium_Phone
 with `SHELLSCALED_STORAGE_TEST=1`; it requires Enforcing and checks FUSE behavior
@@ -110,7 +137,7 @@ inside its own disposable Download subdirectory.
 This fixture supplements actual KernelSU bridge and native helper acceptance;
 it does not assert that a root manager, Tailscale or networking works.
 
-For documentation screenshots, pass a tab (`overview`, `devices`, `settings`, or `command`)
+For documentation screenshots, pass a tab (`overview`, `devices`, `taildrop`, `settings`, or `command`)
 and language (`zh-CN`, `zh-TW`, or `en`, default `zh-CN`). This skips all automatic
 tests and prepares the real UI through its language and tab controls. Data stays
 synthetic: version `1.104.2`, state `Running`, and example addresses
@@ -123,7 +150,7 @@ python3 scripts/emulator.py logcat -d -s ShellscaledUiTest:I '*:S'
 ```
 
 Wait for the matching `SCREENSHOT READY overview zh-CN` log before capturing.
-Repeat with `devices`, `settings` and `command` for the other tabs. The device
+Repeat with `devices`, `taildrop`, `settings` and `command` for the other tabs. The device
 page uses three harmless documentation examples, excluding the adversarial test
 strings. This mode still has no
 root, networking, real module access, or test overlay. Omit `screenshot` to run

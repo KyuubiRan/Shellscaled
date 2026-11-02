@@ -44,8 +44,15 @@
   async function language(value, label = "language") {
     await idle(label + "-ready");
     const before = requests().length;
+    const paused = $("tab-taildrop")?.getAttribute("aria-selected") === "true";
     $("language").value = value;
     $("language").dispatchEvent(new Event("change", { bubbles: true }));
+    if (paused) {
+      await until(() => document.documentElement.lang === value, label + "-local-render");
+      await idle(label + "-complete");
+      assert(requests().length === before, label + "-taildrop-does-not-refresh");
+      return;
+    }
     await until(() => requests().length > before, label + "-rpc-start");
     await idle(label + "-complete");
     assert(requests().at(-1).locale === value);
@@ -75,6 +82,11 @@
   }
   const binaryRequests = () => requests().filter((request) => request.action.startsWith("binary-"));
   const networkRequests = (action) => requests().filter((request) => request.action === action);
+  const tabNames = ["overview", "devices", "taildrop", "settings", "command"];
+  function chooseExitNode(value) {
+    $("exit-node-select").value = value;
+    $("exit-node-select").dispatchEvent(new Event("change", { bubbles: true }));
+  }
   function editRoutes(value) {
     $("advertise-routes").value = value;
     $("advertise-routes").dispatchEvent(new Event("input", { bubbles: true }));
@@ -87,7 +99,7 @@
     // A cached list keeps the select usable while entering Settings refreshes
     // exit-nodes independently of the status/busy queue. Start each held-read
     // scenario only after that initial refresh has finished.
-    await until(() => !$("exit-node-select").disabled && !$("network-refresh").disabled &&
+    await until(() => !$("exit-node-enabled").disabled && !$("network-refresh").disabled &&
       $("network-refresh").getAttribute("aria-busy") === "false", "network-setup-ready");
   }
   async function networkTest(name, body) {
@@ -113,15 +125,11 @@
     });
   }
   const taildropRequests = (action) => requests().filter((request) => request.action === action);
-  function editTaildropPath(value) {
-    $("taildrop-path").value = value;
-    $("taildrop-path").dispatchEvent(new Event("input", { bubbles: true }));
-  }
   async function taildropSetup(path = "/storage/emulated/0/Download") {
     await idle();
     fixture.setTaildropPath(path);
     await refresh();
-    click("tab-settings");
+    click("tab-taildrop");
     await idle();
   }
   async function taildropTest(name, body) {
@@ -184,7 +192,26 @@
     $("device-search").value = value;
     $("device-search").dispatchEvent(new Event("input", { bubbles: true }));
   }
-  const notice = () => JSON.stringify([$("notice").textContent, $("notice").hidden]);
+  const notice = () => JSON.stringify([$("notice").textContent, $("notice").hidden, $("notice").dataset.kind]);
+  function noticePreservedOrExpired(before) {
+    return notice() === before || noNotice();
+  }
+  function noNotice() {
+    return $("notice").hidden && !$("notice").textContent;
+  }
+  function captureFeedbackTimers() {
+    const original = window.setTimeout;
+    const timers = [];
+    window.setTimeout = function (callback, delay, ...args) {
+      if (delay === 3000) timers.push({ callback, args });
+      return original.call(window, callback, delay, ...args);
+    };
+    return {
+      timers,
+      fire(index) { timers[index].callback(...timers[index].args); },
+      restore() { window.setTimeout = original; },
+    };
+  }
   function mockClipboard(writeText, execCommand) {
     const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     const originalExec = document.execCommand;
@@ -205,7 +232,7 @@
     const feedback = button.querySelector(".copy-feedback");
     assert(feedback && feedback.getAttribute("aria-live") === "polite");
     assert(feedback.textContent === ShellscaledI18n.t(state === "copied" ? "copy.copied" : "copy.failed"));
-    assert(notice() === before);
+    assert(noticePreservedOrExpired(before));
   }
 
   try {
@@ -218,7 +245,7 @@
     const dynamicIDs = new Set(["state-title", "connection-label", "service-status", "freshness",
       "exit-lan-description", "settings-hint", "run-command", "command-output",
       "devices-message", "console-label", "about-description", "login-label", "binary-action-label", "binary-message", "network-message", "exit-node-summary", "exit-node-ipv6", "advertise-exit-description",
-      "taildrop-message", "taildrop-save-label", "taildrop-receive-label"]);
+      "taildrop-message", "taildrop-choose-label", "taildrop-receive-label"]);
 
     await test("bridge-is-fixture", () => {
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
@@ -382,36 +409,102 @@
       }
     });
 
-    await networkTest("exit-node-selection-masked-prefs-and-clear", async () => {
+    await networkTest("exit-node-switch-opens-without-selecting-and-rejects-invalid", async () => {
+      await networkSetup();
+      const toggle = $("exit-node-enabled");
+      const select = $("exit-node-select");
+      const before = networkRequests("exit-node").length;
+      assert(toggle.getAttribute("role") === "switch" && !toggle.checked && $("exit-node-picker").hidden);
+      assert(!$("exit-node-apply") && !$("exit-node-clear"));
+      click("exit-node-enabled");
+      assert(toggle.checked && !$("exit-node-picker").hidden && !select.disabled && select.value === "");
+      await wait(60);
+      assert(networkRequests("exit-node").length === before && !backend().exitNodeConfigured);
+      assert([...select.options].some((option) => option.value === "fixture-offline" && option.disabled));
+      chooseExitNode("fixture-offline");
+      chooseExitNode("fixture-not-present");
+      chooseExitNode("");
+      await wait(60);
+      assert(networkRequests("exit-node").length === before);
+      click("exit-node-enabled");
+      assert(!toggle.checked && $("exit-node-picker").hidden);
+      await wait(60);
+      assert(networkRequests("exit-node").length === before && !backend().exitNodeConfigured);
+    });
+
+    await networkTest("exit-node-selection-auto-applies-once-and-switch-clears-masked-prefs", async () => {
       await networkSetup("", false, "10.0.0.0/8");
       const settings = JSON.stringify(backend().settings);
       const select = $("exit-node-select");
+      const toggle = $("exit-node-enabled");
+      const row = toggle.closest(".setting-row");
       const before = networkRequests("exit-node").length;
-      assert([...select.options].some((option) => option.value === "fixture-offline" && option.disabled));
-      select.value = "fixture-offline";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-      assert($("exit-node-apply").disabled);
-      select.value = "fixture-workstation";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+      click("exit-node-enabled");
       fixture.holdNextNetwork();
-      click("exit-node-apply");
+      chooseExitNode("fixture-workstation");
       await until(() => networkRequests("exit-node").length === before + 1);
-      assert(select.disabled && getComputedStyle(select).opacity === "1");
-      $("exit-node-apply").click();
+      assert(toggle.disabled && select.disabled && getComputedStyle(select).opacity === "1");
+      assert(row.dataset.pending === "true" && row.getAttribute("aria-busy") === "true");
+      const spinner = getComputedStyle(row.querySelector(".switch"), "::after");
+      assert(spinner.content !== "none" && spinner.animationName === "spin");
+      chooseExitNode("fixture-workstation");
+      toggle.click();
       await wait(60);
       assert(networkRequests("exit-node").length === before + 1);
-      select.value = "fixture-offline";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
       fixture.releaseNetwork();
       await idle();
-      assert(backend().exitNodeTarget === "fixture-workstation" && select.value === "fixture-offline");
-      click("exit-node-clear");
+      assert(backend().exitNodeTarget === "fixture-workstation" && select.value === "fixture-workstation" && toggle.checked);
+      assert(!toggle.disabled && row.dataset.pending !== "true" && row.getAttribute("aria-busy") === "false");
+      chooseExitNode("fixture-secondary");
       await until(() => networkRequests("exit-node").length === before + 2);
+      await idle();
+      assert(backend().exitNodeTarget === "fixture-secondary" && select.value === "fixture-secondary");
+      fixture.holdNextNetwork();
+      click("exit-node-enabled");
+      await until(() => networkRequests("exit-node").length === before + 3);
+      assert(toggle.disabled && row.dataset.pending === "true");
+      toggle.click();
+      await wait(60);
+      assert(networkRequests("exit-node").length === before + 3);
+      fixture.releaseNetwork();
       await idle();
       const request = networkRequests("exit-node").at(-1);
       assert(request.exitNode === "" && Object.keys(request).sort().join() === "action,exitNode,locale");
-      assert(!backend().exitNodeConfigured && JSON.stringify(backend().settings) === settings);
+      assert(!backend().exitNodeConfigured && !toggle.checked && $("exit-node-picker").hidden);
+      assert(networkRequests("exit-node").slice(before).every((item) => Object.keys(item).sort().join() === "action,exitNode,locale"));
+      assert(JSON.stringify(backend().settings) === settings);
       assert(backend().advertiseRoutes.join() === "10.0.0.0/8");
+    });
+
+    await networkTest("exit-node-auto-apply-failure-waits-for-status-confirmation", async () => {
+      await networkSetup("fixture-workstation");
+      const before = networkRequests("exit-node").length;
+      const reads = statusRequests().length;
+      const globalNotice = notice();
+      fixture.nextNetworkFails();
+      fixture.holdNextStatus();
+      chooseExitNode("fixture-secondary");
+      await until(() => networkRequests("exit-node").length === before + 1 && statusRequests().length > reads);
+      assert($("exit-node-enabled").disabled && $("exit-node-select").disabled);
+      assert(!$("network-message").hidden && $("network-message").dataset.kind === "error");
+      chooseExitNode("fixture-secondary");
+      $("exit-node-enabled").click();
+      await wait(60);
+      assert(networkRequests("exit-node").length === before + 1);
+      fixture.releaseStatus();
+      await idle();
+      assert(backend().exitNodeTarget === "fixture-workstation" && $("exit-node-select").value === "fixture-workstation");
+      assert($("exit-node-enabled").checked && !$("exit-node-enabled").disabled && !$("exit-node-picker").hidden);
+      // A failed response can follow a committed write. Confirm the new target
+      // without resending the selection.
+      fixture.nextNetworkResponseFails();
+      chooseExitNode("fixture-secondary");
+      await until(() => networkRequests("exit-node").length === before + 2);
+      await idle();
+      assert(backend().exitNodeTarget === "fixture-secondary" && $("exit-node-select").value === "fixture-secondary");
+      assert($("exit-node-enabled").checked, "exit-node-confirmed-on");
+      assert(!$("exit-node-enabled").disabled, "exit-node-confirmed-enabled");
+      assert(noticePreservedOrExpired(globalNotice), "exit-node-confirmation-does-not-replace-global-notice");
     });
 
     await networkTest("advertise-exit-preserves-external-subnet-edit", async () => {
@@ -539,7 +632,7 @@
       window.dispatchEvent(new Event("pageshow"));
       await until(() => networkRequests("exit-nodes").length === before + 2);
       fixture.releaseExitNodes(1);
-      await until(() => !$("exit-node-select").disabled);
+      await until(() => !$("exit-node-enabled").disabled && $("network-refresh").getAttribute("aria-busy") === "false");
       const option = () => [...$("exit-node-select").options].find((value) => value.value === "fixture-workstation");
       assert(option() && !option().disabled, "fresh-exit-list-online");
       fixture.releaseExitNodes(0);
@@ -582,10 +675,13 @@
       assert($("exit-node-summary").textContent === ShellscaledI18n.t("network.summaryNone"));
     });
 
-    await taildropTest("taildrop-browser-navigation-and-local-save", async () => {
+    await taildropTest("taildrop-dedicated-tab-choosing-folder-saves-immediately", async () => {
       await taildropSetup();
       const before = taildropRequests("taildrop-list").length;
       const settings = JSON.stringify(backend().settings);
+      const path = $("taildrop-path");
+      assert(!$("panel-taildrop").hidden && $("panel-taildrop").contains(path) && !$("panel-settings").contains(path));
+      assert(path.readOnly && !$("taildrop-save") && !$("taildrop-save-label"));
       click("taildrop-browse");
       await until(() => taildropRequests("taildrop-list").length === before + 1, "taildrop-browse-start");
       await idle();
@@ -595,14 +691,19 @@
       entry.click();
       await idle();
       assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download/Other");
-      click("taildrop-choose");
-      assert($("taildrop-path").value === "/storage/emulated/0/Download/Other" && $("taildrop-browser").hidden);
+      assert(path.value === "/storage/emulated/0/Download");
+      click("taildrop-browser-up");
+      await idle();
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download");
+      $("taildrop-directory-list").querySelector('button[data-path$="/Other"]').click();
+      await idle();
       const saves = taildropRequests("taildrop-path").length;
-      click("taildrop-save");
+      click("taildrop-choose");
       await until(() => taildropRequests("taildrop-path").length === saves + 1, "taildrop-save-start");
       await idle();
       const request = taildropRequests("taildrop-path").at(-1);
       assert(Object.keys(request).sort().join() === "action,locale,path" && request.path.endsWith("/Other"));
+      assert(path.value === request.path && $("taildrop-browser").hidden);
       assert(backend().taildropPath === request.path && JSON.stringify(backend().settings) === settings);
     });
 
@@ -623,7 +724,7 @@
       assert(cards().length > 0);
     });
 
-    await taildropTest("taildrop-save-blocks-chooser-and-preserves-newer-draft", async () => {
+    await taildropTest("taildrop-choose-save-spinner-and-duplicate-blocking", async () => {
       await taildropSetup();
       click("taildrop-browse");
       await idle();
@@ -633,21 +734,83 @@
       await idle();
       const before = taildropRequests("taildrop-path").length;
       fixture.holdNextTaildropAction();
-      click("taildrop-save");
+      click("taildrop-choose");
       await until(() => taildropRequests("taildrop-path").length === before + 1, "taildrop-save-held");
       assert($("taildrop-choose").disabled && $("taildrop-browser-up").disabled && $("taildrop-path").disabled);
+      assert(!$("taildrop-browser").hidden && $("taildrop-choose").classList.contains("is-working"));
+      assert($("taildrop-choose-label").textContent === ShellscaledI18n.t("taildrop.saving"));
+      const spinner = $("taildrop-choose").querySelector(".button-spinner");
+      assert(spinner && getComputedStyle(spinner).display !== "none" && getComputedStyle(spinner).animationName === "spin");
       $("taildrop-choose").click();
       assert($("taildrop-path").value === "/storage/emulated/0/Download");
-      // A later queued input event must also survive an older response.
-      editTaildropPath("/storage/emulated/0/Documents");
+      await wait(60);
+      assert(taildropRequests("taildrop-path").length === before + 1);
       fixture.releaseTaildropAction();
       await idle();
-      assert($("taildrop-path").value === "/storage/emulated/0/Documents");
-      assert(backend().taildropPath === "/storage/emulated/0/Download");
-      click("taildrop-save");
-      await until(() => taildropRequests("taildrop-path").length === before + 2, "taildrop-new-draft-save");
+      assert($("taildrop-path").value === "/storage/emulated/0/Download/Other" && $("taildrop-browser").hidden);
+      assert(backend().taildropPath === "/storage/emulated/0/Download/Other");
+      assert(!$("taildrop-choose").classList.contains("is-working") && !$("taildrop-browse").disabled && !$("taildrop-receive").disabled);
+    });
+
+    await taildropTest("taildrop-choose-failure-keeps-location-for-localized-retry", async () => {
+      await taildropSetup();
+      const locale = $("language").value;
+      try {
+        click("taildrop-browse");
+        await idle();
+        $("taildrop-directory-list").querySelector('button[data-path$="/Other"]').click();
+        await idle();
+        const before = taildropRequests("taildrop-path").length;
+        fixture.nextTaildropActionFails();
+        click("taildrop-choose");
+        await until(() => taildropRequests("taildrop-path").length === before + 1, "taildrop-failed-save");
+        await idle();
+        assert(!$("taildrop-message").hidden && $("taildrop-message").dataset.kind === "error");
+        assert(!$("taildrop-browser").hidden && !$("taildrop-choose").disabled);
+        assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download/Other");
+        assert($("taildrop-path").value === "/storage/emulated/0/Download" && backend().taildropPath === "/storage/emulated/0/Download");
+        await language(locale === "en" ? "zh-TW" : "en");
+        assert(!$("panel-taildrop").hidden && !$("taildrop-browser").hidden);
+        assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download/Other");
+        assert(taildropRequests("taildrop-path").length === before + 1);
+        const globalNotice = notice();
+        click("taildrop-choose");
+        await until(() => taildropRequests("taildrop-path").length === before + 2, "taildrop-retry-save");
+        await idle();
+        assert($("taildrop-browser").hidden && backend().taildropPath === "/storage/emulated/0/Download/Other");
+        assert($("taildrop-path").value === backend().taildropPath && noticePreservedOrExpired(globalNotice));
+      } finally {
+        await language(locale);
+      }
+    });
+
+    await taildropTest("taildrop-browser-pauses-auto-refresh-and-preserves-directory-dom-scroll", async () => {
+      await taildropSetup();
+      click("taildrop-browse");
       await idle();
-      assert(backend().taildropPath === "/storage/emulated/0/Documents");
+      const list = $("taildrop-directory-list");
+      const first = list.firstElementChild;
+      const focused = list.querySelector('button[data-path$="/Folder10"]');
+      assert(first && focused && list.scrollHeight > list.clientHeight);
+      list.scrollTop = Math.min(160, list.scrollHeight - list.clientHeight);
+      focused.focus({ preventScroll: true });
+      const scroll = list.scrollTop;
+      assert(scroll > 0 && document.activeElement === focused);
+      const reads = statusRequests().length;
+      const exitReads = networkRequests("exit-nodes").length;
+      const browses = taildropRequests("taildrop-list").length;
+      // Use the real Android WebView clock, covering a complete 15s polling
+      // interval without executing the product JavaScript on the host.
+      await wait(16050);
+      await idle();
+      assert(statusRequests().length === reads && networkRequests("exit-nodes").length === exitReads, "taildrop-no-periodic-network-refresh");
+      assert(taildropRequests("taildrop-list").length === browses);
+      assert(list.firstElementChild === first && document.activeElement === focused && Math.abs(list.scrollTop - scroll) <= 1, "taildrop-directory-stable-while-selecting");
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download" && !$("taildrop-browser").hidden);
+      // An explicit status refresh may update the surrounding UI while the
+      // unchanged directory list retains its nodes and scroll position.
+      await refresh();
+      assert(list.firstElementChild === first && Math.abs(list.scrollTop - scroll) <= 1, "taildrop-directory-stable-after-explicit-refresh");
     });
 
     await taildropTest("taildrop-receive-spinner-mask-and-local-failure", async () => {
@@ -695,6 +858,91 @@
       await wait(100);
       assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Documents");
       assert(!$("taildrop-choose").disabled && $("main").getAttribute("aria-busy") === "false");
+    });
+
+    await taildropTest("taildrop-success-timers-expire-and-tab-changes-clear-feedback", async () => {
+      await taildropSetup();
+      const clock = captureFeedbackTimers();
+      try {
+        click("taildrop-browse");
+        await idle();
+        $("taildrop-directory-list").querySelector('button[data-path$="/Other"]').click();
+        await idle();
+        const beforeSave = clock.timers.length;
+        click("taildrop-choose");
+        await idle();
+        assert(!$("taildrop-message").hidden && $("taildrop-message").textContent === ShellscaledI18n.t("taildrop.saved"));
+        assert(clock.timers.length > beforeSave, "taildrop-save-schedules-3000ms-feedback");
+        const savedTimer = clock.timers.length - 1;
+        const beforeReceive = clock.timers.length;
+        click("taildrop-receive");
+        await idle();
+        assert(!$("taildrop-message").hidden && $("taildrop-message").textContent === ShellscaledI18n.t("taildrop.received"));
+        assert(clock.timers.length > beforeReceive, "taildrop-receive-schedules-3000ms-feedback");
+        const receivedTimer = clock.timers.length - 1;
+        // Simulate a canceled timeout already queued in Android WebView. It
+        // must not erase feedback from the more recent operation.
+        clock.fire(savedTimer);
+        assert($("taildrop-message").textContent === ShellscaledI18n.t("taildrop.received") && !$("taildrop-message").hidden);
+        clock.fire(receivedTimer);
+        assert($("taildrop-message").hidden && !$("taildrop-message").textContent, "taildrop-feedback-expiry-callback");
+        assert($("taildrop-path").value.endsWith("/Other") && backend().taildropPath.endsWith("/Other"));
+        click("taildrop-receive");
+        await idle();
+        assert(!$("taildrop-message").hidden);
+        click("tab-overview");
+        assert($("taildrop-message").hidden && noNotice(), "taildrop-received-clears-on-leave");
+        click("tab-taildrop");
+        assert($("taildrop-message").hidden);
+        click("taildrop-browse");
+        await idle();
+        click("taildrop-choose");
+        await idle();
+        assert($("taildrop-message").textContent === ShellscaledI18n.t("taildrop.saved"));
+        click("tab-settings");
+        assert($("taildrop-message").hidden && noNotice(), "taildrop-saved-clears-on-leave");
+        click("tab-taildrop");
+        assert($("taildrop-message").hidden);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    await taildropTest("taildrop-late-success-keeps-data-without-restoring-departed-feedback", async () => {
+      await taildropSetup();
+      click("taildrop-browse");
+      await idle();
+      $("taildrop-directory-list").querySelector('button[data-path$="/Other"]').click();
+      await idle();
+      const saves = taildropRequests("taildrop-path").length;
+      fixture.holdNextTaildropAction();
+      click("taildrop-choose");
+      await until(() => taildropRequests("taildrop-path").length === saves + 1);
+      click("tab-overview");
+      click("tab-taildrop");
+      fixture.releaseTaildropAction();
+      await idle();
+      assert($("taildrop-path").value.endsWith("/Other") && $("taildrop-browser").hidden);
+      assert($("taildrop-message").hidden && noNotice(), "taildrop-save-returning-to-same-tab-does-not-resurrect-success");
+      const receives = taildropRequests("taildrop-receive").length;
+      fixture.holdNextTaildropAction();
+      click("taildrop-receive");
+      await until(() => taildropRequests("taildrop-receive").length === receives + 1);
+      click("tab-overview");
+      fixture.releaseTaildropAction();
+      await idle();
+      assert($("taildrop-message").hidden && noNotice(), "taildrop-receive-success-stays-on-origin-page");
+      click("tab-taildrop");
+      assert($("taildrop-message").hidden && !$("taildrop-receive").disabled);
+      fixture.nextTaildropActionFails();
+      click("taildrop-receive");
+      await idle();
+      assert(!$("taildrop-message").hidden && $("taildrop-message").dataset.kind === "error");
+      assert($("taildrop-message").closest("#panel-taildrop"));
+      click("tab-overview");
+      assert($("panel-taildrop").hidden && noNotice());
+      click("tab-taildrop");
+      assert(!$("taildrop-message").hidden && !$("taildrop-receive").disabled, "taildrop-retry-error-remains-local");
     });
 
     for (const locale of locales) {
@@ -814,7 +1062,7 @@
           assert($("accept-routes").checked && $("shields-up").checked === !original.shieldsUp);
         }
         await openDevices(true);
-        assert(settingsRequests().length === before + 1 && notice() === globalNotice);
+        assert(settingsRequests().length === before + 1 && noticePreservedOrExpired(globalNotice));
         click("tab-settings");
         await applySetting("accept-routes", original.acceptRoutes);
         await applySetting("exit-lan", !original.exitNodeAllowLanAccess);
@@ -850,7 +1098,7 @@
         await idle();
         assert(statusRequests().length > statuses && $("shields-up").checked === original.shieldsUp);
         assert(JSON.stringify(backend().settings) === JSON.stringify(original));
-        assert($("settings-hint").textContent.includes(ShellscaledI18n.t("settings.failed")) && notice() === globalNotice);
+        assert($("settings-hint").textContent.includes(ShellscaledI18n.t("settings.failed")) && noticePreservedOrExpired(globalNotice));
         await applySetting("shields-up", !original.shieldsUp);
         assert($("settings-hint").textContent === ShellscaledI18n.t("settings.automatic"));
 
@@ -896,7 +1144,7 @@
         await idle();
         assert(backend().settings.shieldsUp === !original && $("shields-up").checked === original);
         assert(controls.every((control) => control.disabled));
-        assert($("settings-hint").textContent.includes(ShellscaledI18n.t("settings.unconfirmed")) && notice() === globalNotice);
+        assert($("settings-hint").textContent.includes(ShellscaledI18n.t("settings.unconfirmed")) && noticePreservedOrExpired(globalNotice));
         // Programmatic change events must not bypass disabled controls either.
         $("shields-up").checked = !original;
         $("shields-up").dispatchEvent(new Event("change", { bubbles: true }));
@@ -1203,6 +1451,57 @@
       }
     });
 
+    await test("copy-tab-change-clears-feedback-and-invalidates-late-completions", async () => {
+      const pending = [];
+      let fallbacks = 0;
+      const restore = mockClipboard(() => new Promise((resolve, reject) => {
+        pending.push({ resolve, reject });
+      }), () => { fallbacks++; return true; });
+      try {
+        click("tab-overview");
+        await idle();
+        const control = $("addresses").querySelector("button.copy-control[data-copy]");
+        assert(control && !control.disabled);
+        const begin = async () => {
+          const before = pending.length;
+          control.click();
+          await until(() => pending.length === before + 1 && control.dataset.copyPending);
+          return pending.at(-1);
+        };
+        const initial = await begin();
+        initial.resolve();
+        await until(() => control.dataset.copyState === "copied");
+        click("tab-taildrop");
+        assert(!control.dataset.copyState && !control.dataset.copyPending, "copy-complete-feedback-clears-on-tab-leave");
+        assert(control.querySelector(".copy-feedback-label").textContent === ShellscaledI18n.t("copy.action"));
+        click("tab-overview");
+        assert(!control.dataset.copyState);
+        const old = await begin();
+        click("tab-taildrop");
+        click("tab-overview");
+        const current = await begin();
+        old.resolve();
+        await wait(50);
+        assert(control.dataset.copyPending && !control.dataset.copyState, "old-tab-copy-cannot-finish-new-copy");
+        current.resolve();
+        await until(() => control.dataset.copyState === "copied" && !control.dataset.copyPending);
+        click("tab-taildrop");
+        assert(!control.dataset.copyState);
+        click("tab-overview");
+        const rejected = await begin();
+        click("tab-taildrop");
+        rejected.reject(new Error("synthetic-tab-copy-rejection"));
+        await wait(50);
+        assert(!control.dataset.copyState && !control.dataset.copyPending && fallbacks === 0);
+        assert(!document.querySelector(".clipboard-buffer") && noNotice());
+      } finally {
+        for (const operation of pending) operation.resolve();
+        restore();
+        click("tab-overview");
+        await idle();
+      }
+    });
+
     await test("login-without-url-busy-errors-and-confirmed-settings", async () => {
       await idle();
       const original = backend();
@@ -1234,7 +1533,7 @@
         viewport.content = originalViewport;
         const before = calls().length;
         const globalNotice = notice();
-        for (const tab of ["devices", "settings", "command", "overview"]) {
+        for (const tab of ["devices", "taildrop", "settings", "command", "overview"]) {
           click("tab-" + tab);
           await idle();
         }
@@ -1249,16 +1548,16 @@
         $("login-tailscale").click();
         click("tab-settings");
         await wait(50);
-        assert(calls().length === before + 1 && notice() === globalNotice);
+        assert(calls().length === before + 1 && noticePreservedOrExpired(globalNotice));
         fixture.releaseLogin();
         await idle();
         assert(requests().slice(firstRequest).some((request) => request.action === "status"));
         assert(!$("login-card").hidden && !$("login-tailscale").disabled && !$("copy-login").disabled);
         assert($("login-url").value === "https://example.test/login/generated");
-        assert(!$("login-message").hidden && $("login-message").dataset.kind === "info");
-        assert($("login-message").textContent === ShellscaledI18n.t("login.opened"));
+        assert($("login-message").hidden, "login-success-does-not-follow-tab-navigation");
         assert(checkbox.checked === confirmed && !checkbox.disabled);
         click("tab-overview");
+        assert($("login-message").hidden, "login-success-does-not-return-after-late-completion");
         fixture.setLoginMode("error");
         click("login-tailscale");
         await until(() => calls().length === before + 2);
@@ -1267,7 +1566,7 @@
         assert($("login-message").closest("#login-card") && $("login-message").textContent.includes(ShellscaledI18n.t("login.failed")));
         click("tab-command");
         click("tab-overview");
-        assert(calls().length === before + 2 && notice() === globalNotice);
+        assert(calls().length === before + 2 && noticePreservedOrExpired(globalNotice));
         assert(calls().every((request) => Object.keys(request).sort().join(",") === "action,locale"));
         assert(requests().filter((request) => request.action === "settings").length === settingsCalls);
         assert(checkbox.checked === confirmed && JSON.stringify(backend().settings) === JSON.stringify(original.settings));
@@ -1320,7 +1619,7 @@
         click("tab-settings");
         click("tab-overview");
         await idle();
-        assert(calls().length === before + 1 && notice() === globalNotice);
+        assert(calls().length === before + 1 && noticePreservedOrExpired(globalNotice));
         assert(JSON.stringify(backend().settings) === JSON.stringify(original.settings) && storageIsLanguageOnly());
       } finally {
         restore();
@@ -1349,7 +1648,7 @@
         const calls = requests().filter((request) => request.action === "console");
         assert(calls.length === 2 && calls.every((request) => Object.keys(request).sort().join(",") === "action,locale"));
         assert(location.href === url && fixture.navigationAttempts() === before && opens === 0);
-        assert(!$("console-message").hidden && $("console-message").textContent.trim() && notice() === globalNotice);
+        assert(!$("console-message").hidden && $("console-message").textContent.trim() && noticePreservedOrExpired(globalNotice));
       } finally { window.open = originalOpen; }
     });
 
@@ -1365,7 +1664,7 @@
       window.open = () => { opens++; return null; };
       try {
         assert(calls().length === 0);
-        for (const tab of ["devices", "settings", "command", "overview"]) {
+        for (const tab of ["devices", "taildrop", "settings", "command", "overview"]) {
           click("tab-" + tab);
           await idle();
         }
@@ -1382,7 +1681,7 @@
         button.click();
         click("tab-settings");
         await wait(50);
-        assert(calls().length === 1 && notice() === globalNotice);
+        assert(calls().length === 1 && noticePreservedOrExpired(globalNotice));
         fixture.releaseAbout();
         await idle();
         assert(!button.disabled && button.getAttribute("aria-busy") === "false" && $("about-message").hidden);
@@ -1400,7 +1699,7 @@
         assert($("about-description").textContent === ShellscaledI18n.t("about.description"));
         click("tab-command");
         await idle();
-        assert(notice() === globalNotice && calls().length === 2);
+        assert(noticePreservedOrExpired(globalNotice) && calls().length === 2);
         click("tab-overview");
         assert(calls().every((request) => Object.keys(request).sort().join(",") === "action,locale"));
         assert(location.href === url && fixture.navigationAttempts() === navigations && opens === 0 && storageIsLanguageOnly());
@@ -1436,14 +1735,14 @@
         assert($("binary-action").querySelector(".button-ripple"));
         $("binary-action").click();
         await wait(75);
-        assert(binaryRequests().length === 1 && notice() === globalNotice);
+        assert(binaryRequests().length === 1 && noticePreservedOrExpired(globalNotice));
       } finally { fixture.releaseBinary(); await idle(); }
       assert(!$("binary-action").disabled && binaryMessage());
       assert(binaryLabel() === ShellscaledI18n.t("binary.update") && $("binary-action").getAttribute("aria-busy") === "false");
       assert($("binary-current-version").textContent.includes("1.104.2"));
       assert(!$("binary-latest-row").hidden && $("binary-latest-version").textContent.includes("1.104.4"));
       assert(Object.keys(binaryRequests()[0]).sort().join(",") === "action,locale");
-      assert(notice() === globalNotice);
+      assert(noticePreservedOrExpired(globalNotice));
     });
 
     await test("binary-first-click-during-status-runs-once", async () => {
@@ -1463,6 +1762,8 @@
         $("binary-action").click();
         await wait(75);
         assert(binaryRequests().length === beforeBinary);
+        click("tab-taildrop");
+        click("tab-settings");
         fixture.releaseStatus();
         await until(() => binaryRequests().length === beforeBinary + 1);
         assert(binaryRequests().at(-1).action === "binary-check");
@@ -1476,6 +1777,7 @@
         await idle();
       }
       assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.update"));
+      assert($("binary-message").hidden, "queued-check-keeps-data-without-departed-feedback");
     });
 
     await test("binary-channel-saves-without-checking-and-preserves-settings", async () => {
@@ -1510,7 +1812,7 @@
         await idle();
         assert(backend().updateChannel === other && selected.value === other);
         assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && $("binary-latest-row").hidden && binaryMessage());
-        assert(networkActions() === before && notice() === globalNotice);
+        assert(networkActions() === before && noticePreservedOrExpired(globalNotice));
         await checkBinary("revision");
         assert($("binary-current-version").textContent === $("binary-latest-version").textContent, "revision-version-display");
         assert(!$("binary-action").disabled);
@@ -1527,7 +1829,13 @@
         await idle();
         assert(selected.value === other && backend().updateChannel === other, "failed-channel-restoration");
         assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && $("binary-latest-row").hidden);
-        assert(binaryMessage() && $("binary-message").dataset.kind === "error" && notice() === globalNotice);
+        assert(binaryMessage() && $("binary-message").dataset.kind === "error" && noticePreservedOrExpired(globalNotice));
+        assert($("binary-message").textContent.startsWith(ShellscaledI18n.t("binary.channelFailed")), "channel-error-keeps-action-category");
+        click("tab-overview");
+        assert($("panel-settings").hidden && noNotice());
+        click("tab-settings");
+        await idle();
+        assert(binaryMessage() && $("binary-message").textContent.startsWith(ShellscaledI18n.t("binary.channelFailed")), "channel-error-category-survives-tab-return");
         assert(networkActions() === checked && checkbox.checked === confirmed && !checkbox.disabled);
         assert(JSON.stringify(backend().settings) === JSON.stringify(original.settings));
         assert(JSON.stringify(backend().ips) === JSON.stringify(original.ips) && backend().state === original.state);
@@ -1555,7 +1863,15 @@
         click("binary-action");
         await until(() => binaryRequests().length > before);
         await idle();
-        assert(binaryRequests().length === before + 1 && binaryRequests().at(-1).action === "binary-check" && notice() === globalNotice);
+        assert(binaryRequests().length === before + 1 && binaryRequests().at(-1).action === "binary-check" && noticePreservedOrExpired(globalNotice));
+        if (mode === "error") {
+          assert($("binary-message").textContent.startsWith(ShellscaledI18n.t("binary.checkFailed")));
+          click("tab-overview");
+          assert($("panel-settings").hidden && noNotice());
+          click("tab-settings");
+          await idle();
+          assert(binaryMessage() && $("binary-message").textContent.startsWith(ShellscaledI18n.t("binary.checkFailed")), "check-error-category-survives-tab-return");
+        }
       }
     });
 
@@ -1570,7 +1886,14 @@
       await idle();
       assert(binaryRequests().length === before + 1 && binaryRequests().at(-1).action === "binary-update");
       assert(Object.keys(binaryRequests().at(-1)).sort().join(",") === "action,locale");
-      assert(binaryMessage() && notice() === globalNotice && !$("binary-action").disabled);
+      assert(binaryMessage() && noticePreservedOrExpired(globalNotice) && !$("binary-action").disabled);
+      assert(binaryLabel() === ShellscaledI18n.t("binary.update"));
+      assert($("binary-message").textContent.startsWith(ShellscaledI18n.t("binary.updateFailed")));
+      click("tab-overview");
+      assert($("panel-settings").hidden && noNotice());
+      click("tab-settings");
+      await idle();
+      assert(binaryMessage() && $("binary-message").textContent.startsWith(ShellscaledI18n.t("binary.updateFailed")), "update-error-category-survives-tab-return");
       assert(binaryLabel() === ShellscaledI18n.t("binary.update"));
       assert(JSON.stringify(backend()) === JSON.stringify(original));
       assert(requests().filter((request) => request.action === "settings").length === settingsCalls);
@@ -1601,7 +1924,7 @@
         assert(binaryRequests().length === before + 1);
         fixture.releaseBinary();
         await idle();
-        assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && binaryMessage() && notice() === globalNotice);
+        assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && binaryMessage() && noticePreservedOrExpired(globalNotice));
         assert($("binary-current-version").textContent.includes("1.104.4"));
         assert(checkbox.checked === confirmed && !checkbox.disabled);
         assert(JSON.stringify(backend().settings) === JSON.stringify(original.settings));
@@ -1614,6 +1937,117 @@
         fixture.releaseBinary();
         await idle();
         window.open = originalOpen;
+      }
+    });
+
+    await networkTest("success-notices-expire-together-without-losing-confirmed-data", async () => {
+      await networkSetup();
+      click("exit-node-enabled");
+      chooseExitNode("fixture-workstation");
+      await idle();
+      editRoutes("192.0.2.0/24");
+      click("advertise-save");
+      await idle();
+      await checkBinary("revision");
+      assert($("network-message").textContent === ShellscaledI18n.t("network.saved") && !$("network-message").hidden);
+      assert($("advertise-message").textContent === ShellscaledI18n.t("network.advertiseSaved") && !$("advertise-message").hidden);
+      assert(binaryMessage() && $("binary-message").textContent === ShellscaledI18n.t("binary.available"));
+      window.scrollTo(0, 0);
+      const top = $("panel-settings").getBoundingClientRect().top;
+      await refresh();
+      assert(!$("notice").hidden && $("notice").textContent === ShellscaledI18n.t("notice.updated"));
+      assert(Math.abs($("panel-settings").getBoundingClientRect().top - top) <= 1, "global-success-does-not-shift-page-layout");
+      const latest = $("binary-latest-version").textContent;
+      const checked = binaryRequests().length;
+      const preferences = JSON.stringify(backend().settings);
+      // All four notices run concurrently in the real Android WebView. One
+      // wait covers the common three-second lifetime rather than delaying each
+      // action separately.
+      await wait(3150);
+      await idle();
+      for (const id of ["network-message", "advertise-message", "binary-message"]) {
+        assert($(id).hidden && !$(id).textContent, "expired-success-" + id);
+      }
+      assert(noNotice(), "expired-global-refresh-success");
+      assert(Math.abs($("panel-settings").getBoundingClientRect().top - top) <= 1, "expired-global-success-does-not-shift-layout");
+      assert(backend().exitNodeTarget === "fixture-workstation" && backend().advertiseRoutes.join() === "192.0.2.0/24");
+      assert(JSON.stringify(backend().settings) === preferences);
+      assert(!$("binary-latest-row").hidden && $("binary-latest-version").textContent === latest);
+      assert(binaryLabel() === ShellscaledI18n.t("binary.update") && !$("binary-action").disabled && binaryRequests().length === checked);
+      await refresh();
+      assert(["network-message", "advertise-message", "binary-message"].every((id) => $(id).hidden), "status-does-not-restore-expired-success");
+      click("tab-overview");
+      assert(noNotice(), "refresh-success-clears-immediately-on-tab-change");
+      click("tab-settings");
+      assert(noNotice() && $("binary-message").hidden && binaryLabel() === ShellscaledI18n.t("binary.update"));
+    });
+
+    await networkTest("late-settings-success-updates-data-without-cross-tab-notices", async () => {
+      await networkSetup();
+      const preferences = JSON.stringify(backend().settings);
+      try {
+        const exits = networkRequests("exit-node").length;
+        click("exit-node-enabled");
+        fixture.holdNextNetwork();
+        chooseExitNode("fixture-workstation");
+        await until(() => networkRequests("exit-node").length === exits + 1);
+        click("tab-taildrop");
+        click("tab-settings");
+        fixture.releaseNetwork();
+        await idle();
+        await until(() => $("network-refresh").getAttribute("aria-busy") === "false");
+        assert(backend().exitNodeTarget === "fixture-workstation" && $("exit-node-select").value === "fixture-workstation");
+        assert($("network-message").hidden && noNotice(), "exit-success-does-not-return-after-tab-roundtrip");
+        const adverts = networkRequests("advertise").length;
+        editRoutes("192.0.2.0/24");
+        fixture.holdNextNetwork();
+        click("advertise-save");
+        await until(() => networkRequests("advertise").length === adverts + 1);
+        click("tab-overview");
+        fixture.releaseNetwork();
+        await idle();
+        assert($("advertise-message").hidden && noNotice(), "advertise-success-stays-on-origin-page");
+        click("tab-settings");
+        assert($("advertise-message").hidden && backend().advertiseRoutes.join() === "192.0.2.0/24");
+        await checkBinary("current");
+        fixture.setBinaryMode("revision");
+        fixture.holdNextBinary();
+        const binaries = binaryRequests().length;
+        click("binary-action");
+        await until(() => binaryRequests().length === binaries + 1);
+        click("tab-overview");
+        click("tab-settings");
+        fixture.releaseBinary();
+        await idle();
+        assert(binaryLabel() === ShellscaledI18n.t("binary.update") && !$("binary-latest-row").hidden);
+        assert($("binary-message").hidden && noNotice(), "binary-result-data-survives-without-late-success-text");
+        const reads = statusRequests().length;
+        fixture.holdNextStatus();
+        click("refresh");
+        await until(() => statusRequests().length > reads);
+        click("tab-taildrop");
+        fixture.releaseStatus();
+        await idle();
+        assert(noNotice(), "held-refresh-success-does-not-follow-new-page");
+        click("tab-settings");
+        assert(noNotice() && $("binary-message").hidden);
+        const failedReads = statusRequests().length;
+        fixture.setStatusMode("error");
+        fixture.holdNextStatus();
+        click("refresh");
+        await until(() => statusRequests().length > failedReads);
+        click("tab-taildrop");
+        fixture.releaseStatus();
+        await idle();
+        assert(noNotice(), "held-refresh-error-does-not-follow-new-page");
+        fixture.setStatusMode("normal");
+        assert(networkRequests("exit-node").length === exits + 1 && networkRequests("advertise").length === adverts + 1);
+        assert(JSON.stringify(backend().settings) === preferences);
+      } finally {
+        fixture.releaseNetwork();
+        fixture.releaseBinary();
+        fixture.releaseStatus();
+        await idle();
       }
     });
 
@@ -1632,7 +2066,38 @@
       click("clear-command");
     });
 
-    await test("three-language-four-tab-narrow-layout", async () => {
+    await test("five-tab-order-keyboard-navigation-and-panel-selection", async () => {
+      const tabs = [...document.querySelectorAll('[role="tab"]')];
+      assert(tabs.map((tab) => tab.id).join() === tabNames.map((name) => "tab-" + name).join());
+      function selected(name) {
+        const active = $("tab-" + name);
+        assert(active.getAttribute("aria-selected") === "true" && active.tabIndex === 0 && document.activeElement === active);
+        for (const candidate of tabNames) {
+          assert($("panel-" + candidate).hidden === (candidate !== name));
+          assert($("tab-" + candidate).getAttribute("aria-selected") === String(candidate === name));
+          assert($("tab-" + candidate).tabIndex === (candidate === name ? 0 : -1));
+        }
+      }
+      async function press(key, name) {
+        fixture.pressTabKey(key);
+        await until(() => document.activeElement === $("tab-" + name) &&
+          $("tab-" + name).getAttribute("aria-selected") === "true", "tab-key-" + key);
+        await idle();
+        selected(name);
+      }
+      click("tab-overview");
+      $("tab-overview").focus();
+      selected("overview");
+      for (const name of ["devices", "taildrop", "settings", "command", "overview"]) {
+        await press("ArrowRight", name);
+      }
+      await press("ArrowLeft", "command");
+      await press("Home", "overview");
+      await press("End", "command");
+      click("tab-overview");
+    });
+
+    await test("three-language-five-tab-narrow-layout", async () => {
       const viewport = document.querySelector('meta[name="viewport"]');
       const original = viewport.content;
       try {
@@ -1641,12 +2106,24 @@
           await until(() => Math.abs(window.innerWidth - width) <= 2);
           for (const locale of locales) {
             await language(locale);
-            for (const tab of ["overview", "devices", "settings", "command"]) {
+            for (const tab of tabNames) {
               click("tab-" + tab);
               await idle();
               await wait(40);
               assert(document.documentElement.scrollWidth <= window.innerWidth + 1);
               assert(document.body.scrollWidth <= window.innerWidth + 1);
+              assert(!$("panel-" + tab).hidden && $("tab-" + tab).getAttribute("aria-selected") === "true");
+              for (const name of tabNames) {
+                const button = $("tab-" + name);
+                const box = button.getBoundingClientRect();
+                assert(box.width > 0 && box.height >= 40 && box.left >= -1 && box.right <= innerWidth + 1, "narrow-tab-visible");
+                const text = [...button.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+                assert(text, "narrow-tab-text");
+                const range = document.createRange();
+                range.selectNodeContents(text);
+                const label = range.getBoundingClientRect();
+                assert(label.left >= box.left - 1 && label.right <= box.right + 1, "narrow-tab-label-fits");
+              }
             }
           }
         }

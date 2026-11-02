@@ -106,7 +106,7 @@ public final class MainActivity extends Activity {
         screenshotLocale = getIntent().getStringExtra("locale");
         if (screenshotLocale == null) screenshotLocale = "zh-CN";
         if (screenshotTab != null) {
-            if (!Arrays.asList("overview", "devices", "settings", "command", "login").contains(screenshotTab) ||
+            if (!Arrays.asList("overview", "devices", "taildrop", "settings", "command", "login").contains(screenshotTab) ||
                     !Arrays.asList("zh-CN", "zh-TW", "en").contains(screenshotLocale)) {
                 Log.i(TAG, "SCREENSHOT ERROR invalid-options");
                 finish();
@@ -264,6 +264,9 @@ public final class MainActivity extends Activity {
                 .put(device("fixture-workstation", "workstation", "workstation.docs.example",
                         new String[]{"100.64.0.20"}, exitNodesOnline, "linux", false)
                         .put("exitNodeOption", true).put("exitNode", "fixture-workstation".equals(exitNodeTarget)))
+                .put(device("fixture-secondary", "workstation-two", "workstation-two.docs.example",
+                        new String[]{"100.64.0.21"}, true, "linux", false)
+                        .put("exitNodeOption", true).put("exitNode", "fixture-secondary".equals(exitNodeTarget)))
                 .put(device("fixture-offline", "travel-laptop", "travel-laptop.docs.example",
                         new String[]{"100.64.0.30"}, false, "windows", false).put("exitNodeOption", true));
     }
@@ -271,7 +274,8 @@ public final class MainActivity extends Activity {
     private boolean taildropDirectoryAllowed(String path) {
         return Arrays.asList("/storage/emulated/0", "/storage/emulated/0/Download",
                 "/storage/emulated/0/Download/Taildrop", "/storage/emulated/0/Download/Other",
-                "/storage/emulated/0/Documents", "/storage/emulated/0/Documents/Inbox").contains(path);
+                "/storage/emulated/0/Documents", "/storage/emulated/0/Documents/Inbox").contains(path) ||
+                path.matches("/storage/emulated/0/Download/Folder[0-9]{2}");
     }
 
     private JSONArray taildropDirectories(String path) throws JSONException {
@@ -280,6 +284,12 @@ public final class MainActivity extends Activity {
                 "/storage/emulated/0/Download".equals(path) ? new String[]{"Other", "Taildrop"} :
                 "/storage/emulated/0/Documents".equals(path) ? new String[]{"Inbox"} : new String[]{};
         for (String name : names) result.put(new JSONObject().put("name", name).put("path", path + "/" + name));
+        if ("/storage/emulated/0/Download".equals(path)) {
+            for (int i = 0; i < 30; i++) {
+                String name = String.format(java.util.Locale.ROOT, "Folder%02d", i);
+                result.put(new JSONObject().put("name", name).put("path", path + "/" + name));
+            }
+        }
         return result;
     }
 
@@ -430,7 +440,8 @@ public final class MainActivity extends Activity {
                             if ("exit-node".equals(action)) {
                                 if (request.length() != 3 || !(request.get("exitNode") instanceof String)) throw new JSONException("exit-node-mask");
                                 String target = request.getString("exitNode");
-                                networkOK &= target.isEmpty() || !advertiseExitNode && "fixture-workstation".equals(target);
+                                networkOK &= target.isEmpty() || !advertiseExitNode &&
+                                        Arrays.asList("fixture-workstation", "fixture-secondary").contains(target);
                                 if (networkOK) exitNodeTarget = target;
                             } else if ("advertise".equals(action)) {
                                 int fields = (request.has("advertiseRoutes") ? 1 : 0) + (request.has("advertiseExitNode") ? 1 : 0);
@@ -653,7 +664,7 @@ public final class MainActivity extends Activity {
             synchronized (guard) { holdNextStatus = true; }
         }
         @JavascriptInterface public void setNetworkRole(String target, boolean advertise, String routes) {
-            if (!Arrays.asList("", "fixture-workstation").contains(target)) return;
+            if (!Arrays.asList("", "fixture-workstation", "fixture-secondary").contains(target)) return;
             synchronized (guard) {
                 exitNodeTarget = target;
                 advertiseExitNode = advertise;
@@ -772,6 +783,21 @@ public final class MainActivity extends Activity {
                 web.requestFocus();
                 web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER));
                 web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER));
+            });
+        }
+        @JavascriptInterface public void pressTabKey(String key) {
+            final int code;
+            switch (key) {
+                case "ArrowRight": code = KeyEvent.KEYCODE_DPAD_RIGHT; break;
+                case "ArrowLeft": code = KeyEvent.KEYCODE_DPAD_LEFT; break;
+                case "Home": code = KeyEvent.KEYCODE_MOVE_HOME; break;
+                case "End": code = KeyEvent.KEYCODE_MOVE_END; break;
+                default: return;
+            }
+            web.post(() -> {
+                web.requestFocus();
+                web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, code));
+                web.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, code));
             });
         }
         @JavascriptInterface public void nextChannelFails() {

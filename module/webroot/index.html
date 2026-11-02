@@ -32,6 +32,7 @@
       <nav class="tabs" role="tablist" data-i18n-aria="app.navigation">
         <button class="tab active" id="tab-overview" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview" data-i18n="tab.overview" type="button"></button>
         <button class="tab" id="tab-devices" role="tab" aria-selected="false" aria-controls="panel-devices" data-tab="devices" data-i18n="tab.devices" tabindex="-1" type="button"></button>
+        <button class="tab" id="tab-taildrop" role="tab" aria-selected="false" aria-controls="panel-taildrop" data-tab="taildrop" data-i18n="tab.taildrop" tabindex="-1" type="button"></button>
         <button class="tab" id="tab-settings" role="tab" aria-selected="false" aria-controls="panel-settings" data-tab="settings" data-i18n="tab.settings" tabindex="-1" type="button"></button>
         <button class="tab" id="tab-command" role="tab" aria-selected="false" aria-controls="panel-command" data-tab="command" data-i18n="tab.command" tabindex="-1" type="button"></button>
       </nav>
@@ -110,6 +111,27 @@
           <div id="device-list" class="device-list" role="list"></div>
         </section>
 
+        <section class="panel" id="panel-taildrop" role="tabpanel" aria-labelledby="tab-taildrop" hidden>
+          <article class="card taildrop-card">
+            <div class="card-heading"><h3 data-i18n="taildrop.heading"></h3><span class="small-label" data-i18n="taildrop.badge"></span></div>
+            <p class="binary-description" data-i18n="taildrop.description"></p>
+            <label class="field-label" for="taildrop-path" data-i18n="taildrop.pathLabel"></label>
+            <div class="taildrop-path-row">
+              <input id="taildrop-path" class="command-input" type="text" readonly maxlength="512" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" data-i18n-placeholder="taildrop.pathPlaceholder" data-requires-bridge disabled>
+              <button class="button secondary compact" id="taildrop-browse" type="button" data-requires-bridge disabled data-i18n="taildrop.browse"></button>
+            </div>
+            <div class="taildrop-browser" id="taildrop-browser" hidden>
+              <div class="taildrop-browser-heading"><span id="taildrop-browser-current"></span><button class="text-button" id="taildrop-browser-up" type="button" data-i18n="taildrop.up"></button></div>
+              <div class="taildrop-directory-list" id="taildrop-directory-list" role="listbox" data-i18n-aria="taildrop.directoryList"></div>
+              <button class="button primary compact" id="taildrop-choose" type="button"><span class="button-spinner" aria-hidden="true"></span><span id="taildrop-choose-label" data-i18n="taildrop.choose"></span></button>
+            </div>
+            <div class="binary-actions">
+              <button class="button primary compact" id="taildrop-receive" type="button" data-requires-bridge disabled><span class="button-spinner" aria-hidden="true"></span><span id="taildrop-receive-label" data-i18n="taildrop.receive"></span></button>
+            </div>
+            <p class="local-message" id="taildrop-message" role="status" aria-live="polite" hidden></p>
+          </article>
+        </section>
+
         <section class="panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
           <div class="card language-card">
             <label for="language" data-i18n="language.label"></label>
@@ -129,15 +151,17 @@
             </div>
             <p class="binary-description" data-i18n="network.description"></p>
             <p class="network-summary" id="exit-node-summary" data-kind="muted"></p>
-            <label class="field-label" for="exit-node-select" data-i18n="network.exitNode"></label>
-            <select id="exit-node-select" class="network-select" data-requires-bridge disabled>
-              <option value="" data-i18n="network.exitNodeNone"></option>
-            </select>
-            <p class="local-message" id="network-message" role="status" aria-live="polite" hidden></p>
-            <div class="binary-actions network-actions">
-              <button class="button primary compact" id="exit-node-apply" type="button" data-requires-bridge disabled data-i18n="network.apply"></button>
-              <button class="button secondary compact" id="exit-node-clear" type="button" data-requires-bridge disabled data-i18n="network.clear"></button>
+            <label class="setting-row exit-node-toggle" for="exit-node-enabled">
+              <span class="setting-copy"><strong data-i18n="network.exitNode"></strong><span data-i18n="network.exitNodeDescription"></span></span>
+              <span class="switch"><input id="exit-node-enabled" type="checkbox" role="switch" aria-controls="exit-node-picker" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
+            </label>
+            <div id="exit-node-picker" hidden>
+              <label class="visually-hidden" for="exit-node-select" data-i18n="network.exitNode"></label>
+              <select id="exit-node-select" class="network-select" data-requires-bridge disabled>
+                <option value="" disabled data-i18n="network.exitNodePlaceholder"></option>
+              </select>
             </div>
+            <p class="local-message" id="network-message" role="status" aria-live="polite" hidden></p>
             <label class="setting-row network-toggle" for="exit-node-ipv6-takeover">
               <span class="setting-copy"><strong data-i18n="network.exitIpv6"></strong><span data-i18n="network.exitIpv6Description"></span></span>
               <span class="switch"><input id="exit-node-ipv6-takeover" type="checkbox" role="switch" data-requires-bridge disabled><span class="switch-track" aria-hidden="true"></span></span>
@@ -174,25 +198,6 @@
             </label>
           </div>
           <p class="settings-feedback" id="settings-hint" role="status" aria-live="polite" data-i18n="settings.unread"></p>
-          <article class="card taildrop-card">
-            <div class="card-heading"><h3 data-i18n="taildrop.heading"></h3><span class="small-label" data-i18n="taildrop.badge"></span></div>
-            <p class="binary-description" data-i18n="taildrop.description"></p>
-            <label class="field-label" for="taildrop-path" data-i18n="taildrop.pathLabel"></label>
-            <div class="taildrop-path-row">
-              <input id="taildrop-path" class="command-input" type="text" maxlength="512" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" data-i18n-placeholder="taildrop.pathPlaceholder" data-requires-bridge disabled>
-              <button class="button secondary compact" id="taildrop-browse" type="button" data-requires-bridge disabled data-i18n="taildrop.browse"></button>
-            </div>
-            <div class="taildrop-browser" id="taildrop-browser" hidden>
-              <div class="taildrop-browser-heading"><span id="taildrop-browser-current"></span><button class="text-button" id="taildrop-browser-up" type="button" data-i18n="taildrop.up"></button></div>
-              <div class="taildrop-directory-list" id="taildrop-directory-list" role="listbox" data-i18n-aria="taildrop.directoryList"></div>
-              <button class="button primary compact" id="taildrop-choose" type="button" data-i18n="taildrop.choose"></button>
-            </div>
-            <div class="binary-actions">
-              <button class="button secondary compact" id="taildrop-save" type="button" data-requires-bridge disabled><span id="taildrop-save-label" data-i18n="taildrop.save"></span></button>
-              <button class="button primary compact" id="taildrop-receive" type="button" data-requires-bridge disabled><span class="button-spinner" aria-hidden="true"></span><span id="taildrop-receive-label" data-i18n="taildrop.receive"></span></button>
-            </div>
-            <p class="local-message" id="taildrop-message" role="status" aria-live="polite" hidden></p>
-          </article>
           <article class="card binary-update-card" id="binary-update-card">
             <h3 data-i18n="binary.heading"></h3>
             <p class="binary-description" data-i18n="binary.description"></p>

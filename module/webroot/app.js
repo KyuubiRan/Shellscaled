@@ -13,6 +13,7 @@
   const MAX_COMMAND_LENGTH = 2048;
   const MAX_OUTPUT_LENGTH = 100000;
   const MAX_DEVICES = 500;
+  const FEEDBACK_TIMEOUT_MS = 3000;
   const SETTING_KEYS = ["acceptRoutes", "shieldsUp", "exitNodeAllowLanAccess"];
   const STATE_TONES = {
     Running: "success", Stopped: "neutral", NeedsLogin: "warning",
@@ -39,17 +40,18 @@
     binaryActionLabel: $("binary-action-label"),
     binaryMessage: $("binary-message"),
     binaryChannel: $("binary-channel"),
-    exitNodeSelect: $("exit-node-select"), exitNodeRefresh: $("network-refresh"), exitNodeApply: $("exit-node-apply"), exitNodeClear: $("exit-node-clear"),
+    exitNodeSelect: $("exit-node-select"), exitNodeRefresh: $("network-refresh"),
+    exitNodeEnabled: $("exit-node-enabled"), exitNodePicker: $("exit-node-picker"),
     advertiseRoutes: $("advertise-routes"), advertiseExitNode: $("advertise-exit-node"), advertiseSave: $("advertise-save"),
     networkMessage: $("network-message"), exitNodeSummary: $("exit-node-summary"), exitNodeIpv6: $("exit-node-ipv6"), exitNodeIpv6Takeover: $("exit-node-ipv6-takeover"), magicDNSStatus: $("magicdns-status"), magicDNSEnabled: $("magicdns-enabled"),
     advertiseRoutesError: $("advertise-routes-error"), advertiseMessage: $("advertise-message"),
     advertiseExitDescription: $("advertise-exit-description"),
-    taildropPath: $("taildrop-path"), taildropSave: $("taildrop-save"),
-    taildropSaveLabel: $("taildrop-save-label"), taildropReceive: $("taildrop-receive"),
+    taildropPath: $("taildrop-path"), taildropReceive: $("taildrop-receive"),
     taildropReceiveLabel: $("taildrop-receive-label"), taildropMessage: $("taildrop-message"),
     taildropBrowse: $("taildrop-browse"), taildropBrowser: $("taildrop-browser"),
     taildropBrowserCurrent: $("taildrop-browser-current"), taildropBrowserUp: $("taildrop-browser-up"),
     taildropDirectoryList: $("taildrop-directory-list"), taildropChoose: $("taildrop-choose"),
+    taildropChooseLabel: $("taildrop-choose-label"),
   };
   let dnsPendingTimer = null;
   const state = {
@@ -61,13 +63,13 @@
     addressSignature: null, consoleError: null,
     aboutError: null, aboutRequestVersion: 0,
     loginError: null, loginOpened: false, loginRequestVersion: 0,
-    binary: null, binaryFeedback: "", binaryError: null, binaryRequestVersion: 0, queuedBinaryAction: "",
+    binary: null, binaryFeedback: "", binaryError: null, binaryErrorKind: "", binaryRequestVersion: 0, queuedBinaryAction: "", queuedBinaryContext: null,
     updateChannel: null, binaryChannelPending: null,
     networkFeedback: "", networkError: null, advertiseFeedback: "", advertiseError: null,
     networkDraft: { exitNode: null, routes: null, advertiseExitNode: null },
-    networkRequestVersion: 0, exitIpv6Pending: null, magicDNSPending: null,
+    networkRequestVersion: 0, exitNodeEnabledDraft: null, exitIpv6Pending: null, magicDNSPending: null,
     exitNodes: null, exitNodesLoading: false, exitNodesError: null, exitNodesRequestVersion: 0,
-    taildropPath: "", taildropDraftDirty: false, taildropDraftVersion: 0, taildropError: null, taildropBrowserPath: "", taildropDirectories: [],
+    taildropPath: "", taildropFeedback: "", taildropError: null, taildropBrowserPath: "", taildropDirectories: [],
     taildropDirectoriesTruncated: false, taildropBrowserBusy: false, taildropBrowserRequestVersion: 0,
     taildropActionRequestVersion: 0,
   };
@@ -76,6 +78,46 @@
   const copyOperations = new Map();
   let copyEpoch = 0;
   let copySequence = 0;
+  let feedbackEpoch = 0;
+  const feedbackTimers = new Map();
+  const feedbackDefaults = {
+    notice: null, networkFeedback: "", advertiseFeedback: "", taildropFeedback: "",
+    binaryFeedback: "", loginOpened: false,
+  };
+
+  function feedbackContext(tab = state.activeTab) {
+    return { tab, epoch: feedbackEpoch };
+  }
+
+  function clearFeedback(field) {
+    if (feedbackTimers.has(field)) clearTimeout(feedbackTimers.get(field));
+    feedbackTimers.delete(field);
+    state[field] = feedbackDefaults[field];
+  }
+
+  function setFeedback(field, value, render, context) {
+    if (!state.pageActive || context.tab !== state.activeTab || context.epoch !== feedbackEpoch) return;
+    clearFeedback(field);
+    state[field] = value;
+    if (value) {
+      const timer = setTimeout(() => {
+        if (feedbackTimers.get(field) !== timer) return;
+        feedbackTimers.delete(field);
+        state[field] = feedbackDefaults[field];
+        render();
+      }, FEEDBACK_TIMEOUT_MS);
+      feedbackTimers.set(field, timer);
+    }
+    render();
+  }
+
+  function resetFeedback() {
+    feedbackEpoch++;
+    for (const field of Object.keys(feedbackDefaults)) clearFeedback(field);
+    copyEpoch++;
+    clearCopyControls();
+    document.querySelectorAll(".copy-control").forEach(updateCopyFeedback);
+  }
 
   class UIError extends Error {
     constructor(key, values = {}) {
@@ -116,14 +158,12 @@
     ui.notice.setAttribute("role", notice && notice.kind === "error" ? "alert" : "status");
   }
 
-  function message(key = "", kind = "info", source = "operation", values = {}) {
-    state.notice = key ? { key, values, kind, source } : null;
-    renderNotice();
+  function message(key = "", kind = "info", source = "operation", values = {}, context = feedbackContext()) {
+    setFeedback("notice", key ? { key, values, kind, source } : null, renderNotice, context);
   }
 
-  function showError(error, source = "operation") {
-    state.notice = { ...errorView(error), kind: "error", source };
-    renderNotice();
+  function showError(error, source = "operation", context = feedbackContext()) {
+    setFeedback("notice", { ...errorView(error), kind: "error", source }, renderNotice, context);
   }
 
   function updateCopyFeedback(control) {
@@ -343,17 +383,18 @@
   }
 
   async function startLogin() {
+    const feedback = feedbackContext("overview");
     if (state.busy || !state.available || !state.pageActive || !state.status || state.status.state !== "NeedsLogin") return;
     state.busy = true;
     state.busyAction = "login";
     state.loginError = null;
-    state.loginOpened = false;
+    clearFeedback("loginOpened");
     const version = ++state.loginRequestVersion;
     updateControls();
     try {
       const result = requireSuccess(await rpc({ action: "login" }));
       if (!state.pageActive || version !== state.loginRequestVersion) return;
-      state.loginOpened = true;
+      setFeedback("loginOpened", true, renderLogin, feedback);
       if (typeof result.state === "string") renderStatus(result);
       try {
         const status = requireSuccess(await rpc({ action: "status" }));
@@ -536,7 +577,8 @@
       ui.exitNodeSelect.replaceChildren();
       const none = document.createElement("option");
       none.value = "";
-      none.textContent = t("network.exitNodeNone");
+      none.textContent = t("network.exitNodePlaceholder");
+      none.disabled = true;
       ui.exitNodeSelect.appendChild(none);
       for (const device of candidates) {
         const option = document.createElement("option");
@@ -558,6 +600,15 @@
     const matching = [...ui.exitNodeSelect.options].find((option) => option.value === current);
     const draftTarget = state.networkDraft.exitNode;
     ui.exitNodeSelect.value = draftTarget !== null ? draftTarget : (matching ? current : "");
+    const enabled = state.exitNodeEnabledDraft !== null ? state.exitNodeEnabledDraft : Boolean(state.status?.exitNodeConfigured);
+    ui.exitNodeEnabled.checked = enabled;
+    ui.exitNodePicker.hidden = !enabled;
+    const exitPending = state.busyAction === "exit-node";
+    const row = ui.exitNodeEnabled.closest(".setting-row");
+    row.dataset.pending = String(exitPending);
+    row.setAttribute("aria-busy", String(exitPending));
+    ui.exitNodeEnabled.classList.toggle("is-pending", exitPending);
+    ui.exitNodeSelect.classList.toggle("is-pending", exitPending);
 
     const activeNode = candidates.find((device) => device.id === current || device.ips.includes(current));
     const name = (activeNode && (activeNode.name || activeNode.dnsName)) || current;
@@ -654,7 +705,7 @@
     state.busyAction = "magicdns";
     state.magicDNSPending = enabled;
     state.networkError = null;
-    state.networkFeedback = "";
+    clearFeedback("networkFeedback");
     updateControls();
     try {
       const result = requireSuccess(await rpc({ action: "magicdns", magicDNSEnabled: enabled }));
@@ -687,7 +738,7 @@
     state.busyAction = "exit-ipv6";
     state.exitIpv6Pending = enabled;
     state.networkError = null;
-    state.networkFeedback = "";
+    clearFeedback("networkFeedback");
     updateControls();
     try {
       const result = requireSuccess(await rpc({ action: "exit-node-ipv6", exitNodeIPv6: enabled }));
@@ -761,26 +812,31 @@
   }
 
   async function applyExitNode(target) {
+    const feedback = feedbackContext("settings");
     if (state.busy || !state.available || !state.pageActive || (target !== "" && !state.settingsConfirmed)) return;
+    state.networkDraft.exitNode = target;
     const submittedDraft = state.networkDraft.exitNode;
     const version = ++state.networkRequestVersion;
     state.busy = true;
     state.busyAction = "exit-node";
     state.networkError = null;
-    state.networkFeedback = "";
+    clearFeedback("networkFeedback");
     updateControls();
     try {
       const result = requireSuccess(await rpc({ action: "exit-node", exitNode: target }));
       const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
       if (!state.pageActive || version !== state.networkRequestVersion) return;
       if (state.networkDraft.exitNode === submittedDraft) state.networkDraft.exitNode = null;
+      state.exitNodeEnabledDraft = null;
       renderStatus(status);
-      state.networkFeedback = "saved";
+      setFeedback("networkFeedback", "saved", renderNetwork, feedback);
       state.exitNodesLoading = false;
       loadExitNodes();
     } catch (error) {
       if (state.pageActive && version === state.networkRequestVersion) {
         state.networkError = errorView(error);
+        state.networkDraft.exitNode = null;
+        state.exitNodeEnabledDraft = null;
         state.refreshAfterBusy = true;
         markFreshness("verify");
       }
@@ -790,6 +846,7 @@
   }
 
   async function saveAdvertisement() {
+    const feedback = feedbackContext("settings");
     if (state.busy || !state.available || !state.pageActive || !state.settingsConfirmed) return;
     const draft = { ...state.networkDraft };
     if (draft.routes === null && draft.advertiseExitNode === null) return;
@@ -804,7 +861,7 @@
     state.busy = true;
     state.busyAction = "advertise";
     state.advertiseError = null;
-    state.advertiseFeedback = "";
+    clearFeedback("advertiseFeedback");
     updateControls();
     try {
       const result = requireSuccess(await rpc(payload));
@@ -814,7 +871,7 @@
         if (state.networkDraft[field] === draft[field]) state.networkDraft[field] = null;
       }
       renderStatus(status);
-      state.advertiseFeedback = "saved";
+      setFeedback("advertiseFeedback", "saved", renderNetwork, feedback);
     } catch (error) {
       if (state.pageActive && version === state.networkRequestVersion) {
         state.advertiseError = errorView(error);
@@ -835,8 +892,9 @@
     if (state.updateChannel !== channel) {
       state.updateChannel = channel;
       state.binary = null;
-      state.binaryFeedback = "";
+      clearFeedback("binaryFeedback");
       state.binaryError = null;
+      state.binaryErrorKind = "";
     }
   }
 
@@ -886,12 +944,12 @@
     else if (checking) text = t("binary.checking");
     else if (updating) text = t("binary.busy");
     else if (state.binaryError) {
-      text = t(state.binaryFeedback === "channelFailed" ? "binary.channelFailed" :
-        state.binaryFeedback === "updateFailed" ? "binary.updateFailed" : "binary.checkFailed") + " " + viewText(state.binaryError);
+      text = t(state.binaryErrorKind === "channel" ? "binary.channelFailed" :
+        state.binaryErrorKind === "update" ? "binary.updateFailed" : "binary.checkFailed") + " " + viewText(state.binaryError);
       kind = "error";
     } else if (state.binaryFeedback === "updated") text = t("binary.completed");
     else if (state.binaryFeedback === "channelSaved") text = t("binary.channelSaved");
-    else if (binary && binary.checked) {
+    else if (state.binaryFeedback === "checked" && binary && binary.checked) {
       if (!binary.supported) {
         text = t("binary.unsupported");
         kind = "warning";
@@ -904,6 +962,7 @@
   }
 
   async function setBinaryChannel(channel) {
+    const feedback = feedbackContext("settings");
     if (state.busy || !state.available || !state.pageActive || !validUpdateChannel(channel) || !state.updateChannel) {
       ui.binaryChannel.value = state.updateChannel || "";
       return;
@@ -913,8 +972,9 @@
     state.busyAction = "binary-channel";
     state.binaryChannelPending = channel;
     state.binary = null;
-    state.binaryFeedback = "";
+    clearFeedback("binaryFeedback");
     state.binaryError = null;
+    state.binaryErrorKind = "";
     const version = ++state.binaryRequestVersion;
     updateControls();
     try {
@@ -922,11 +982,11 @@
       if (!state.pageActive || version !== state.binaryRequestVersion) return;
       if (result.updateChannel !== channel) throw new UIError("error.response");
       syncUpdateChannel(result.updateChannel);
-      state.binaryFeedback = "channelSaved";
+      setFeedback("binaryFeedback", "channelSaved", renderBinary, feedback);
     } catch (error) {
       if (state.pageActive && version === state.binaryRequestVersion) {
         state.binaryError = errorView(error);
-        state.binaryFeedback = "channelFailed";
+        state.binaryErrorKind = "channel";
       }
     } finally {
       if (version === state.binaryRequestVersion) state.binaryChannelPending = null;
@@ -934,12 +994,14 @@
     }
   }
 
-  async function runBinaryAction(action) {
+  async function runBinaryAction(action, feedback = feedbackContext("settings")) {
     if (!state.available || !state.pageActive || state.queuedBinaryAction) return;
     if (state.busy) {
       if (state.busyAction === "status") {
         state.queuedBinaryAction = action;
+        state.queuedBinaryContext = feedback;
         state.binaryError = null;
+        state.binaryErrorKind = "";
         renderBinary();
       }
       return;
@@ -948,7 +1010,8 @@
     state.busy = true;
     state.busyAction = action;
     state.binaryError = null;
-    state.binaryFeedback = "";
+    state.binaryErrorKind = "";
+    clearFeedback("binaryFeedback");
     const started = performance.now();
     const version = ++state.binaryRequestVersion;
     updateControls();
@@ -958,7 +1021,7 @@
       const binary = normalizeBinary(result);
       syncUpdateChannel(binary.channel);
       state.binary = binary;
-      state.binaryFeedback = action === "binary-update" ? "updated" : "checked";
+      setFeedback("binaryFeedback", action === "binary-update" ? "updated" : "checked", renderBinary, feedback);
       if (action === "binary-update") {
         try {
           const status = requireSuccess(await rpc({ action: "status" }));
@@ -970,7 +1033,7 @@
     } catch (error) {
       if (state.pageActive && version === state.binaryRequestVersion) {
         state.binaryError = errorView(error);
-        state.binaryFeedback = action === "binary-update" ? "updateFailed" : "checkFailed";
+        state.binaryErrorKind = action === "binary-update" ? "update" : "check";
       }
     } finally {
       const remaining = 220 - (performance.now() - started);
@@ -1012,13 +1075,10 @@
       exitNodeConfigured ? "settings.exitLanDescription" : "settings.exitLanUnavailable");
     renderNetwork();
     const networkDisabled = disabled || !state.settingsConfirmed;
-    const selected = ui.exitNodeSelect.selectedOptions[0];
     const draft = state.networkDraft;
+    ui.exitNodeEnabled.disabled = networkDisabled || !state.status;
     ui.exitNodeSelect.disabled = networkDisabled || !state.exitNodes;
     ui.exitNodeRefresh.disabled = !state.available || !state.pageActive || state.exitNodesLoading;
-    ui.exitNodeApply.disabled = networkDisabled || !state.exitNodes || !selected || selected.disabled ||
-      selected.value === "" || selected.value === currentExitNode();
-    ui.exitNodeClear.disabled = !state.available || !state.pageActive || state.busy || !exitNodeConfigured;
     ui.advertiseRoutes.disabled = networkDisabled;
     ui.exitNodeIpv6Takeover.disabled = disabled || !state.status;
     ui.magicDNSEnabled.disabled = disabled || !state.status;
@@ -1196,57 +1256,60 @@
   }
 
   function renderTaildrop() {
-    if (!state.taildropDraftDirty && typeof state.status?.taildropPath === "string" && state.status.taildropPath) {
+    if (typeof state.status?.taildropPath === "string" && state.status.taildropPath) {
       state.taildropPath = state.status.taildropPath.slice(0, 512);
     }
-    if (!state.taildropDraftDirty && document.activeElement !== ui.taildropPath) ui.taildropPath.value = state.taildropPath;
-    ui.taildropSaveLabel.textContent = t(state.busyAction === "taildrop-path" ? "taildrop.saving" : "taildrop.save");
+    if (ui.taildropPath.value !== state.taildropPath) ui.taildropPath.value = state.taildropPath;
+    const saving = state.busyAction === "taildrop-path";
+    ui.taildropChooseLabel.textContent = t(saving ? "taildrop.saving" : "taildrop.choose");
     ui.taildropReceiveLabel.textContent = t(state.busyAction === "taildrop-receive" ? "taildrop.receiving" : "taildrop.receive");
-    ui.taildropSave.classList.toggle("is-working", state.busyAction === "taildrop-path");
+    ui.taildropChoose.classList.toggle("is-working", saving);
+    ui.taildropChoose.setAttribute("aria-busy", String(saving));
     ui.taildropReceive.classList.toggle("is-working", state.busyAction === "taildrop-receive");
-    ui.taildropMessage.textContent = state.taildropError ? viewText(state.taildropError) : "";
+    ui.taildropMessage.textContent = state.taildropError ? viewText(state.taildropError) :
+      state.taildropFeedback ? t("taildrop." + state.taildropFeedback) : "";
     ui.taildropMessage.hidden = !ui.taildropMessage.textContent;
     ui.taildropMessage.dataset.kind = state.taildropError ? "error" : "info";
     ui.taildropMessage.setAttribute("role", state.taildropError ? "alert" : "status");
-    ui.taildropPath.setAttribute("aria-invalid", state.taildropError ? "true" : "false");
-    ui.taildropPath.disabled = !state.available || state.busy || !state.pageActive;
-    ui.taildropBrowse.disabled = !state.available || state.busy || !state.pageActive;
+    const disabled = !state.available || state.busy || !state.pageActive;
+    ui.taildropPath.disabled = disabled;
+    ui.taildropBrowse.disabled = disabled;
+    ui.taildropReceive.disabled = disabled || !state.taildropPath;
     ui.taildropBrowser.hidden = !state.taildropBrowserPath;
     ui.taildropBrowserCurrent.textContent = state.taildropBrowserPath;
-    ui.taildropBrowserUp.disabled = !state.available || state.busy || !state.pageActive || state.taildropBrowserBusy || !state.taildropBrowserPath ||
-      ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
-    ui.taildropChoose.disabled = !state.available || state.busy || !state.pageActive || state.taildropBrowserBusy || !state.taildropBrowserPath ||
-      ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
-    ui.taildropChoose.textContent = t("taildrop.choose");
-    ui.taildropDirectoryList.replaceChildren();
-    if (state.taildropBrowserBusy) {
-      const loading = document.createElement("p");
-      loading.className = "empty-copy";
-      loading.textContent = t("taildrop.browsing");
-      ui.taildropDirectoryList.appendChild(loading);
-    } else if (!state.taildropDirectories.length) {
-      const empty = document.createElement("p");
-      empty.className = "empty-copy";
-      empty.textContent = t("taildrop.empty");
-      ui.taildropDirectoryList.appendChild(empty);
-    } else {
-      for (const directory of state.taildropDirectories) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "taildrop-directory";
-        button.textContent = directory.name;
-        button.dataset.path = directory.path;
-        button.disabled = !state.available || state.busy || !state.pageActive;
-        button.setAttribute("role", "option");
-        ui.taildropDirectoryList.appendChild(button);
+    const atRoot = ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
+    ui.taildropBrowserUp.disabled = disabled || state.taildropBrowserBusy || !state.taildropBrowserPath || atRoot;
+    ui.taildropChoose.disabled = disabled || state.taildropBrowserBusy || !state.taildropBrowserPath || atRoot;
+    // Status/busy updates must leave directory focus and scroll position intact.
+    const signature = JSON.stringify([I18n.locale(), state.taildropBrowserPath, state.taildropBrowserBusy,
+      state.taildropDirectories, state.taildropDirectoriesTruncated]);
+    if (ui.taildropDirectoryList.dataset.signature !== signature) {
+      ui.taildropDirectoryList.replaceChildren();
+      if (state.taildropBrowserBusy || !state.taildropDirectories.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty-copy";
+        empty.textContent = t(state.taildropBrowserBusy ? "taildrop.browsing" : "taildrop.empty");
+        ui.taildropDirectoryList.appendChild(empty);
+      } else {
+        for (const directory of state.taildropDirectories) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "taildrop-directory";
+          button.textContent = directory.name;
+          button.dataset.path = directory.path;
+          button.setAttribute("role", "option");
+          ui.taildropDirectoryList.appendChild(button);
+        }
       }
+      if (state.taildropDirectoriesTruncated) {
+        const more = document.createElement("p");
+        more.className = "empty-copy";
+        more.textContent = t("taildrop.more");
+        ui.taildropDirectoryList.appendChild(more);
+      }
+      ui.taildropDirectoryList.dataset.signature = signature;
     }
-    if (state.taildropDirectoriesTruncated) {
-      const more = document.createElement("p");
-      more.className = "empty-copy";
-      more.textContent = t("taildrop.more");
-      ui.taildropDirectoryList.appendChild(more);
-    }
+    ui.taildropDirectoryList.querySelectorAll("button").forEach((button) => { button.disabled = disabled; });
   }
 
   async function browseTaildrop(path = "") {
@@ -1255,6 +1318,8 @@
     state.busy = true;
     state.busyAction = "taildrop-browse";
     state.taildropBrowserBusy = true;
+    state.taildropError = null;
+    clearFeedback("taildropFeedback");
     state.taildropBrowserPath = path || "/storage/emulated/0";
     state.taildropDirectories = [];
     state.taildropDirectoriesTruncated = false;
@@ -1279,27 +1344,20 @@
   }
 
   function chooseTaildropDirectory(path) {
-    if (state.busy || state.taildropBrowserBusy || !state.available || !state.pageActive || typeof path !== "string" || !path) return;
-    state.taildropDraftVersion++;
-    state.taildropPath = path;
-    state.taildropDraftDirty = true;
-    ui.taildropPath.value = path;
-    state.taildropBrowserPath = "";
-    state.taildropDirectories = [];
-    state.taildropDirectoriesTruncated = false;
-    renderTaildrop();
+    if (ui.taildropChoose.disabled || !state.pageActive || !path || path !== state.taildropBrowserPath) return;
+    taildropAction("taildrop-path", path);
   }
 
-  async function taildropAction(action) {
+  async function taildropAction(action, value = state.taildropPath) {
+    const feedback = feedbackContext("taildrop");
     if (state.busy || !state.available || !state.pageActive) return;
-    const value = ui.taildropPath.value.trim();
-    const draftVersion = state.taildropDraftVersion;
-    if (value.length > 512 || !value.startsWith("/")) {
+    if (typeof value !== "string" || value.length > 512 || !value.startsWith("/")) {
       state.taildropError = { key: "taildrop.invalid" };
       renderTaildrop();
       return;
     }
     state.taildropError = null;
+    clearFeedback("taildropFeedback");
     state.busy = true;
     state.busyAction = action;
     const version = ++state.taildropActionRequestVersion;
@@ -1307,16 +1365,15 @@
     try {
       const result = requireSuccess(await rpc({ action, path: value }));
       if (!state.pageActive || version !== state.taildropActionRequestVersion) return;
-      if (typeof result.taildropPath === "string") {
-        if (state.status) state.status.taildropPath = result.taildropPath;
-        if (draftVersion === state.taildropDraftVersion) {
-          state.taildropPath = result.taildropPath;
-          ui.taildropPath.value = result.taildropPath;
-          state.taildropDraftDirty = false;
-        }
+      if (typeof result.taildropPath !== "string" || !result.taildropPath) throw new UIError("error.status");
+      if (state.status) state.status.taildropPath = result.taildropPath;
+      state.taildropPath = result.taildropPath;
+      if (action === "taildrop-path") {
+        state.taildropBrowserPath = "";
+        state.taildropDirectories = [];
+        state.taildropDirectoriesTruncated = false;
       }
-      state.taildropError = null;
-      message(action === "taildrop-receive" ? "taildrop.received" : "taildrop.saved", "info");
+      setFeedback("taildropFeedback", action === "taildrop-receive" ? "received" : "saved", renderTaildrop, feedback);
       renderTaildrop();
     } catch (error) {
       if (state.pageActive && version === state.taildropActionRequestVersion) state.taildropError = errorView(error);
@@ -1376,7 +1433,7 @@
     state.status = result;
     if (result.state !== "NeedsLogin") {
       state.loginError = null;
-      state.loginOpened = false;
+      clearFeedback("loginOpened");
     }
     syncUpdateChannel(result.updateChannel);
     if (state.binary && typeof result.version === "string" && result.version) {
@@ -1409,36 +1466,41 @@
     if (completedAction === "devices") renderDevices();
     if (state.queuedBinaryAction) {
       const action = state.queuedBinaryAction;
+      const feedback = state.queuedBinaryContext;
       state.queuedBinaryAction = "";
-      runBinaryAction(action === "binary-update" && !binaryUpdateAvailable() ? "binary-check" : action);
+      state.queuedBinaryContext = null;
+      runBinaryAction(action === "binary-update" && !binaryUpdateAvailable() ? "binary-check" : action, feedback);
     } else if (state.refreshAfterBusy) {
       state.refreshAfterBusy = false;
-      refresh(false);
+      refresh(false, true);
     } else if (state.deviceRefreshPending && state.activeTab === "devices") {
       loadDevices();
     }
   }
 
-  async function refresh(manual = false) {
+  async function refresh(manual = false, reconcile = false) {
+    const feedback = feedbackContext();
     if (state.busy || !state.available || !state.pageActive) return;
+    if (!manual && !reconcile && state.activeTab === "taildrop") return;
     const reconcilingSettings = !state.settingsConfirmed && state.settingsError !== null;
     state.busy = true;
     state.busyAction = "status";
     updateControls();
     try {
       renderStatus(requireSuccess(await rpc({ action: "status" })));
-      if (manual) message("notice.updated", "info", "status");
-      else if (state.notice && state.notice.source === "status") message("");
+      if (manual) message("notice.updated", "info", "status", {}, feedback);
+      else if (!reconcile && state.notice && state.notice.source === "status") message("");
     } catch (error) {
       markFreshness("stale");
       if (reconcilingSettings) state.settingsError = errorView(error);
-      else showError(error, "status");
+      else showError(error, "status", feedback);
     } finally {
       finishBusy();
     }
   }
 
   async function change(action, extra = {}) {
+    const feedback = feedbackContext("overview");
     if (state.busy || !state.available || !state.pageActive) return;
     state.busy = true;
     state.busyAction = action;
@@ -1449,7 +1511,7 @@
       const status = typeof result.state === "string" ? result : requireSuccess(await rpc({ action: "status" }));
       renderStatus(status);
     } catch (error) {
-      showError(error);
+      showError(error, "operation", feedback);
       markFreshness("verify");
     } finally {
       finishBusy();
@@ -1526,11 +1588,12 @@
   }
 
   async function runCommand(event) {
+    const feedback = feedbackContext("command");
     event.preventDefault();
     if (state.busy || !state.available || !state.pageActive) return;
     const command = ui.command.value.trim();
     if (!command || command.length > MAX_COMMAND_LENGTH || !/^(tailscale|tailscaled)(?:\s|$)/.test(command)) {
-      message("error.command", "error");
+      message("error.command", "error", "operation", {}, feedback);
       ui.command.focus();
       return;
     }
@@ -1546,7 +1609,7 @@
       if (!state.pageActive) return;
       state.output = { kind: "result", result, locale: I18n.locale() };
       renderOutput();
-      if (!result.ok) message("notice.commandFailed", "error");
+      if (!result.ok) message("notice.commandFailed", "error", "operation", {}, feedback);
       try {
         renderStatus(requireSuccess(await rpc({ action: "status" })));
       } catch (_) {
@@ -1556,7 +1619,7 @@
       if (!state.pageActive) return;
       state.output = { kind: "error", error: errorView(error) };
       renderOutput();
-      message("notice.commandUnavailable", "error");
+      message("notice.commandUnavailable", "error", "operation", {}, feedback);
     } finally {
       finishBusy();
     }
@@ -1566,7 +1629,7 @@
     I18n.applyDocument();
     // A previous native error belongs to its original language; request a fresh
     // status instead of trying to translate arbitrary device text in JavaScript.
-    if (state.notice && state.notice.raw !== undefined) state.notice = null;
+    if (state.notice && state.notice.raw !== undefined) clearFeedback("notice");
     renderPresentation();
     renderNotice();
     renderOutput();
@@ -1580,6 +1643,8 @@
   }
 
   function selectTab(name, focus = false) {
+    const changed = state.activeTab !== name;
+    if (changed) resetFeedback();
     state.activeTab = name;
     for (const tab of document.querySelectorAll("[data-tab]")) {
       const selected = tab.dataset.tab === name;
@@ -1589,6 +1654,10 @@
       $("panel-" + tab.dataset.tab).hidden = !selected;
       if (selected && focus) tab.focus();
     }
+    if (changed) {
+      renderNotice();
+      updateControls();
+    }
     if (name === "devices" && !state.devices && !state.devicesError) loadDevices();
     if (name === "settings") {
       loadExitNodes();
@@ -1596,6 +1665,10 @@
         if (state.busy) state.refreshAfterBusy = true;
         else refresh(false);
       }
+    }
+    if (name === "taildrop" && !state.status) {
+      if (state.busy) state.refreshAfterBusy = true;
+      else refresh(false, true);
     }
   }
 
@@ -1625,7 +1698,7 @@
     tab.addEventListener("keydown", (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
-      const names = ["overview", "devices", "settings", "command"];
+      const names = [...document.querySelectorAll("[data-tab]")].map((item) => item.dataset.tab);
       let next = names.indexOf(tab.dataset.tab);
       if (event.key === "ArrowLeft") next = (next + names.length - 1) % names.length;
       if (event.key === "ArrowRight") next = (next + 1) % names.length;
@@ -1637,8 +1710,14 @@
   $("refresh").addEventListener("click", () => refresh(true));
   $("refresh-devices").addEventListener("click", () => loadDevices());
   ui.deviceSearch.addEventListener("input", renderDevices);
-  ui.exitNodeApply.addEventListener("click", () => applyExitNode(ui.exitNodeSelect.value));
-  ui.exitNodeClear.addEventListener("click", () => applyExitNode(""));
+  ui.exitNodeEnabled.addEventListener("change", () => {
+    if (ui.exitNodeEnabled.disabled) { updateControls(); return; }
+    state.exitNodeEnabledDraft = ui.exitNodeEnabled.checked;
+    clearFeedback("networkFeedback");
+    state.networkError = null;
+    if (!ui.exitNodeEnabled.checked && state.status?.exitNodeConfigured) applyExitNode("");
+    else updateControls();
+  });
   ui.exitNodeRefresh.addEventListener("click", () => {
     loadExitNodes();
     if (!state.settingsConfirmed) {
@@ -1650,14 +1729,14 @@
   ui.exitNodeIpv6Takeover.addEventListener("change", () => applyExitIpv6(ui.exitNodeIpv6Takeover.checked));
   ui.magicDNSEnabled.addEventListener("change", () => applyMagicDNS(ui.magicDNSEnabled.checked));
   ui.exitNodeSelect.addEventListener("change", () => {
-    state.networkDraft.exitNode = ui.exitNodeSelect.value;
-    state.networkFeedback = "";
-    state.networkError = null;
-    updateControls();
+    const selected = ui.exitNodeSelect.selectedOptions[0];
+    if (ui.exitNodeSelect.disabled || !ui.exitNodeEnabled.checked || !selected || selected.disabled ||
+        !selected.value || selected.value === currentExitNode()) { updateControls(); return; }
+    applyExitNode(selected.value);
   });
   const editAdvertisement = (field, value) => {
     state.networkDraft[field] = value;
-    state.advertiseFeedback = "";
+    clearFeedback("advertiseFeedback");
     state.advertiseError = null;
     updateControls();
   };
@@ -1668,15 +1747,7 @@
   ui.login.addEventListener("click", startLogin);
   ui.binaryAction.addEventListener("click", () => runBinaryAction(binaryUpdateAvailable() ? "binary-update" : "binary-check"));
   ui.binaryChannel.addEventListener("change", () => setBinaryChannel(ui.binaryChannel.value));
-  ui.taildropSave.addEventListener("click", () => taildropAction("taildrop-path"));
   ui.taildropReceive.addEventListener("click", () => taildropAction("taildrop-receive"));
-  ui.taildropPath.addEventListener("input", () => {
-    state.taildropDraftVersion++;
-    state.taildropError = null;
-    state.taildropDraftDirty = true;
-    state.taildropPath = ui.taildropPath.value.slice(0, 512);
-    renderTaildrop();
-  });
   ui.taildropBrowse.addEventListener("click", () => browseTaildrop(state.taildropPath || ""));
   ui.taildropBrowserUp.addEventListener("click", () => {
     if (!state.taildropBrowserPath) return;
@@ -1737,7 +1808,7 @@
     if (state.activeTab === "settings") loadExitNodes();
   });
   window.addEventListener("pagehide", () => {
-    copyEpoch++;
+    resetFeedback();
     state.pageActive = false;
     if (state.busyAction === "taildrop-browse") {
       state.busy = false;
@@ -1747,6 +1818,7 @@
     state.deviceRefreshPending = false;
     state.refreshAfterBusy = false;
     state.queuedBinaryAction = "";
+    state.queuedBinaryContext = null;
     state.devices = null;
     state.devicesError = null;
     state.deviceRenderSignature = null;
@@ -1755,29 +1827,30 @@
     state.aboutError = null;
     state.loginRequestVersion++;
     state.loginError = null;
-    state.loginOpened = false;
+    clearFeedback("loginOpened");
     state.binaryRequestVersion++;
     state.binary = null;
-    state.binaryFeedback = "";
+    clearFeedback("binaryFeedback");
     state.binaryError = null;
+    state.binaryErrorKind = "";
     state.updateChannel = null;
     state.binaryChannelPending = null;
-    state.networkFeedback = "";
+    clearFeedback("networkFeedback");
     state.networkError = null;
-    state.advertiseFeedback = "";
+    clearFeedback("advertiseFeedback");
     state.advertiseError = null;
     state.networkDraft = { exitNode: null, routes: null, advertiseExitNode: null };
     ui.advertiseRoutes.value = "";
     ui.advertiseExitNode.checked = false;
     state.networkRequestVersion++;
+    state.exitNodeEnabledDraft = null;
     state.exitIpv6Pending = null;
     state.exitNodesRequestVersion++;
     state.exitNodes = null;
     state.exitNodesLoading = false;
     state.exitNodesError = null;
     state.taildropPath = "";
-    state.taildropDraftVersion++;
-    state.taildropDraftDirty = false;
+    clearFeedback("taildropFeedback");
     state.taildropError = null;
     state.taildropBrowserPath = "";
     state.taildropDirectories = [];
@@ -1794,7 +1867,7 @@
     state.lastUpdated = null;
     state.freshness = "waiting";
     state.addressSignature = null;
-    state.notice = null;
+    clearFeedback("notice");
     clearCopyControls();
     document.querySelectorAll(".copy-control").forEach((control) => {
       delete control.dataset.copy;
@@ -1821,7 +1894,7 @@
     if (state.activeTab === "settings") loadExitNodes();
     if (state.activeTab === "devices") state.deviceRefreshPending = true;
     if (state.busy) state.refreshAfterBusy = true;
-    else refresh(false);
+    else refresh(false, true);
   });
 
   ui.preview.hidden = state.available;
@@ -1835,7 +1908,7 @@
   if (state.available) {
     refresh(false);
     setInterval(() => {
-      if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible" && state.activeTab !== "taildrop") {
         refresh(false);
         if (state.activeTab === "settings") loadExitNodes();
       }

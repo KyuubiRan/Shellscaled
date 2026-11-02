@@ -1,6 +1,6 @@
 # Taildrop
 
-Shellscaled exposes a small receive workflow in the KernelSU WebUI. The WebUI
+Shellscaled exposes a receive workflow in the KernelSU WebUI's **Taildrop** tab. The WebUI
 stores a receive directory under Android shared storage, defaults to
 `/storage/emulated/0/Download/Taildrop`, creates that directory on first use,
 and receives the daemon's waiting files through LocalAPI. The `/sdcard/Download/Taildrop` spelling is accepted for devices that
@@ -15,6 +15,12 @@ path, an explicit parent action, and directory rows that open the next level.
 Shellscaled only borrows this interaction model; it does not copy code or add
 the file manager as a dependency. Directory enumeration stays in the root
 helper and uses directory APIs with bounded results.
+Choosing **Choose this directory** saves the directory immediately; there is no separate
+save action. The path field displays the saved directory. Automatic status
+refresh pauses in this tab, and unrelated updates retain directory rows and
+scroll position. A failed save leaves the browser open so the choice can be retried.
+Success feedback disappears after three seconds and clears immediately when
+leaving the tab, including when a pending save finishes after navigation.
 
 The service supervisor starts an automatic receiver which waits on the daemon's
 `GET /localapi/v0/files/?waitsec=3600` endpoint, the same blocking mechanism used

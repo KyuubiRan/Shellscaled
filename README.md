@@ -50,15 +50,13 @@ APatch 适配处于实验阶段，请使用包含该适配的预发布版本；A
 ## 使用
 
 管理器中的模块按钮可切换连接状态。KernelSU 用户还可打开设置页面，管理子网路由、入站连接和出口节点的局域网访问；开关更改后立即生效。
+操作成功提示会在 3 秒后自动消失，切换页面时立即清除；离页后完成的操作不会再次显示旧提示。
 
-设置中的「网络角色」可选择、切换和关闭出口节点，也可发布本机为出口节点或输入 CIDR 子网路由。发布后需在 Tailscale 控制台批准；Android 转发、NAT 与 SELinux 的实际可用性需要单独验证。
+设置中的「网络角色」可通过开关启用或停用出口节点，开启后选择节点即自动应用。也可发布本机为出口节点或输入 CIDR 子网路由。发布后需在 Tailscale 控制台批准；Android 转发、NAT 与 SELinux 的实际可用性需要单独验证。
 
 「MagicDNS 分流解析」开关（默认关闭）在不接管系统 DNS 的情况下解析 tailnet 名称，行为与限制见 [Android 网络说明](docs/android-network.md)。
 
-
-「文件接收」默认保存到外部存储的 `Download/Taildrop`。可浏览主外部存储下的普通目录并保存选择，再点击接收文件；应用私有目录受到保护。接收流程见 [Taildrop 说明](docs/taildrop.md)；模块免重启更新的机制见 [即时更新说明](docs/hot-update.md)。
-
-「文件接收」默认保存到外部存储的 `Download/Taildrop`。可浏览主外部存储下的普通目录并保存选择，再点击接收文件；应用私有目录受到保护。接收流程见 [Taildrop 说明](docs/taildrop.md)。
+独立的「Taildrop」页面默认保存到外部存储的 `Download/Taildrop`。可浏览主外部存储下的普通目录，点击「选择此目录」即保存，浏览时不会自动刷新。服务运行时自动接收文件，也可手动立即接收；应用私有目录受到保护。接收流程见 [Taildrop 说明](docs/taildrop.md)；模块免重启更新的机制见 [即时更新说明](docs/hot-update.md)。
 
 在 `adb shell` 或终端执行 `su` 后，可直接使用 `tailscale`。`tailscaled` 可启动、停止、重启服务或查看状态。
 
