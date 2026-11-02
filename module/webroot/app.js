@@ -1,4 +1,4 @@
-/* Implements KernelSU's documented exec(command, options, callback) API.
+/* Implements KernelSU's documented spawn/exec bridge APIs.
  * https://github.com/tiann/KernelSU/tree/main/js
  * No KernelSU SDK code is vendored.
  */
@@ -7,7 +7,7 @@
 (() => {
   const I18n = window.ShellscaledI18n;
   const t = I18n.t;
-  const RPC_COMMAND = "/data/adb/modules/shellscaled/bin/shellscaled-web rpc ";
+  const RPC_PROGRAM = "/data/adb/modules/shellscaled/bin/shellscaled-web";
   const RPC_TIMEOUT_MS = 60000;
   const BINARY_UPDATE_TIMEOUT_MS = 200000;
   const MAX_COMMAND_LENGTH = 2048;
@@ -49,7 +49,7 @@
     addressSignature: null, consoleError: null,
     aboutError: null, aboutRequestVersion: 0,
     loginError: null, loginOpened: false, loginRequestVersion: 0,
-    binary: null, binaryFeedback: "", binaryError: null, binaryRequestVersion: 0,
+    binary: null, binaryFeedback: "", binaryError: null, binaryRequestVersion: 0, queuedBinaryAction: "",
     updateChannel: null, binaryChannelPending: null,
   };
   let callbackSequence = 0;
@@ -113,7 +113,15 @@
     const key = kind === "copied" ? "copy.copied" : kind === "failed" ? "copy.failed" :
       control.dataset.copyKind === "login" ? "login.copy" : "copy.action";
     const feedback = control.querySelector(".copy-feedback");
-    if (feedback) feedback.textContent = t(key);
+    if (feedback) {
+      const label = feedback.querySelector(".copy-feedback-label");
+      if (label && label.textContent !== t(key)) label.textContent = t(key);
+      // Reserve the widest translated state without changing the value column.
+      feedback.dataset.copyLabels = [t(control.dataset.copyKind === "login" ? "login.copy" : "copy.action"),
+        t("copy.copied"), t("copy.failed")].join("\n");
+    }
+    control.setAttribute("aria-busy", control.dataset.copyPending ? "true" : "false");
+    control.setAttribute("aria-disabled", control.disabled || control.dataset.copyPending ? "true" : "false");
     control.setAttribute("aria-label", t(kind === "copied" ? "copy.copiedLabel" :
       kind === "failed" ? "copy.failedLabel" : "copy.label", { value }));
   }
@@ -176,6 +184,9 @@
     const feedback = document.createElement("span");
     feedback.className = "copy-feedback";
     feedback.setAttribute("aria-live", "polite");
+    const feedbackLabel = document.createElement("span");
+    feedbackLabel.className = "copy-feedback-label";
+    feedback.appendChild(feedbackLabel);
     control.append(text, feedback);
     updateCopyFeedback(control);
     return control;
@@ -184,6 +195,9 @@
   function fallbackCopy(value, isCurrent) {
     if (!isCurrent()) return false;
     const previousFocus = document.activeElement;
+    const selection = window.getSelection();
+    const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange()) : [];
+    const scroll = { x: window.scrollX, y: window.scrollY };
     const buffer = document.createElement("textarea");
     buffer.className = "clipboard-buffer";
     buffer.value = value;
@@ -203,6 +217,13 @@
       buffer.remove();
       if (isCurrent() && previousFocus && previousFocus.isConnected && typeof previousFocus.focus === "function") {
         try { previousFocus.focus({ preventScroll: true }); } catch (_) { /* Keep focus local. */ }
+      }
+      if (isCurrent()) {
+        if (selection) {
+          selection.removeAllRanges();
+          for (const range of ranges) selection.addRange(range);
+        }
+        if (window.scrollX !== scroll.x || window.scrollY !== scroll.y) window.scrollTo(scroll.x, scroll.y);
       }
     }
   }
@@ -230,9 +251,9 @@
     const operation = { value: control.dataset.copy, epoch: copyEpoch, token: ++copySequence };
     copyOperations.set(control, operation);
     delete control.dataset.copyState;
-    updateCopyFeedback(control);
     control.dataset.copyPending = "true";
-    control.disabled = true;
+    // Guard repeated activation without disabling and blurring the focused button.
+    updateCopyFeedback(control);
     const copied = await copyText(operation.value, () => copyIsCurrent(control, operation));
     if (!copyIsCurrent(control, operation)) {
       releaseCopyOperation(control, operation);
@@ -529,10 +550,11 @@
     ui.binaryLatestRow.hidden = !latest;
     ui.binaryChannel.value = state.binaryChannelPending || state.updateChannel || "";
     ui.binaryChannel.disabled = !state.available || state.busy || !state.updateChannel;
-    const checking = state.busyAction === "binary-check";
-    const updating = state.busyAction === "binary-update";
+    const checking = state.busyAction === "binary-check" || state.queuedBinaryAction === "binary-check";
+    const updating = state.busyAction === "binary-update" || state.queuedBinaryAction === "binary-update";
     const savingChannel = state.busyAction === "binary-channel";
-    ui.binaryAction.disabled = !state.available || state.busy || !state.pageActive;
+    ui.binaryAction.disabled = !state.available || !state.pageActive || Boolean(state.queuedBinaryAction) ||
+      (state.busy && state.busyAction !== "status");
     ui.binaryActionLabel.textContent = t(updating ? "binary.updating" : checking ? "binary.checking" :
       binaryUpdateAvailable() ? "binary.update" : "binary.check");
     ui.binaryAction.classList.toggle("is-working", checking || updating);
@@ -592,12 +614,21 @@
   }
 
   async function runBinaryAction(action) {
-    if (state.busy || !state.available || !state.pageActive) return;
+    if (!state.available || !state.pageActive || state.queuedBinaryAction) return;
+    if (state.busy) {
+      if (state.busyAction === "status") {
+        state.queuedBinaryAction = action;
+        state.binaryError = null;
+        renderBinary();
+      }
+      return;
+    }
     if (action === "binary-update" && !binaryUpdateAvailable()) return;
     state.busy = true;
     state.busyAction = action;
     state.binaryError = null;
     state.binaryFeedback = "";
+    const started = performance.now();
     const version = ++state.binaryRequestVersion;
     updateControls();
     try {
@@ -621,16 +652,17 @@
         state.binaryFeedback = action === "binary-update" ? "updateFailed" : "checkFailed";
       }
     } finally {
+      const remaining = 220 - (performance.now() - started);
+      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
       finishBusy();
     }
   }
 
   function updateControls() {
     const disabled = !state.available || state.busy || !state.pageActive;
-    // Keep serialization and DOM nodes, without dimming the whole page
-    // during a single switch write. Only the active row gets a progress cue.
-    document.querySelectorAll("[data-requires-bridge], #language").forEach((control) => {
-      if (state.busyAction !== "settings") control.classList.remove("is-pending");
+    // Temporary serialization must not fade the page on every RPC or poll.
+    document.querySelectorAll("[data-requires-bridge], #language, #copy-login").forEach((control) => {
+      if (!state.busy) control.classList.remove("is-pending");
       else if (!control.disabled) control.classList.add("is-pending");
     });
     document.querySelectorAll("[data-requires-bridge]").forEach((control) => {
@@ -691,10 +723,12 @@
     if (!state.available || !trustedEnvironment()) return Promise.reject(new UIError("error.preview"));
     // User text stays inside JSON data; only base64 enters this fixed command.
     // Keep 'system' as a preference so the native module card also follows Android.
-    const command = RPC_COMMAND + encodeRequest({ ...payload, locale: I18n.preference() });
+    const encoded = encodeRequest({ ...payload, locale: I18n.preference() });
     const callbackName = "shellscaled_rpc_" + Date.now() + "_" + (++callbackSequence);
     return new Promise((resolve, reject) => {
+      let settled = false;
       const cleanup = () => {
+        settled = true;
         clearTimeout(timer);
         delete window[callbackName];
       };
@@ -703,7 +737,8 @@
         // A timed-out mutation may already have run. Never automatically resend it.
         reject(new UIError("error.timeout"));
       }, payload.action === "binary-update" ? BINARY_UPDATE_TIMEOUT_MS : RPC_TIMEOUT_MS);
-      window[callbackName] = (errno, stdout, stderr) => {
+      const complete = (errno, stdout) => {
+        if (settled) return;
         cleanup();
         try {
           if (typeof stdout !== "string" || stdout.length > 1500000) throw new UIError("error.response");
@@ -722,12 +757,44 @@
           reject(error);
         }
       };
-      try {
-        window.ksu.exec(command, "{}", callbackName);
-      } catch (_) {
-        cleanup();
-        reject(new UIError("error.bridge"));
-      }
+      let stdout = "";
+      const callback = Object.assign(complete, {
+        stdout: { emit(event, data) {
+          if (settled || event !== "data") return;
+          if (typeof data !== "string" || stdout.length + data.length > 1500000) {
+            cleanup();
+            reject(new UIError("error.response"));
+          } else stdout += data + "\n";
+        } },
+        stderr: { emit() { /* Native errors are projected by the helper's JSON. */ } },
+        emit(event, value) {
+          if (event === "exit") complete(value, stdout);
+          else if (event === "error" && !settled) {
+            cleanup();
+            reject(new UIError("error.bridge"));
+          }
+        },
+      });
+      window[callbackName] = callback;
+      // Give pending/pressed states an actual paint before entering Java.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (settled) return;
+        if (!state.pageActive) {
+          cleanup();
+          reject(new UIError("error.unavailable"));
+          return;
+        }
+        try {
+          if (typeof window.ksu.spawn === "function") {
+            window.ksu.spawn(RPC_PROGRAM, JSON.stringify(["rpc", encoded]), "{}", callbackName);
+          } else {
+            window.ksu.exec(RPC_PROGRAM + " rpc " + encoded, "{}", callbackName);
+          }
+        } catch (_) {
+          cleanup();
+          reject(new UIError("error.bridge"));
+        }
+      }));
     });
   }
 
@@ -777,7 +844,7 @@
     if ((ui.copyLogin.dataset.copy || "") !== loginURL) invalidateCopyControl(ui.copyLogin);
     if (loginURL) ui.copyLogin.dataset.copy = loginURL;
     else delete ui.copyLogin.dataset.copy;
-    ui.copyLogin.disabled = !needsLogin || !loginURL || !state.available || state.busy || !state.pageActive || Boolean(ui.copyLogin.dataset.copyPending);
+    ui.copyLogin.disabled = !needsLogin || !loginURL || !state.available || state.busy || !state.pageActive;
     updateCopyFeedback(ui.copyLogin);
     ui.login.disabled = !needsLogin || !state.available || state.busy || !state.pageActive;
     ui.login.classList.toggle("is-working", opening);
@@ -871,7 +938,11 @@
     updateControls();
     if (!state.pageActive) return;
     if (completedAction === "devices") renderDevices();
-    if (state.refreshAfterBusy) {
+    if (state.queuedBinaryAction) {
+      const action = state.queuedBinaryAction;
+      state.queuedBinaryAction = "";
+      runBinaryAction(action === "binary-update" && !binaryUpdateAvailable() ? "binary-check" : action);
+    } else if (state.refreshAfterBusy) {
       state.refreshAfterBusy = false;
       refresh(false);
     } else if (state.deviceRefreshPending && state.activeTab === "devices") {
@@ -1054,8 +1125,8 @@
 
   function showRipple(event) {
     if (!(event.target instanceof Element)) return;
-    const control = event.target.closest("button.button, button.icon-button, button.tab, button.about-link");
-    if (!control || control.disabled || (event.type === "click" && event.detail !== 0)) return;
+    const control = event.target.closest("button.button, button.icon-button, button.tab, button.about-link, button.copy-control");
+    if (!control || control.disabled || control.dataset.copyPending || (event.type === "click" && event.detail !== 0)) return;
     const bounds = control.getBoundingClientRect();
     const size = Math.hypot(bounds.width, bounds.height) * 2;
     const pointer = event.type === "pointerdown";
@@ -1147,6 +1218,7 @@
     state.deviceRequestVersion++;
     state.deviceRefreshPending = false;
     state.refreshAfterBusy = false;
+    state.queuedBinaryAction = "";
     state.devices = null;
     state.devicesError = null;
     state.deviceRenderSignature = null;

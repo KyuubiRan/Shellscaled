@@ -49,6 +49,7 @@ button, .setting-row, .switch input { -webkit-tap-highlight-color: transparent; 
 button { cursor: pointer; }
 button:disabled { opacity: .45; cursor: default; }
 button:disabled.is-pending, button:disabled.is-working { opacity: 1; }
+.copy-control[data-copy-pending] { cursor: progress; }
 button, input, select, pre { outline: none; }
 button:focus-visible, input:focus-visible, select:focus-visible, pre:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 h1, h2, h3, p { margin: 0; }
@@ -71,7 +72,7 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .icon-button svg { width: 19px; height: 19px; }
 .icon-button .refresh-icon { width: 22px; height: 22px; fill: currentColor; stroke: none; }
 .icon-button.is-working .refresh-icon { animation: spin .8s linear infinite; }
-.button, .icon-button, .tab, .about-link { position: relative; overflow: hidden; isolation: isolate; }
+.button, .icon-button, .tab, .about-link, .copy-control { position: relative; overflow: hidden; isolation: isolate; }
 .button-ripple { position: absolute; border-radius: 50%; background: currentColor; opacity: 0; pointer-events: none; animation: ripple .55s ease-out; }
 .card { padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); margin-top: 16px; }
 .card h3, .output-heading h3 { font-size: 14px; font-weight: 650; }
@@ -102,6 +103,9 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .address { width: 100%; padding: 10px 11px; border: 1px solid var(--line); background: var(--surface-muted); color: var(--text); border-radius: 10px; font-size: 12px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
 .copy-value { min-width: 0; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .copy-feedback { font-family: system-ui, sans-serif; color: var(--accent); font-size: 10px; font-weight: 600; line-height: 1.5; white-space: nowrap; }
+.copy-feedback { display: inline-grid; text-align: end; }
+.copy-feedback-label, .copy-feedback::after { grid-area: 1 / 1; }
+.copy-feedback::after { content: attr(data-copy-labels); visibility: hidden; white-space: pre; line-height: 0; }
 .copy-control[data-copy-state="failed"] .copy-feedback { color: var(--danger); }
 .button.copy-control .copy-feedback { color: inherit; font-size: 13px; }
 .clipboard-buffer { position: fixed; top: 0; left: 0; width: 1px; height: 1px; margin: 0; padding: 0; border: 0; opacity: 0; pointer-events: none; }

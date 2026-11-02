@@ -66,7 +66,7 @@ python3 scripts/test-webui.py --manager ksu
 
 `python3 scripts/build-webui-fixture.py` 使用已有 SDK 构建隔离的测试 APK。
 在模拟器安装并启动 `dev.shellscaled.webuitest/.MainActivity`，读取
-`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=29 fail=0`。
+`ShellscaledUiTest` 日志的最新 `START` 到 `DONE pass=33 fail=0`。
 它在真实 Android WebView 中加载原样资源，使用无 root、无网络权限的
 内存桥验证前端，不访问生产账号或 socket。详见 [夹具说明](../tests/webui/README.md)。
 

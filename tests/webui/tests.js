@@ -5,7 +5,7 @@
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const requests = () => JSON.parse(fixture.requestsJSON());
   const backend = () => JSON.parse(fixture.statusJSON());
-  const assert = (value) => { if (!value) throw new Error("assertion"); };
+  const assert = (value, label = "assertion") => { if (!value) throw new Error(label); };
   const rawKey = /^(?:app|preview|tab|overview|devices|copy|console|about|binary|state|service|freshness|connection|login|settings|language|command|notice|error)\.[A-Za-z0-9.]+$/;
   async function until(predicate) {
     const end = Date.now() + 6000;
@@ -21,8 +21,9 @@
   async function test(name, body) {
     try { await body(); fixture.report(name, true); }
     catch (error) {
-      const line = /tests\.js:(\d+)/.exec(error.stack || "");
-      fixture.report(name + (line ? " line=" + line[1] : ""), false);
+      const lines = [...(error.stack || "").matchAll(/:(\d+):\d+/g)].map((match) => match[1]);
+      const line = lines.find((value) => value !== "8");
+      fixture.report(name + (line ? " line=" + line : "") + (error.message === "assertion" ? "" : " " + error.message), false);
     }
   }
   function click(id) {
@@ -151,6 +152,51 @@
       assert(location.origin === "https://mui.kernelsu.org" && window.top === window);
       assert($("preview-notice").hidden && requests().length > 0);
       assert([...$("language").options].map((option) => option.value).join(",") === "system,zh-CN,zh-TW,en");
+    });
+
+    await test("bridge-spawn-paints-and-keeps-animating", async () => {
+      const native = window.ksu;
+      let painted = false;
+      let called = false;
+      const bridge = {
+        exec() { throw new Error("synchronous bridge must not run"); },
+        spawn(...args) {
+          assert(painted && $("refresh").classList.contains("is-working"));
+          called = true;
+          native.spawn(...args);
+        },
+      };
+      try {
+        window.ksu = bridge;
+        assert(window.ksu === bridge);
+        fixture.holdNextStatus();
+        click("refresh");
+        requestAnimationFrame(() => { painted = true; });
+        await until(() => called);
+        const icon = $("refresh").querySelector("svg");
+        const transform = getComputedStyle(icon).transform;
+        let frames = 0;
+        requestAnimationFrame(function tick() {
+          frames++;
+          if (frames < 4) requestAnimationFrame(tick);
+        });
+        await until(() => frames === 4);
+        assert(getComputedStyle(icon).transform !== transform && $("main").getAttribute("aria-busy") === "true");
+      } finally {
+        window.ksu = native;
+        fixture.releaseStatus();
+        await idle();
+      }
+      assert(JSON.parse(fixture.transportsJSON()).every((mode) => mode === "spawn"));
+    });
+
+    await test("bridge-exec-only-manager-fallback", async () => {
+      const native = window.ksu;
+      try {
+        window.ksu = { exec: (...args) => native.exec(...args) };
+        await refresh();
+        assert(JSON.parse(fixture.transportsJSON()).at(-1) === "exec");
+      } finally { window.ksu = native; }
     });
 
     for (const locale of locales) {
@@ -481,6 +527,52 @@
       assert(cards().length === examples.length && deviceRequests().length === before);
     });
 
+    await test("copy-keeps-focus-brightness-selection-and-layout", async () => {
+      const pending = [];
+      const restore = mockClipboard(() => new Promise((resolve, reject) => pending.push({ resolve, reject })), () => false);
+      try {
+        for (const locale of locales) {
+          await language(locale);
+          click("tab-overview");
+          const button = $("addresses").lastElementChild;
+          const feedback = button.querySelector(".copy-feedback");
+          const value = button.querySelector(".copy-value");
+          button.scrollIntoView({ block: "center" });
+          button.focus({ preventScroll: true });
+          const range = document.createRange();
+          range.selectNodeContents(value);
+          window.getSelection().removeAllRanges();
+          window.getSelection().addRange(range);
+          const selected = window.getSelection().toString();
+          const scroll = window.scrollY;
+          const geometry = () => [button.getBoundingClientRect().height, value.getBoundingClientRect().width,
+            feedback.getBoundingClientRect().width];
+          const original = JSON.stringify(geometry());
+          const before = pending.length;
+          button.click();
+          await until(() => pending.length === before + 1);
+          assert(!button.disabled && button.getAttribute("aria-disabled") === "true" && button.getAttribute("aria-busy") === "true");
+          assert(getComputedStyle(button).opacity === "1" && document.activeElement === button);
+          button.click();
+          assert(pending.length === before + 1 && JSON.stringify(geometry()) === original);
+          pending.at(-1).resolve();
+          await until(() => button.dataset.copyState === "copied");
+          assert(JSON.stringify(geometry()) === original && document.activeElement === button && window.scrollY === scroll);
+          button.click();
+          await until(() => pending.length === before + 2);
+          pending.at(-1).reject(new Error("synthetic denial"));
+          await until(() => button.dataset.copyState === "failed");
+          assert(JSON.stringify(geometry()) === original && document.activeElement === button && window.scrollY === scroll);
+          assert(window.getSelection().toString() === selected);
+        }
+      } finally {
+        for (const operation of pending) operation.resolve();
+        restore();
+        window.getSelection().removeAllRanges();
+        window.scrollTo(0, 0);
+      }
+    });
+
     await test("copy-every-field-through-clipboard-api", async () => {
       const writes = [];
       const restore = mockClipboard(async (value) => { writes.push(value); });
@@ -558,7 +650,8 @@
         const before = pending.length;
         click("copy-login");
         await until(() => pending.length === before + 1);
-        assert(pending.at(-1).value === value && $("copy-login").dataset.copyPending && $("copy-login").disabled);
+        assert(pending.at(-1).value === value && $("copy-login").dataset.copyPending && !$("copy-login").disabled);
+        assert($("copy-login").getAttribute("aria-busy") === "true");
         return pending.at(-1);
       };
       try {
@@ -593,7 +686,7 @@
         late.reject();
         await wait(50);
         assert(fallbacks === 0 && control.dataset.copy === "https://example.test/login/latest");
-        assert(control.dataset.copyPending && control.disabled && !control.dataset.copyState);
+        assert(control.dataset.copyPending && !control.disabled && !control.dataset.copyState);
         latest.resolve();
         await until(() => control.dataset.copyState === "copied" && !control.dataset.copyPending && !control.disabled);
         assert(fallbacks === 0);
@@ -853,6 +946,38 @@
       assert(notice() === globalNotice);
     });
 
+    await test("binary-first-click-during-status-runs-once", async () => {
+      await checkBinary("current");
+      fixture.setBinaryMode("newer");
+      fixture.holdNextStatus();
+      fixture.holdNextBinary();
+      const beforeStatus = statusRequests().length;
+      const beforeBinary = binaryRequests().length;
+      try {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await until(() => statusRequests().length === beforeStatus + 1);
+        assert(!$("binary-action").disabled);
+        click("binary-action");
+        assert($("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.checking"));
+        assert($("binary-action").getAttribute("aria-busy") === "true");
+        $("binary-action").click();
+        await wait(75);
+        assert(binaryRequests().length === beforeBinary);
+        fixture.releaseStatus();
+        await until(() => binaryRequests().length === beforeBinary + 1);
+        assert(binaryRequests().at(-1).action === "binary-check");
+        const spinner = $("binary-action").querySelector(".button-spinner");
+        const beforeRotation = getComputedStyle(spinner).transform;
+        await wait(100);
+        assert(getComputedStyle(spinner).transform !== beforeRotation);
+      } finally {
+        fixture.releaseStatus();
+        fixture.releaseBinary();
+        await idle();
+      }
+      assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.update"));
+    });
+
     await test("binary-channel-saves-without-checking-and-preserves-settings", async () => {
       await idle();
       const original = backend();
@@ -887,12 +1012,12 @@
         assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && $("binary-latest-row").hidden && binaryMessage());
         assert(networkActions() === before && notice() === globalNotice);
         await checkBinary("revision");
-        assert($("binary-current-version").textContent === $("binary-latest-version").textContent);
+        assert($("binary-current-version").textContent === $("binary-latest-version").textContent, "revision-version-display");
         assert(!$("binary-action").disabled);
         const revisionChecked = networkActions();
         await language("zh-TW");
         assert(selected.value === other && checkbox.checked === confirmed && !checkbox.disabled);
-        assert(networkActions() === revisionChecked && !$("binary-action").disabled && storageIsLanguageOnly());
+        assert(networkActions() === revisionChecked && !$("binary-action").disabled && storageIsLanguageOnly(), "channel-after-language");
 
         await checkBinary("newer");
         assert(!$("binary-action").disabled);
@@ -900,7 +1025,7 @@
         fixture.nextChannelFails();
         await choose(original.updateChannel);
         await idle();
-        assert(selected.value === other && backend().updateChannel === other);
+        assert(selected.value === other && backend().updateChannel === other, "failed-channel-restoration");
         assert(!$("binary-action").disabled && binaryLabel() === ShellscaledI18n.t("binary.check") && $("binary-latest-row").hidden);
         assert(binaryMessage() && $("binary-message").dataset.kind === "error" && notice() === globalNotice);
         assert(networkActions() === checked && checkbox.checked === confirmed && !checkbox.disabled);

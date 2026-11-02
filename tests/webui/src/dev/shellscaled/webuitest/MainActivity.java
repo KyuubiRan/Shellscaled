@@ -37,6 +37,8 @@ public final class MainActivity extends Activity {
             "index.html", "app.js", "i18n.js", "styles.css"));
     private final Object guard = new Object();
     private final JSONArray requests = new JSONArray();
+    private final JSONArray transports = new JSONArray();
+    private final Set<String> spawnCallbacks = new HashSet<>();
     private String state = "Running";
     private String loginURL = "";
     private String loginMode = "waiting";
@@ -240,6 +242,26 @@ public final class MainActivity extends Activity {
 
     public final class FakeKsu {
         @JavascriptInterface public void exec(String command, String options, String callback) {
+            synchronized (guard) { transports.put("exec"); }
+            dispatch(command, options, callback);
+        }
+
+        @JavascriptInterface public void spawn(String command, String args, String options, String callback) {
+            try {
+                JSONArray argv = new JSONArray(args);
+                if (!command.equals("/data/adb/modules/shellscaled/bin/shellscaled-web") || argv.length() != 2 ||
+                        !"rpc".equals(argv.getString(0)) || !"{}".equals(options)) throw new JSONException("spawn-envelope");
+                synchronized (guard) {
+                    transports.put("spawn");
+                    spawnCallbacks.add(callback);
+                }
+                dispatch(RPC + argv.getString(1), options, callback);
+            } catch (JSONException error) {
+                record("bridge-spawn-envelope", false);
+            }
+        }
+
+        private void dispatch(String command, String options, String callback) {
             if (!callback.matches("shellscaled_rpc_[0-9]+_[0-9]+")) {
                 record("bridge-callback", false);
                 return;
@@ -391,13 +413,28 @@ public final class MainActivity extends Activity {
         }
 
         private void reply(String callback, JSONObject result) {
-            String script = "window[" + JSONObject.quote(callback) + "](" + (result.optBoolean("ok") ? "0" : "1") +
-                    "," + JSONObject.quote(result.toString()) + ",\"\")";
+            String target = "window[" + JSONObject.quote(callback) + "]";
+            String script;
+            synchronized (guard) {
+                if (spawnCallbacks.remove(callback)) {
+                    String json = result.toString();
+                    int split = json.indexOf(',') + 1;
+                    script = target + ".stdout.emit('data'," + JSONObject.quote(json.substring(0, split)) + ");" +
+                            target + ".stdout.emit('data'," + JSONObject.quote(json.substring(split)) + ");" +
+                            target + ".emit('exit'," + (result.optBoolean("ok") ? "0" : "1") + ");";
+                } else {
+                    script = target + "(" + (result.optBoolean("ok") ? "0" : "1") +
+                            "," + JSONObject.quote(result.toString()) + ",\"\")";
+                }
+            }
             web.postDelayed(() -> web.evaluateJavascript(script, null), 30);
         }
     }
 
     public final class TestControl {
+        @JavascriptInterface public String transportsJSON() {
+            synchronized (guard) { return transports.toString(); }
+        }
         @JavascriptInterface public String requestsJSON() {
             synchronized (guard) { return requests.toString(); }
         }

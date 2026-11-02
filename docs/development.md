@@ -157,6 +157,15 @@ ripple feedback. Changing channels invalidates the offer. The module list
 description appends the verified runtime Tailscale version, refreshes after a
 binary transaction, and keeps both KernelSU's override and module.prop in sync.
 
+RPC prefers KernelSU's asynchronous `spawn` bridge, using the fixed helper path
+and two arguments (`rpc` and encoded JSON). Only the helper's existing action
+allowlist executes commands. Streamed output stays bounded and is decoded only
+on process exit. Two animation frames precede bridge entry so pressed/loading
+states can paint; managers without `spawn` retain the `exec` fallback, whose
+native call can still block JavaScript. One explicit binary action can wait for
+an in-flight status read, then runs before another refresh. Leaving the page
+cancels that queued intent; failed mutations are never automatically retried.
+
 The settings card checks only after a user request. Its source is the newest eligible
 public release of [the Android CLI fork](https://github.com/KyuubiRan/tailscale-android-cli),
 using GitHub asset digests and the generated manifest. Users choose stable or preview in Settings, with the choice saved in
@@ -270,6 +279,12 @@ service's default false fields do not count as a confirmed preferences snapshot.
 During a switch write, temporarily disabled controls retain their appearance and
 only the active settings row shows progress. Existing rows and scroll position
 remain in place. Unavailable controls retain their ordinary disabled styling.
+
+Copy operations use local pending/ARIA state without disabling and blurring the
+focused button. Feedback reserves the widest translated label, preserving the
+value column and row height. The DOM clipboard fallback restores the preceding
+focus, selection and scroll position; synthetic tests never access the real
+clipboard.
 
 Command shortcuts show their literal executable and arguments in every locale.
 Only surrounding help, controls and feedback are translated.

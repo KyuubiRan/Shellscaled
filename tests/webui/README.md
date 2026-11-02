@@ -2,7 +2,7 @@
 
 This standalone fixture packages the current `module/webroot` files unchanged and
 loads them in a real Android WebView on the expected KernelSU asset origin. Its
-fake `ksu.exec` decodes the fixed RPC envelope and changes only synthetic state
+fake `ksu.spawn` / `ksu.exec` decode the fixed RPC envelope and change only synthetic state
 inside the test APK. It never runs a shell, needs no root or network permission,
 and cannot read the module socket, account, filesystem, or device inventory.
 All other URLs and navigations are blocked. Only language is stored in the
@@ -38,6 +38,12 @@ Held writes also check that rows and their position remain unchanged and that
 temporarily disabled controls keep their opacity. The single update action is
 checked for ripple feedback, a spinning icon before the label, duplicate-click
 blocking, Check → Update transitions, channel invalidation and error retries.
+The asynchronous bridge fixture streams JSON lines and verifies fixed program
+and argument boundaries. Held requests check that progress keeps animating and
+that the first click during a status read queues exactly one check. An exec-only
+bridge covers the compatibility fallback. Copy tests hold/reject synthetic
+clipboard promises and check focus, brightness, selection, scroll and geometry
+through all translated feedback states.
 Confirmed settings survive language switches and device refreshes.
 Fault cases also apply a setting before returning an error and then fail status
 reads: all setting switches remain disabled until a valid live preferences
