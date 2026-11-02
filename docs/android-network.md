@@ -30,7 +30,9 @@ Android 移植将自有 mask 放在 `0x1e000000`，tailscaled 外层传输 socke
 
 ## DNS、防火墙与权限
 
-默认 `accept-dns=false`，Tailscale 自身不接管 Android 的 netd 配置，也不修改 Private DNS。模块可选用一个本地 MagicDNS 代理补上 tailnet 名称解析。该功能默认关闭，在 WebUI“网络角色”卡片中打开（RPC `magicdns`，开关文件 `/data/adb/shellscaled/magicdns-enabled`）；关闭时代理进程仍运行（开关切换后立即生效），但两条链保持为空，不拦截任何 DNS。开启后：普通模式下只有 tailnet 名称的查询被交给代理，其他查询原样发往 Android 选定的 DNS 服务器；需要把全部 DNS 交给代理时，非 tailnet 查询仍转发给系统原本选定的那台服务器。IPv4 与 IPv6 的 DNS 查询走同样的路径。
+默认 `accept-dns=false`，Tailscale 自身不接管 Android 的 netd 配置，也不修改 Private DNS。模块可选用一个本地 MagicDNS 代理补上 tailnet 名称解析。该功能默认关闭，在 WebUI“网络角色”卡片中打开（RPC `magicdns`，请求文件 `/data/adb/shellscaled/magicdns-enabled`）；关闭时代理进程仍运行，收到请求后清空两条链，不再拦截 DNS。界面在代理确认完成前显示正在应用，失败时保留提示并重试。开启后：普通模式下只有 tailnet 名称的查询被交给代理，其他查询原样发往 Android 选定的 DNS 服务器；需要把全部 DNS 交给代理时，非 tailnet 查询仍转发给系统原本选定的那台服务器。IPv4 与 IPv6 的 DNS 查询走同样的路径。
+
+请求文件使用原子 JSON 记录 `enabled` 和随机 `generation`，包括关闭请求；不存在时默认为关闭，旧的空文件或 `1` 标记仍解释为开启。代理状态中的 `enabled` 和内部代次仅在所有受控地址族的规则操作成功后确认，区别于 status 顶层表示用户选择的 `magicDNSEnabled`。未确认的代次标为 `pending`，清理失败时增加 `applyFailed` 并重试；界面即使开关已经关闭也显示这些状态。RPC 写请求与代理应用规则共用专用 flock，获取最多等待 2 秒并响应 context 取消。LocalAPI / DoH 探测不持锁，代理应用前在锁内重新核对代次，过期计划不会重新安装规则；只有代理操作链内容，RPC 不另行执行 iptables。
 
 ### MagicDNS 机制
 

@@ -244,7 +244,8 @@ func (b *backend) status(ctx context.Context) response {
 }
 
 func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
-	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), ExitNodeIPv6Takeover: exitNodeIPv6Takeover(), MagicDNS: readMagicDNSState(magicDNSStatePath, time.Now()), MagicDNSEnabled: magicDNSEnabled()}
+	dnsRequest, dnsRequestError := readMagicDNSRequest()
+	r := response{OK: true, State: "ServiceStopped", Version: b.moduleVersion(), IPs: []string{}, UpdateChannel: readUpdateChannel(b.updateDataDir(), b.module), ExitNodeIPv6Takeover: exitNodeIPv6Takeover(), MagicDNS: readMagicDNSState(magicDNSStatePath, time.Now()), MagicDNSEnabled: dnsRequest.Enabled}
 	var st localStatus
 	if err := b.api(ctx, "GET", "status?peers=false", nil, &st); err != nil {
 		if _, statErr := os.Stat(socketPath); statErr == nil {
@@ -269,8 +270,13 @@ func (b *backend) statusWithLocal(ctx context.Context) (response, localStatus) {
 	st.controlURL = p.ControlURL
 	r.Settings = settings{p.RouteAll, p.ShieldsUp, p.ExitNodeAllowLANAccess}
 	// The proxy refreshes every 5 s; until then its mode reflects older state.
-	if m := r.MagicDNS; m != nil && m.Running && (m.Enabled != r.MagicDNSEnabled || m.Daemon != st.BackendState || (st.BackendState == "Running" && m.ExitNode != p.ExitNodeID)) {
-		m.Pending = true
+	if m := r.MagicDNS; m != nil {
+		m.ApplyFailed = m.ApplyFailed || dnsRequestError != nil
+		m.Pending = m.ApplyFailed || m.generation != dnsRequest.Generation || m.Enabled != dnsRequest.Enabled ||
+			m.Daemon != st.BackendState || (st.BackendState == "Running" && m.ExitNode != p.ExitNodeID)
+	} else if dnsRequest.Generation != "" || dnsRequestError != nil {
+		// A newly written request has no acknowledgement yet, even if it is off.
+		r.MagicDNS = &magicDNSState{Mode: "off", Pending: true, ApplyFailed: dnsRequestError != nil}
 	}
 	r.ExitNodeConfigured = p.ExitNodeID != "" || (p.ExitNodeIP != "" && p.ExitNodeIP != "invalid IP")
 	if p.ExitNodeID != "" {
@@ -720,14 +726,7 @@ func exitNodeIPv6Takeover() bool {
 
 // setMagicDNS persists the MagicDNS opt-in; the proxy applies it at once.
 func (b *backend) setMagicDNS(ctx context.Context, enabled bool) response {
-	if enabled {
-		if err := os.MkdirAll(filepath.Dir(magicDNSEnabledFile), 0700); err != nil {
-			return failed("无法保存 MagicDNS 设置")
-		}
-		if err := os.WriteFile(magicDNSEnabledFile, []byte("1\n"), 0600); err != nil {
-			return failed("无法保存 MagicDNS 设置")
-		}
-	} else if err := os.Remove(magicDNSEnabledFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := requestMagicDNS(ctx, enabled); err != nil {
 		return failed("无法保存 MagicDNS 设置")
 	}
 	nudgeMagicDNS()

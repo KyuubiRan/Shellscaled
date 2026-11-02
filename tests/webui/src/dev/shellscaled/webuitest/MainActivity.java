@@ -49,6 +49,8 @@ public final class MainActivity extends Activity {
     private boolean shieldsUp;
     private boolean allowLAN;
     private boolean magicDNS;
+    private boolean magicDNSApplied;
+    private String magicDNSMode = "normal";
     private boolean nextSettingsFails;
     private boolean nextSettingsResponseFails;
     private boolean holdNextSettings;
@@ -199,6 +201,13 @@ public final class MainActivity extends Activity {
                 .put("ips", addresses)
                 .put("settings", settings).put("updateChannel", updateChannel);
         if (!loginURL.isEmpty()) result.put("loginURL", loginURL);
+        if (!"normal".equals(magicDNSMode)) {
+            boolean pending = !"applied".equals(magicDNSMode);
+            result.put("magicDNS", new JSONObject().put("running", true)
+                    .put("mode", magicDNSApplied ? "tailnet" : "off").put("enabled", magicDNSApplied)
+                    .put("pending", pending).put("applyFailed", "failed".equals(magicDNSMode))
+                    .put("rules", !"failed".equals(magicDNSMode)).put("rules6", true).put("privateDns", "off"));
+        }
         return result;
     }
 
@@ -572,6 +581,13 @@ public final class MainActivity extends Activity {
         @JavascriptInterface public void setStatusMode(String value) {
             if (!Arrays.asList("normal", "error", "stopped", "service-error", "invalid-settings").contains(value)) return;
             synchronized (guard) { statusMode = value; }
+        }
+        @JavascriptInterface public void setMagicDNSMode(String value) {
+            if (!Arrays.asList("normal", "pending", "failed", "applied").contains(value)) return;
+            synchronized (guard) {
+                if ("pending".equals(value) || "applied".equals(value)) magicDNSApplied = magicDNS;
+                magicDNSMode = value;
+            }
         }
         @JavascriptInterface public void holdNextSettings() {
             synchronized (guard) { holdNextSettings = true; }

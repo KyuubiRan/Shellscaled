@@ -304,6 +304,54 @@
       click("tab-overview");
     });
 
+    await test("magicdns-off-keeps-pending-and-failed-cleanup-visible", async () => {
+      const originalLocale = $("language").value;
+      const originalSettings = JSON.stringify(backend().settings);
+      const toggle = $("magicdns-enabled");
+      const row = toggle.closest(".setting-row");
+      const status = $("magicdns-status");
+      const dnsRequests = () => requests().filter((request) => request.action === "magicdns");
+      async function poll() {
+        await idle();
+        const before = statusRequests().length;
+        document.dispatchEvent(new Event("visibilitychange"));
+        await until(() => statusRequests().length > before);
+        await idle();
+      }
+      try {
+        click("tab-settings");
+        for (const locale of ["zh-CN", "zh-TW", "en"]) {
+          await language(locale);
+          fixture.setMagicDNSMode("normal");
+          click("magicdns-enabled");
+          await idle();
+          assert(toggle.checked && backend().magicDNSEnabled);
+          fixture.setMagicDNSMode("pending");
+          const before = dnsRequests().length;
+          click("magicdns-enabled");
+          await until(() => dnsRequests().length === before + 1);
+          await idle();
+          assert(!toggle.checked && !backend().magicDNSEnabled);
+          assert(!status.hidden && status.textContent === ShellscaledI18n.t("network.dnsPending"));
+          assert(row.getAttribute("aria-busy") === "true");
+          fixture.setMagicDNSMode("failed");
+          await poll();
+          assert(!toggle.checked && !status.hidden && status.dataset.kind === "warning");
+          assert(status.textContent === ShellscaledI18n.t("network.dnsApplyFailed"));
+          assert(row.getAttribute("aria-busy") === "true");
+          fixture.setMagicDNSMode("applied");
+          await poll();
+          assert(!toggle.checked && row.getAttribute("aria-busy") === "false");
+          assert(status.hidden || status.textContent === ShellscaledI18n.t("network.dnsOffExit"));
+          assert(dnsRequests().length === before + 1 && JSON.stringify(backend().settings) === originalSettings);
+        }
+      } finally {
+        fixture.setMagicDNSMode("normal");
+        await language(originalLocale);
+        click("tab-overview");
+      }
+    });
+
     await networkTest("exit-node-selection-masked-prefs-and-clear", async () => {
       await networkSetup("", false, "10.0.0.0/8");
       const settings = JSON.stringify(backend().settings);
