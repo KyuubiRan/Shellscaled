@@ -200,11 +200,24 @@ sc_stop_daemon() {
     rm -f "$SC_DAEMON_PID" "$SC_SOCKET"
 }
 
+# Query only the fixed opt-in of our verified daemon; never expose its environment.
+sc_taildrop_inbox_mode() {
+    sc_daemon_running || return 1
+    tr '\000' '\n' < "/proc/$SC_PID/environ" 2>/dev/null | grep -F -x 'TS_ANDROID_TAILDROP_INBOX=1' >/dev/null
+}
+
 sc_start_daemon() {
-    sc_daemon_running && return 0
+    if sc_daemon_running && sc_taildrop_inbox_mode; then
+        return 0
+    fi
     [ -x "$SC_MODDIR/bin/tailscaled" ] || { sc_log 'The daemon binary is missing.'; return 1; }
+    [ -x "$SC_MODDIR/bin/shellscaled-web" ] || { sc_log 'The Taildrop receiver is missing.'; return 1; }
+    if sc_daemon_running; then
+        sc_log 'Restarting the daemon to enable the private Taildrop inbox.'
+        sc_stop_daemon || return 1
+    fi
     rm -f "$SC_DAEMON_PID" "$SC_SOCKET"
-    "$SC_MODDIR/bin/tailscaled" \
+    TS_ANDROID_TAILDROP_INBOX=1 "$SC_MODDIR/bin/tailscaled" \
         --tun=tailscale0 \
         --state="$SC_STATE/tailscaled.state" \
         --statedir="$SC_STATE" \

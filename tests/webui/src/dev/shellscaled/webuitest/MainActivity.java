@@ -69,6 +69,13 @@ public final class MainActivity extends Activity {
     private boolean nextNetworkNeedsStatus;
     private String ipv6Mode = "normal";
     private Runnable networkReply;
+    private String taildropPath = "/storage/emulated/0/Download/Taildrop";
+    private boolean taildropFiles = true;
+    private boolean holdNextTaildropBrowse;
+    private Runnable taildropBrowseReply;
+    private boolean holdNextTaildropAction;
+    private boolean nextTaildropActionFails;
+    private Runnable taildropActionReply;
     private boolean nextUpStarts;
     private boolean nextConsoleFails;
     private boolean nextAboutFails;
@@ -194,7 +201,7 @@ public final class MainActivity extends Activity {
                 .put("exitNodeTarget", exitNodeTarget).put("exitNodeOnline", !exitNodeTarget.isEmpty())
                 .put("exitNodeIPv6Takeover", exitNodeIPv6Takeover).put("exitNodeIPv6", exitNodeIPv6 && !exitNodeTarget.isEmpty())
                 .put("advertiseExitNode", advertiseExitNode).put("advertiseRoutes", new JSONArray(advertiseRoutes.toString()))
-                .put("exitCode", 0)
+                .put("taildropPath", taildropPath).put("exitCode", 0)
                 .put("ips", addresses)
                 .put("settings", settings).put("updateChannel", updateChannel);
         if (!loginURL.isEmpty()) result.put("loginURL", loginURL);
@@ -249,6 +256,21 @@ public final class MainActivity extends Activity {
                         .put("exitNodeOption", true).put("exitNode", "fixture-workstation".equals(exitNodeTarget)))
                 .put(device("fixture-offline", "travel-laptop", "travel-laptop.docs.example",
                         new String[]{"100.64.0.30"}, false, "windows", false).put("exitNodeOption", true));
+    }
+
+    private boolean taildropDirectoryAllowed(String path) {
+        return Arrays.asList("/storage/emulated/0", "/storage/emulated/0/Download",
+                "/storage/emulated/0/Download/Taildrop", "/storage/emulated/0/Download/Other",
+                "/storage/emulated/0/Documents", "/storage/emulated/0/Documents/Inbox").contains(path);
+    }
+
+    private JSONArray taildropDirectories(String path) throws JSONException {
+        JSONArray result = new JSONArray();
+        String[] names = "/storage/emulated/0".equals(path) ? new String[]{"Documents", "Download"} :
+                "/storage/emulated/0/Download".equals(path) ? new String[]{"Other", "Taildrop"} :
+                "/storage/emulated/0/Documents".equals(path) ? new String[]{"Inbox"} : new String[]{};
+        for (String name : names) result.put(new JSONObject().put("name", name).put("path", path + "/" + name));
+        return result;
     }
 
     private void record(String name, boolean success) {
@@ -432,6 +454,31 @@ public final class MainActivity extends Activity {
                                 networkReply = () -> reply(callback, network);
                             } else reply(callback, network);
                             return;
+                        case "taildrop-list":
+                        case "taildrop-path":
+                        case "taildrop-receive":
+                            if (request.length() != 3 || !(request.get("path") instanceof String)) throw new JSONException("taildrop-mask");
+                            String path = request.getString("path");
+                            boolean browse = "taildrop-list".equals(action);
+                            boolean taildropOK = taildropDirectoryAllowed(path) && (browse || !"/storage/emulated/0".equals(path));
+                            if (!browse) {
+                                taildropOK &= !nextTaildropActionFails;
+                                nextTaildropActionFails = false;
+                                if (taildropOK) taildropPath = path;
+                                if ("taildrop-receive".equals(action) && !taildropFiles) taildropOK = false;
+                            }
+                            JSONObject taildrop = new JSONObject().put("ok", taildropOK).put("taildropPath", path);
+                            if (browse && taildropOK) taildrop.put("taildropDirectories", taildropDirectories(path));
+                            if (!browse && taildropOK && "taildrop-receive".equals(action)) taildrop.put("taildropReceived", true);
+                            if (!taildropOK) taildrop.put("error", "Fixture Taildrop action unavailable").put("exitCode", 1);
+                            if (browse && holdNextTaildropBrowse) {
+                                holdNextTaildropBrowse = false;
+                                taildropBrowseReply = () -> reply(callback, taildrop);
+                            } else if (!browse && holdNextTaildropAction) {
+                                holdNextTaildropAction = false;
+                                taildropActionReply = () -> reply(callback, taildrop);
+                            } else reply(callback, taildrop);
+                            return;
                         case "console":
                             // Native code owns the fixed external console URL. The fixture opens nothing.
                             JSONObject console = new JSONObject().put("ok", !nextConsoleFails);
@@ -596,6 +643,42 @@ public final class MainActivity extends Activity {
         @JavascriptInterface public void setIPv6Mode(String mode) {
             if (!Arrays.asList("normal", "unsupported").contains(mode)) return;
             synchronized (guard) { ipv6Mode = mode; }
+        }
+        @JavascriptInterface public void setTaildropPath(String path) {
+            if (!taildropDirectoryAllowed(path) || "/storage/emulated/0".equals(path)) return;
+            synchronized (guard) { taildropPath = path; }
+        }
+        @JavascriptInterface public void setTaildropFiles(boolean available) {
+            synchronized (guard) { taildropFiles = available; }
+        }
+        @JavascriptInterface public void holdNextTaildropBrowse() {
+            synchronized (guard) { holdNextTaildropBrowse = true; }
+        }
+        @JavascriptInterface public void releaseTaildropBrowse() {
+            synchronized (guard) {
+                if (taildropBrowseReply != null) {
+                    Runnable reply = taildropBrowseReply;
+                    taildropBrowseReply = null;
+                    reply.run();
+                }
+                holdNextTaildropBrowse = false;
+            }
+        }
+        @JavascriptInterface public void holdNextTaildropAction() {
+            synchronized (guard) { holdNextTaildropAction = true; }
+        }
+        @JavascriptInterface public void nextTaildropActionFails() {
+            synchronized (guard) { nextTaildropActionFails = true; }
+        }
+        @JavascriptInterface public void releaseTaildropAction() {
+            synchronized (guard) {
+                if (taildropActionReply != null) {
+                    Runnable reply = taildropActionReply;
+                    taildropActionReply = null;
+                    reply.run();
+                }
+                holdNextTaildropAction = false;
+            }
         }
         @JavascriptInterface public void setIPv6Status(boolean takeover, boolean routed) {
             synchronized (guard) { exitNodeIPv6Takeover = takeover; exitNodeIPv6 = routed; }

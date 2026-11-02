@@ -32,39 +32,79 @@ Shellscaled uses the supported blocking LocalAPI instead. References inspected:
 [`backend.go`](https://github.com/tailscale/tailscale-android/blob/f1bb6045ae3756c4549c58c12ea09f4c0a86d8df/libtailscale/backend.go),
 and [`Notifier.kt`](https://github.com/tailscale/tailscale-android/blob/f1bb6045ae3756c4549c58c12ea09f4c0a86d8df/android/src/main/java/com/tailscale/ipn/ui/notifier/Notifier.kt).
 
-The receive button performs one operation bounded to 25 seconds; the automatic
-receiver allows one hour. Each waiting file listed by `GET /localapi/v0/files/`
-is downloaded into a private partial directory, synced, and checked against the
-size the daemon reports. Only a complete download is linked into the private
-staging directory (never replacing an entry already there), and only then is it
-deleted from the daemon with `DELETE /localapi/v0/files/<name>`. The delete is
-not cut short by the receive deadline, and a failed delete is checked against
-the file list: the staged link is removed only if the daemon still has the
-file, so a file is never left in neither place. An
-interrupted, timed-out or short download is discarded and stops the batch; the
-file stays in the daemon for the next attempt and the result reports
-`ok: false`, with `taildropReceived` true only if earlier files were published.
-The partial directory is emptied before each receive. Files already in staging
-are published before new ones are fetched; while publishing fails, new files
-stay in the daemon.
+The receive button bounds downloading to 25 seconds; the automatic receiver
+allows one hour. A lock serializes manual and automatic receives. Each waiting
+file is downloaded into a private partial directory, synced, and checked against
+the daemon's listed size and Content-Length. Only a complete download is linked
+into private staging. Staging's directory is synced before requesting deletion
+from the daemon. Interrupted or short transfers stay in the daemon; their
+partial files are never published and are cleared before another batch.
 
-Shellscaled then publishes staging: it copies each regular, non-symlink file into the selected directory with
-exclusive creation, syncs and closes it, and removes the staged source only
-after the copy succeeds. Name conflicts receive a numbered name. The shared
-directory is created with mode `0775` and files with mode `0664`. Shellscaled
-verifies the corresponding `/data/media/0` backing path, sets only the new
-default directory and newly created files to `media_rw` (`1023:1023`), verifies
-the resulting owner, and restores the fixed Android storage label. It never
-recursively changes an existing user directory. A failed backing-path or label
-check leaves the staged source in place and reports the permission failure.
+A DELETE acknowledgement can be lost after the daemon has removed a file. Its
+basename can immediately be reused by another upload, including one of the
+same size. The receiver therefore never discards verified staged bytes merely
+because a failed DELETE is followed by a same-name entry. An ambiguous delete
+may produce a complete duplicate, and reports the operation's failure; retaining
+both copies is preferable to losing the only original. Files already staged are
+published before new ones are fetched. A destination failure keeps staging and
+leaves new files in the daemon.
 
-## Daemon direct delivery
+Publication uses an exclusively created hidden temporary file in the selected
+shared directory. Copying, file sync, media_rw ownership (1023:1023), mode 0664,
+and restorecon all complete before a final name appears. Linux renameat2 with
+RENAME_NOREPLACE publishes atomically and tries numbered names on a conflict.
+Unsupported atomic rename or a cross-filesystem error preserves staging; it
+never falls back to an overwriting rename. The directory is synced before the
+staged source is removed. A crash after publication but before source cleanup
+can retain a complete duplicate, never an unfinished final file.
 
-The default folder matches the Android tailscaled's own direct file root
-(`setPlatformDefaultDirectFileRoot`). When the daemon can create it at startup,
-it writes received files there itself and they never enter the waiting queue;
-otherwise the receiver above handles the queue. Either way files land in the
-same place unless another folder is chosen.
+A private publication journal records one exact temporary name plus the parent
+and file backing-device/inode/type identities. Recovery removes only that
+recorded regular file after matching those identities; it never scans or deletes
+public files by prefix. Copying starts only after the file identity is durable.
+A crash in the tiny creation-before-identity window can leave an unknown empty
+hidden entry: recovery leaves that entry untouched rather than guessing its
+ownership. Directory or inode replacement likewise fails closed and preserves
+staging. Existing user files and the contents of existing directories are never
+recursively changed.
+
+The receive destination is captured for each batch. Saving a new destination
+updates later batches without restarting the daemon; an already active batch
+finishes in its previous destination. Saved paths are written atomically.
+
+## Daemon mode and binary-only updates
+
+A module with this receiver starts its bundled daemon with the fixed boolean
+`TS_ANDROID_TAILDROP_INBOX=1`. The matching CLI uses its existing profile-scoped
+private inbox under `--statedir/files/`; completed uploads become available
+through LocalAPI. Both default Download/Taildrop and custom destinations pass
+through the same receiver and publication transaction. Android applications
+supplying explicit SAF FileOps retain their direct-delivery behavior.
+
+Without this opt-in the CLI retains the legacy fixed direct destination,
+`/sdcard/Download/Taildrop`. Binary-only updates of older modules therefore keep
+working even though those modules have no receiver. New modules verify the
+mode of an existing module-owned daemon and restart it when needed; live-update
+adoption must apply the same check. Existing files in the former direct folder
+remain untouched. This module change requires the matching CLI opt-in support.
+
+## Verification
+
+The synthetic native suite covers interrupted downloads, cancellation,
+lost DELETE acknowledgements with equal-size and different-size replacement
+files, conflicting publications, owner/label failures, journal identity
+replacement, and unsupported atomic rename. WebView fixtures cover directory
+navigation, deferred device refresh, pending controls and draft preservation,
+receive feedback, and stale page completions. None uses a real account.
+
+`TestTaildropAndroidSharedStorage` is disabled by default. Run it only through
+`scripts/emulator.py` on Medium_Phone with `SHELLSCALED_STORAGE_TEST=1`. It also
+requires the emulator's qemu property and SELinux Enforcing. It creates only a
+random task-owned directory inside the existing Download folder, verifies real
+FUSE atomic publication, non-overwrite, backing ownership/label, and precise
+journal recovery, then removes only that directory after checking its identity.
+It never touches actual Taildrop files. These checks do not claim authenticated
+cross-device delivery or compatibility with every storage implementation.
 
 ## Sending from Android
 

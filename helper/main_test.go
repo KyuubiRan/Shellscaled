@@ -286,9 +286,9 @@ func TestFetchTaildropStagesOnlyCompleteFiles(t *testing.T) {
 		t.Fatalf("short download: err=%v deleted=%q staged=%q", err, deleted, stagedNames())
 	}
 
-	// When the daemon keeps its copy, the staged one is withdrawn.
+	// A basename cannot prove identity after a failed DELETE; keep the complete staged copy.
 	list, deleted, deleteStatus = `[{"Name":"c.txt","Size":3}]`, nil, 500
-	if err := b.fetchTaildropFiles(context.Background(), staging, partial); err == nil || len(stagedNames()) != 2 {
+	if err := b.fetchTaildropFiles(context.Background(), staging, partial); err == nil || len(stagedNames()) != 3 {
 		t.Fatalf("failed delete: err=%v staged=%q", err, stagedNames())
 	}
 	if entries, err := os.ReadDir(partial); err != nil || len(entries) != 0 {
@@ -301,7 +301,7 @@ func TestFetchTaildropStagesOnlyCompleteFiles(t *testing.T) {
 	if err := b.fetchTaildropFiles(context.Background(), staging, partial); err != nil {
 		t.Fatalf("applied delete reported failure: %v", err)
 	}
-	if got := stagedNames(); !slices.Equal(got, []string{"a (1).txt", "a.txt", "c.txt"}) {
+	if got := stagedNames(); !slices.Equal(got, []string{"a (1).txt", "a.txt", "c (1).txt", "c.txt"}) {
 		t.Fatalf("staged %q after an applied delete", got)
 	}
 }
