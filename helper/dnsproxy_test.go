@@ -40,6 +40,7 @@ func dnsTestProxy(t *testing.T, handler func(*http.Request) (int, string)) (*mag
 	p.state = filepath.Join(t.TempDir(), "magicdns.json")
 	p.run = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 	p.ctProbe = func(int) error { return syscall.ENOENT }
+	p.sweep = func(bool) (int, error) { return 0, nil }
 	enabled := filepath.Join(t.TempDir(), "magicdns-enabled")
 	if err := os.WriteFile(enabled, nil, 0600); err != nil {
 		t.Fatal(err)
@@ -473,6 +474,8 @@ func TestRefreshDisabledRedirectsNothing(t *testing.T) {
 	p.ctProbe = func(int) error { t.Error("disabled MagicDNS probed conntrack"); return syscall.ENOENT }
 	enabledFile := magicDNSEnabledFile
 	magicDNSEnabledFile = filepath.Join(t.TempDir(), "absent")
+	swept := 0
+	p.sweep = func(bool) (int, error) { swept++; return 0, nil }
 	var appends []string
 	p.run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if len(args) > 3 && args[3] == "-A" {
@@ -483,6 +486,9 @@ func TestRefreshDisabledRedirectsNothing(t *testing.T) {
 	p.refresh(context.Background())
 	if p.mode != "off" || len(appends) != 0 {
 		t.Fatalf("disabled MagicDNS redirected DNS: mode=%s appends=%q", p.mode, appends)
+	}
+	if swept != 1 {
+		t.Fatalf("the flow reset must keep running while MagicDNS is off: %d sweeps", swept)
 	}
 	if state := readMagicDNSState(p.state, time.Now()); state == nil || state.Enabled || state.Mode != "off" {
 		t.Fatalf("state %+v", state)

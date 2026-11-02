@@ -85,6 +85,7 @@ type magicDNSProxy struct {
 	run     func(ctx context.Context, name string, args ...string) ([]byte, error)
 	origDst func(client netip.AddrPort) (netip.AddrPort, uint32, error)
 	ctProbe func(family int) error
+	sweep   func(switched bool) (int, error)
 	state   string
 	dead6   atomic.Bool // the [::1] listener stopped
 
@@ -108,6 +109,7 @@ type magicDNSProxy struct {
 	privateDNS   string
 	tick         int
 	logged       map[string]string
+	routing      *exitRouting // last observed, nil until known
 }
 
 func newMagicDNSProxy(b *backend) *magicDNSProxy {
@@ -126,6 +128,7 @@ func newMagicDNSProxy(b *backend) *magicDNSProxy {
 			_, _, err := conntrackOrigDst(netip.AddrPortFrom(a, 9))
 			return err
 		},
+		sweep:      sweepStaleFlows,
 		state:      magicDNSStatePath,
 		mode:       "off",
 		listen6:    true,
@@ -153,7 +156,7 @@ func (p *magicDNSProxy) refresh(ctx context.Context) {
 	}
 	mode, suffix, exitNode := "off", "", false
 	// Opt-in: while disabled the mode stays off and the chains empty, so no
-	// DNS is redirected; the proxy keeps running so the switch applies at once.
+	// DNS is redirected; the proxy still runs for the stale flow reset.
 	enabled := magicDNSEnabled()
 	routes := map[string][]netip.AddrPort{}
 	exitDoH := p.exitDoH
@@ -161,6 +164,8 @@ func (p *magicDNSProxy) refresh(ctx context.Context) {
 	if p.backend.api(ctx, "GET", "status?peers=false", nil, &st) == nil {
 		p.daemon = st.BackendState
 	}
+	// Unknown while LocalAPI fails.
+	routing, routingKnown := exitRouting{}, p.daemon != ""
 	if st.BackendState == "Running" {
 		suffix = st.MagicDNSSuffix
 		if st.CurrentTailnet != nil && st.CurrentTailnet.MagicDNSSuffix != "" {
@@ -173,14 +178,18 @@ func (p *magicDNSProxy) refresh(ctx context.Context) {
 		// dns-config returns the control-plane config whatever accept-dns is;
 		// tailscaled applies split-DNS Routes only with accept-dns on.
 		var prefs struct {
-			CorpDNS    bool
-			ExitNodeID string
+			CorpDNS                bool
+			ExitNodeID             string
+			ExitNodeAllowLANAccess bool
 		}
 		var cfg struct {
 			Routes map[string][]struct{ Addr string }
 		}
+		routingKnown = false
 		if p.backend.api(ctx, "GET", "prefs", nil, &prefs) == nil {
 			p.prefsExit = prefs.ExitNodeID
+			exit := prefs.ExitNodeID != ""
+			routing, routingKnown = exitRouting{prefs.ExitNodeID, exit && exitNodeIPv6Takeover(), exit && prefs.ExitNodeAllowLANAccess}, true
 			if prefs.CorpDNS && p.backend.api(ctx, "GET", "dns-config", nil, &cfg) == nil {
 				routes = parseDNSRoutes(cfg.Routes)
 			}
@@ -236,6 +245,9 @@ func (p *magicDNSProxy) refresh(ctx context.Context) {
 	p.mu.Lock()
 	p.mode, p.enabled = mode, enabled
 	p.mu.Unlock()
+	if routingKnown {
+		p.observeExitRouting(routing)
+	}
 	p.writeState(time.Now())
 }
 
