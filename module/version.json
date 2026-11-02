@@ -5,5 +5,5 @@
   "sourceCommit": "d8645e9c427886cb50475abbbbc9e13fdec7c747",
   "cliReleaseTag": "android-v1.104.4-dev.6",
   "releaseChannel": "prerelease",
-  "pending": true
+  "pending": false
 }
