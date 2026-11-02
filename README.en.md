@@ -8,6 +8,8 @@ Run Tailscale natively on rooted Android without occupying Android’s VPN slot.
 
 [Download the latest release](https://github.com/KyuubiRan/Shellscaled/releases) · Magisk / KernelSU · ARM64
 
+APatch support is experimental. Use a Pre-release containing the APatch changes; service startup under APatch is still being verified.
+
 > **Choose either Shellscaled or `magisk-tailscaled`.** Do not enable both. To switch, disable the old module and reboot before installing Shellscaled. Its sign-in state is not migrated automatically.
 
 <p align="center">
@@ -33,7 +35,7 @@ Run Tailscale natively on rooted Android without occupying Android’s VPN slot.
 ## Installation
 
 1. Download the **arm64** ZIP package from [Releases](https://github.com/KyuubiRan/Shellscaled/releases).
-2. In **Magisk** or **KernelSU Manager**, choose **Install from storage** and select the ZIP.
+2. In **Magisk**, **KernelSU** or **APatch Manager**, choose **Install from storage** and select the ZIP.
 3. **Reboot**, tap the module action button to connect, and follow the sign-in instructions. KernelSU users can also open the module page and choose **Sign in to Tailscale**.
 
 <details>

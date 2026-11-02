@@ -8,6 +8,8 @@
 
 [下载最新版本](https://github.com/KyuubiRan/Shellscaled/releases) · Magisk / KernelSU · ARM64
 
+APatch 适配处于实验阶段，请使用包含该适配的预发布版本；APatch 下的服务启动仍在验证中。
+
 > **冲突提示：请与 `magisk-tailscaled` 二选一。** 两者不能同时启用。切换前请停用旧模块并重启，再安装 Shellscaled；旧模块的登录状态不会自动迁移。
 
 <p align="center">
@@ -33,7 +35,7 @@
 ## 安装
 
 1. 从 [Release](https://github.com/KyuubiRan/Shellscaled/releases) 下载 **arm64** ZIP 安装包。
-2. 在 **Magisk** 或 **KernelSU** 管理器中选择「从本地安装」，安装该 ZIP。
+2. 在 **Magisk**、**KernelSU** 或 **APatch** 管理器中选择「从本地安装」，安装该 ZIP。
 3. **重启设备**，点击模块的运行按钮连接，首次使用时按提示登录。KernelSU 用户也可打开模块页面，点击「登录 Tailscale」完成登录。
 
 <details>

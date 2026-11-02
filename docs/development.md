@@ -191,13 +191,23 @@ update lock, and reject symlinks or directories in their place.
 ## Root-shell command entries
 
 Enabled modules install exactly two owned links for root `su` shells, without
-editing shared shell profiles. KernelSU's official `su` implementation appends
-its tool directory for interactive shells and `su -c`; module service scripts
-supply the trusted KSU environment used to select it. Magisk inherits the caller's
+editing shared shell profiles. KernelSU and APatch append their tool directories
+(`/data/adb/ksu/bin` and `/data/adb/ap/bin`) for interactive shells and `su -c`;
+module service scripts supply the trusted manager environment used to select
+them. APatch takes precedence over KSU compatibility variables. Missing or
+symlinked manager directories are rejected. Magisk inherits the caller's
 PATH. Its verified existing tool-injection tmpfs is accessed through a temporary
 private bind alias: only that alias is made writable, two links are installed,
 and the alias is detached. The original injected mount remains read-only.
 Neither the system partition nor an extra mounting module is required.
+
+The APatch directory and PATH behavior follow the official
+[11282 module environment](https://github.com/bmax121/APatch/blob/11282/apd/src/module.rs),
+[directory constants](https://github.com/bmax121/APatch/blob/11282/apd/src/defs.rs),
+and [root-shell implementation](https://github.com/bmax121/APatch/blob/11282/apd/src/apd.rs).
+The installer accepts APatch explicitly, without relying on its Magisk version
+compatibility variables. APatch boot/service behavior, WebUI and connectivity
+remain unverified; isolated emulator fixtures do not establish those results.
 
 `tailscale` resolves through the module's wrapper and fixed LocalAPI socket.
 `tailscaled` without arguments starts the managed service; `start`, `stop`,

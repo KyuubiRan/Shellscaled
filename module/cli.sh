@@ -38,12 +38,23 @@ sc_cli_magisk_directory() {
     [ "$sc_cli_bin_inode" = "$sc_cli_tmp_inode" ]
 }
 
+sc_cli_real_directory() {
+    [ -d "$1" ] && [ ! -L "$1" ] && [ "$(readlink -f -- "$1")" = "$1" ]
+}
+
 sc_cli_find_directory() {
-    # KSU sets this for module scripts and appends BINARY_DIR in both its su
-    # shell and su -c implementation. A leftover KSU directory proves nothing.
-    if [ "${KSU:-}" = true ] || [ "${KSU:-}" = 1 ]; then
-        [ -d /data/adb/ksu/bin ] && [ ! -L /data/adb/ksu/bin ] || return 1
-        printf '%s\n' /data/adb/ksu/bin
+    # APatch and KSU append their tool directory to module scripts and both
+    # interactive and su -c shells. Require the active script environment;
+    # a leftover manager directory alone proves nothing.
+    local sc_cli_manager_dir=
+    if [ "${APATCH:-}" = true ] || [ "${APATCH:-}" = 1 ]; then
+        sc_cli_manager_dir=/data/adb/ap/bin
+    elif [ "${KSU:-}" = true ] || [ "${KSU:-}" = 1 ]; then
+        sc_cli_manager_dir=/data/adb/ksu/bin
+    fi
+    if [ -n "$sc_cli_manager_dir" ]; then
+        sc_cli_real_directory "$sc_cli_manager_dir" || return 1
+        printf '%s\n' "$sc_cli_manager_dir"
         return 0
     fi
     local sc_cli_search sc_cli_dir sc_cli_old_ifs
@@ -107,12 +118,13 @@ sc_cli_alias_cleanup() {
 }
 
 sc_cli_open_directory() {
-    [ -d "$sc_cli_target" ] && [ ! -L "$sc_cli_target" ] || return 1
-    [ "$(readlink -f -- "$sc_cli_target")" = "$sc_cli_target" ] || return 1
-    if [ "$sc_cli_target" = /data/adb/ksu/bin ]; then
-        sc_cli_work=$sc_cli_target
-        return 0
-    fi
+    sc_cli_real_directory "$sc_cli_target" || return 1
+    case "$sc_cli_target" in
+        /data/adb/ap/bin|/data/adb/ksu/bin)
+            sc_cli_work=$sc_cli_target
+            return 0
+            ;;
+    esac
     sc_cli_magisk_directory "$sc_cli_target" || return 1
     [ ! -L "$SC_RUN/cli-mount" ] || return 1
     sc_cli_alias_cleanup || return 1

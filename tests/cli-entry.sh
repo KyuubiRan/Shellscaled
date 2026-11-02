@@ -24,7 +24,7 @@ printf '%s\n' ctl "$@"
 EOF
 cat > "$sc_test_root/module/common.sh" <<'EOF'
 sc_cli_remove() { :; }
-sc_error() { printf '%s\n' "$*" >&2; }
+sc_error() { /system/bin/printf '%s\n' "$*" >&2; }
 EOF
 chmod 0755 "$sc_test_root/module/cli-entry.sh" "$sc_test_root/module/bin/"* "$sc_test_root/module/ctl.sh"
 ln -s "$sc_test_root/module/cli-entry.sh" "$sc_test_root/path-bin/tailscale"
@@ -86,7 +86,42 @@ SC_DATA=$sc_test_root/state
 SC_RUN=$SC_DATA/run
 mkdir -m 0700 "$SC_DATA" "$SC_RUN"
 . "$sc_test_payload/cli.sh"
-sc_error() { printf '%s\n' "$*" >&2; }
+
+# Verify manager selection without touching real manager directories. Only
+# filesystem availability is substituted; selection and direct-open behavior
+# run the production functions. APatch wins over compatibility KSU variables.
+sc_test_groups=$((sc_test_groups + 1))
+sc_test_assert sc_cli_real_directory "$sc_test_root/path-bin"
+sc_test_reject sc_cli_real_directory "$sc_test_root/missing"
+ln -s "$sc_test_root/path-bin" "$sc_test_root/path-alias"
+sc_test_reject sc_cli_real_directory "$sc_test_root/path-alias"
+sc_test_reject sc_cli_real_directory "$sc_test_root/path-alias/../path-bin"
+rm "$sc_test_root/path-alias"
+(
+    sc_cli_real_directory() { [ "$1" = "$sc_test_manager_dir" ]; }
+    sc_cli_magisk_directory() { return 1; }
+    sc_test_manager_dir=/data/adb/ap/bin
+    sc_test_equal "$(APATCH=true KSU=true sc_cli_find_directory)" "$sc_test_manager_dir"
+    sc_test_equal "$(APATCH=1 KSU= sc_cli_find_directory)" "$sc_test_manager_dir"
+    APATCH= KSU= sc_test_reject sc_cli_find_directory
+    APATCH=false KSU=false sc_test_reject sc_cli_find_directory
+    sc_cli_target=$sc_test_manager_dir
+    sc_cli_open_directory
+    sc_test_equal "$sc_cli_work" "$sc_test_manager_dir"
+    sc_test_manager_dir=/data/adb/ksu/bin
+    sc_test_equal "$(APATCH= KSU=true sc_cli_find_directory)" "$sc_test_manager_dir"
+    sc_test_equal "$(APATCH=false KSU=1 sc_cli_find_directory)" "$sc_test_manager_dir"
+    APATCH=true KSU=true sc_test_reject sc_cli_find_directory
+    sc_cli_target=$sc_test_manager_dir
+    sc_cli_open_directory
+    sc_test_equal "$sc_cli_work" "$sc_test_manager_dir"
+    sc_test_manager_dir=
+    APATCH=true KSU= sc_test_reject sc_cli_find_directory
+    APATCH= KSU=true sc_test_reject sc_cli_find_directory
+    sc_test_reject sc_cli_open_directory
+)
+
+sc_error() { /system/bin/printf '%s\n' "$*" >&2; }
 sc_prepare() { :; }
 sc_start_time() {
     sc_test_stat=$(cat "/proc/$1/stat") || return 1

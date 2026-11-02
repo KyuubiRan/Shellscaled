@@ -3,8 +3,9 @@
 SKIPMOUNT=true
 
 [ "$(id -u)" = 0 ] || abort '! Root is required.'
-[ "${BOOTMODE:-false}" = true ] || abort '! Install from Magisk or KernelSU Manager while Android is running.'
-[ -n "${KSU:-}" ] || [ -n "${MAGISK_VER_CODE:-}" ] || abort '! A supported root manager was not detected.'
+[ "${BOOTMODE:-false}" = true ] || abort '! Install from Magisk, KernelSU or APatch Manager while Android is running.'
+[ "${APATCH:-}" = true ] || [ "${APATCH:-}" = 1 ] ||
+    [ -n "${KSU:-}" ] || [ -n "${MAGISK_VER_CODE:-}" ] || abort '! A supported root manager was not detected.'
 [ -n "${MODPATH:-}" ] && [ -d "$MODPATH" ] || abort '! Missing module install directory.'
 
 if [ -d /data/adb/modules/magisk-tailscaled ] &&
@@ -27,7 +28,7 @@ esac
 [ "$sc_payload_arch" = "$sc_device_arch" ] || abort '! This ZIP was built for a different architecture.'
 [ -s "$MODPATH/bin/tailscaled" ] && [ -f "$MODPATH/bin/tailscale" ] || abort '! Missing Tailscale payload.'
 
-# KernelSU sets webroot permissions and context itself. Leave that tree alone.
+# KernelSU and APatch manage webroot permissions/context. Leave that tree alone.
 for sc_item in "$MODPATH"/*; do
     [ "${sc_item##*/}" = webroot ] && continue
     if [ -d "$sc_item" ]; then

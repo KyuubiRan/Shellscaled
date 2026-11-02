@@ -1,5 +1,22 @@
 # 验证记录
 
+## 2026-11-02 APatch 命令入口适配
+
+在 `Medium_Phone`（`emulator-5580`，ARM64）通过 guard 执行隔离夹具，
+SELinux 为 `Enforcing`。CLI 的 11 组检查通过，覆盖 APatch / KernelSU
+选择、兼容变量优先级、缺失与符号链接目录拒绝，以及原有命令归属、
+固定 socket、服务入口、幂等安装、冲突保护和清理行为。
+
+新增安装夹具在 Android shell 和本地已有官方 Magisk BusyBox 的 standalone
+`ash` 下均通过：APatch 无 Magisk 兼容变量可被识别，Magisk / KernelSU
+识别保留，损坏载荷、错误架构、缺失二进制及非运行态安装被拒绝。
+Shell 语法与空白检查通过。夹具只使用私有临时载荷，没有安装模块、
+启动真实 daemon、改动管理器目录或访问账号，设备临时文件已清理。
+
+这些结果不代表真实 APatch 内核上的开机启动、WebUI、Android 11 兼容性
+或联网验收；[#1](https://github.com/KyuubiRan/Shellscaled/issues/1) 的服务问题
+仍需报告者提供版本、安装日志和经过脱敏的启动错误信息。
+
 ## 2026-10-28 安全审查修复回归
 
 本轮修复在两个仓库的 `dev` 工作区完成验证。所有运行测试均通过 guard
