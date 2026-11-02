@@ -60,6 +60,8 @@ The **MagicDNS split resolver** switch (off by default) resolves tailnet names w
 
 **Receive files** defaults to `Download/Taildrop` in shared storage. Browse ordinary directories in primary shared storage, save your choice, and receive pending files. App-private directories are protected. See [Taildrop](docs/taildrop.md) for the receive workflow. See [Live update](docs/hot-update.md) for how module updates apply without a reboot.
 
+**Receive files** defaults to `Download/Taildrop` in shared storage. Browse ordinary directories in primary shared storage, save your choice, and receive pending files. App-private directories are protected. See [Taildrop](docs/taildrop.md) for the receive workflow.
+
 Tap a local address to copy it. The Devices page lets you search visible devices, check online status and copy names or addresses.
 
 To update Tailscale on its own, choose Stable or Preview under **Binary updates** in Settings. Your account and preferences are retained. For module interface and feature updates, install the new module package. Installing it switches to the new module within seconds without a reboot (designed for all managers, verified on KernelSU Next); `tailscaled` restarts only when its binary changed, which interrupts the tailnet for a few seconds; otherwise the tailnet is not interrupted. Close and reopen the WebUI. If live update is not possible, the module activates at reboot instead. Uninstalling the module deletes its account and preferences.

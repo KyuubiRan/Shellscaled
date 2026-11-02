@@ -171,12 +171,7 @@ func saveTaildropPath(value string) error {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return errors.New("无法保存接收目录")
 	}
-	tmp := taildropPathFile + ".new"
-	if err := os.WriteFile(tmp, []byte(canonical+"\n"), 0600); err != nil {
-		return errors.New("无法保存接收目录")
-	}
-	if err := os.Rename(tmp, taildropPathFile); err != nil {
-		_ = os.Remove(tmp)
+	if err := writeTaildropAtomic(taildropPathFile, []byte(canonical+"\n")); err != nil {
 		return errors.New("无法保存接收目录")
 	}
 	return nil
@@ -1046,8 +1041,15 @@ func (b *backend) taildropReceive(ctx context.Context, value string, limit time.
 		if value == defaultTaildropPath {
 			_ = os.MkdirAll(value, 0775)
 		}
-	} else if err := saveTaildropPath(value); err != nil {
-		return failed(err.Error())
+	} else {
+		canonical, ok := normalizeTaildropPath(value)
+		if !ok {
+			return failed("接收目录无效")
+		}
+		value = canonical
+		if err := saveTaildropPath(value); err != nil {
+			return failed(err.Error())
+		}
 	}
 	if !validTaildropPath(value) {
 		return failed("接收目录无效")
@@ -1129,9 +1131,13 @@ func (b *backend) fetchTaildropFiles(ctx context.Context, staging, partialDir st
 		if err != nil {
 			return err
 		}
-		if err := b.deleteWaitingFile(ctx, wf.Name); err != nil {
-			// Keep the daemon's copy as the only one, or the file would be received twice.
+		if err := syncTaildropDirectory(staging); err != nil {
 			_ = os.Remove(staged)
+			return errors.New("无法完整写入接收文件，文件已保留")
+		}
+		if err := b.deleteWaitingFile(ctx, wf.Name); err != nil {
+			// A reused basename is not proof the daemon still has these bytes.
+			// Keep the verified copy even when acknowledgement is ambiguous.
 			return err
 		}
 	}
@@ -1387,6 +1393,9 @@ func normalizePublishedTaildropFile(path string) error {
 
 // publishStagedTaildrop publishes staging if it has any entries.
 func publishStagedTaildrop(directory string) (int, error) {
+	if err := cleanupTaildropPublication(taildropStagingDir); err != nil {
+		return 0, errors.New("无法完整写入接收文件，文件已保留")
+	}
 	if entries, err := os.ReadDir(taildropStagingDir); err == nil && len(entries) == 0 {
 		return 0, nil
 	}
@@ -1398,90 +1407,6 @@ func publishStagedTaildrop(directory string) (int, error) {
 // closed successfully, so a failed publish can be retried without data loss.
 func publishTaildropStaging(staging, directory string) (int, error) {
 	return publishTaildropStagingWith(staging, directory, normalizePublishedTaildropFile)
-}
-
-func publishTaildropStagingWith(staging, directory string, normalize func(string) error) (int, error) {
-	entries, err := os.ReadDir(staging)
-	if err != nil {
-		return 0, errors.New("无法读取 Taildrop 临时目录")
-	}
-	if len(entries) == 0 {
-		return 0, errors.New("当前没有可接收的文件")
-	}
-	count := 0
-	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink != 0 {
-			return count, errors.New("Taildrop 临时目录包含符号链接，文件已保留")
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			return count, errors.New("Taildrop 临时目录包含非普通文件，文件已保留")
-		}
-		source := filepath.Join(staging, entry.Name())
-		if resolved, err := filepath.EvalSymlinks(source); err != nil || resolved != source {
-			return count, errors.New("Taildrop 文件路径无效，文件已保留")
-		}
-		target, file, err := openTaildropTarget(directory, entry.Name())
-		if err != nil {
-			return count, err
-		}
-		ok := false
-		func() {
-			in, openErr := os.Open(source)
-			if openErr != nil {
-				_ = file.Close()
-				return
-			}
-			if _, copyErr := io.Copy(file, in); copyErr != nil {
-				_ = in.Close()
-				_ = file.Close()
-				return
-			}
-			if closeErr := in.Close(); closeErr != nil {
-				_ = file.Close()
-				return
-			}
-			if chmodErr := file.Chmod(0664); chmodErr != nil {
-				_ = file.Close()
-				return
-			}
-			if syncErr := file.Sync(); syncErr != nil {
-				_ = file.Close()
-				return
-			}
-			ok = file.Close() == nil
-		}()
-		if !ok {
-			_ = os.Remove(target)
-			return count, errors.New("无法完整写入接收文件，文件已保留")
-		}
-		if err := normalize(target); err != nil {
-			_ = os.Remove(target)
-			return count, err
-		}
-		if err := os.Remove(source); err != nil {
-			return count, errors.New("接收文件已写入但临时文件未清理")
-		}
-		count++
-	}
-	return count, nil
-}
-
-func openTaildropTarget(directory, name string) (string, *os.File, error) {
-	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
-		return "", nil, errors.New("接收文件名无效，文件已保留")
-	}
-	for attempt := 0; attempt < 100; attempt++ {
-		target := filepath.Join(directory, numberedTaildropName(name, attempt))
-		file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0664)
-		if err == nil {
-			return target, file, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return "", nil, errors.New("无法在接收目录创建文件，文件已保留")
-		}
-	}
-	return "", nil, errors.New("接收目录中没有可用文件名，文件已保留")
 }
 
 func failed(message string) response { return response{OK: false, Error: message, ExitCode: 1} }

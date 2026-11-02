@@ -97,6 +97,16 @@ pending/successful changes and an older daemon that saves the preference but
 cannot apply it. None of these tests installs routes, changes firewall rules,
 accesses a real account or claims packet delivery.
 
+Taildrop cases use an in-memory directory tree, saved path and waiting-file flag.
+They cover browsing and choosing folders, strict path-only RPCs, device refresh
+queued behind a held browse, disabled chooser controls during writes, later
+drafts surviving old save replies, receive spinners/duplicate blocking, empty
+queue errors and old-page browser completions. These fixtures cannot read shared
+storage, receive a real file or call the module helper. The separate native
+`TestTaildropAndroidSharedStorage` is explicitly enabled only on Medium_Phone
+with `SHELLSCALED_STORAGE_TEST=1`; it requires Enforcing and checks FUSE behavior
+inside its own disposable Download subdirectory.
+
 This fixture supplements actual KernelSU bridge and native helper acceptance;
 it does not assert that a root manager, Tailscale or networking works.
 

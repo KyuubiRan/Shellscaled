@@ -58,6 +58,8 @@ APatch 适配处于实验阶段，请使用包含该适配的预发布版本；A
 
 「文件接收」默认保存到外部存储的 `Download/Taildrop`。可浏览主外部存储下的普通目录并保存选择，再点击接收文件；应用私有目录受到保护。接收流程见 [Taildrop 说明](docs/taildrop.md)；模块免重启更新的机制见 [即时更新说明](docs/hot-update.md)。
 
+「文件接收」默认保存到外部存储的 `Download/Taildrop`。可浏览主外部存储下的普通目录并保存选择，再点击接收文件；应用私有目录受到保护。接收流程见 [Taildrop 说明](docs/taildrop.md)。
+
 在 `adb shell` 或终端执行 `su` 后，可直接使用 `tailscale`。`tailscaled` 可启动、停止、重启服务或查看状态。
 
 点击本机地址即可复制；设备页可搜索本机可见的设备，查看在线状态并复制名称或地址。

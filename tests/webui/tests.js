@@ -112,6 +112,35 @@
       }
     });
   }
+  const taildropRequests = (action) => requests().filter((request) => request.action === action);
+  function editTaildropPath(value) {
+    $("taildrop-path").value = value;
+    $("taildrop-path").dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  async function taildropSetup(path = "/storage/emulated/0/Download") {
+    await idle();
+    fixture.setTaildropPath(path);
+    await refresh();
+    click("tab-settings");
+    await idle();
+  }
+  async function taildropTest(name, body) {
+    await test(name, async () => {
+      const original = backend().taildropPath;
+      try { await body(); }
+      finally {
+        window.dispatchEvent(new Event("pagehide"));
+        fixture.releaseTaildropBrowse();
+        fixture.releaseTaildropAction();
+        fixture.setTaildropFiles(true);
+        fixture.setTaildropPath(original);
+        await idle();
+        window.dispatchEvent(new Event("pageshow"));
+        await idle();
+        click("tab-overview");
+      }
+    });
+  }
   const binaryLabel = () => $("binary-action-label").textContent;
   async function checkBinary(mode) {
     await idle();
@@ -551,6 +580,121 @@
       await idle();
       assert($("advertise-routes").value === "203.0.113.0/24");
       assert($("exit-node-summary").textContent === ShellscaledI18n.t("network.summaryNone"));
+    });
+
+    await taildropTest("taildrop-browser-navigation-and-local-save", async () => {
+      await taildropSetup();
+      const before = taildropRequests("taildrop-list").length;
+      const settings = JSON.stringify(backend().settings);
+      click("taildrop-browse");
+      await until(() => taildropRequests("taildrop-list").length === before + 1, "taildrop-browse-start");
+      await idle();
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download");
+      const entry = $("taildrop-directory-list").querySelector('button[data-path$="/Other"]');
+      assert(entry && !entry.disabled);
+      entry.click();
+      await idle();
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Download/Other");
+      click("taildrop-choose");
+      assert($("taildrop-path").value === "/storage/emulated/0/Download/Other" && $("taildrop-browser").hidden);
+      const saves = taildropRequests("taildrop-path").length;
+      click("taildrop-save");
+      await until(() => taildropRequests("taildrop-path").length === saves + 1, "taildrop-save-start");
+      await idle();
+      const request = taildropRequests("taildrop-path").at(-1);
+      assert(Object.keys(request).sort().join() === "action,locale,path" && request.path.endsWith("/Other"));
+      assert(backend().taildropPath === request.path && JSON.stringify(backend().settings) === settings);
+    });
+
+    await taildropTest("taildrop-browse-drains-deferred-devices", async () => {
+      window.dispatchEvent(new Event("pagehide"));
+      window.dispatchEvent(new Event("pageshow"));
+      await taildropSetup();
+      const before = deviceRequests().length;
+      const browses = taildropRequests("taildrop-list").length;
+      fixture.holdNextTaildropBrowse();
+      click("taildrop-browse");
+      await until(() => taildropRequests("taildrop-list").length === browses + 1, "taildrop-browse-held");
+      click("tab-devices");
+      assert(deviceRequests().length === before);
+      fixture.releaseTaildropBrowse();
+      await until(() => deviceRequests().length === before + 1, "taildrop-deferred-devices-start");
+      await idle();
+      assert(cards().length > 0);
+    });
+
+    await taildropTest("taildrop-save-blocks-chooser-and-preserves-newer-draft", async () => {
+      await taildropSetup();
+      click("taildrop-browse");
+      await idle();
+      const entry = $("taildrop-directory-list").querySelector('button[data-path$="/Other"]');
+      assert(entry);
+      entry.click();
+      await idle();
+      const before = taildropRequests("taildrop-path").length;
+      fixture.holdNextTaildropAction();
+      click("taildrop-save");
+      await until(() => taildropRequests("taildrop-path").length === before + 1, "taildrop-save-held");
+      assert($("taildrop-choose").disabled && $("taildrop-browser-up").disabled && $("taildrop-path").disabled);
+      $("taildrop-choose").click();
+      assert($("taildrop-path").value === "/storage/emulated/0/Download");
+      // A later queued input event must also survive an older response.
+      editTaildropPath("/storage/emulated/0/Documents");
+      fixture.releaseTaildropAction();
+      await idle();
+      assert($("taildrop-path").value === "/storage/emulated/0/Documents");
+      assert(backend().taildropPath === "/storage/emulated/0/Download");
+      click("taildrop-save");
+      await until(() => taildropRequests("taildrop-path").length === before + 2, "taildrop-new-draft-save");
+      await idle();
+      assert(backend().taildropPath === "/storage/emulated/0/Documents");
+    });
+
+    await taildropTest("taildrop-receive-spinner-mask-and-local-failure", async () => {
+      await taildropSetup("/storage/emulated/0/Download/Taildrop");
+      const before = taildropRequests("taildrop-receive").length;
+      const settings = JSON.stringify(backend().settings);
+      fixture.holdNextTaildropAction();
+      click("taildrop-receive");
+      await until(() => taildropRequests("taildrop-receive").length === before + 1, "taildrop-receive-held");
+      assert($("taildrop-receive").disabled && $("taildrop-receive").classList.contains("is-working"));
+      assert($("taildrop-receive-label").textContent === ShellscaledI18n.t("taildrop.receiving"));
+      const spinner = $("taildrop-receive").querySelector(".button-spinner");
+      assert(getComputedStyle(spinner).display !== "none" && getComputedStyle(spinner).animationName === "spin");
+      $("taildrop-receive").click();
+      await wait(50);
+      assert(taildropRequests("taildrop-receive").length === before + 1);
+      fixture.releaseTaildropAction();
+      await idle();
+      const request = taildropRequests("taildrop-receive").at(-1);
+      assert(Object.keys(request).sort().join() === "action,locale,path");
+      assert(JSON.stringify(backend().settings) === settings);
+      fixture.setTaildropFiles(false);
+      click("taildrop-receive");
+      await until(() => taildropRequests("taildrop-receive").length === before + 2, "taildrop-empty-receive");
+      await idle();
+      assert(!$("taildrop-message").hidden && $("taildrop-message").dataset.kind === "error");
+    });
+
+    await taildropTest("taildrop-browser-ignores-old-page-response", async () => {
+      await taildropSetup();
+      const before = taildropRequests("taildrop-list").length;
+      fixture.holdNextTaildropBrowse();
+      click("taildrop-browse");
+      await until(() => taildropRequests("taildrop-list").length === before + 1, "taildrop-old-browse-held");
+      window.dispatchEvent(new Event("pagehide"));
+      fixture.setTaildropPath("/storage/emulated/0/Documents");
+      window.dispatchEvent(new Event("pageshow"));
+      await idle();
+      assert($("taildrop-path").value === "/storage/emulated/0/Documents" && $("taildrop-browser").hidden);
+      click("taildrop-browse");
+      await until(() => taildropRequests("taildrop-list").length === before + 2, "taildrop-new-browse-start");
+      await idle();
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Documents");
+      fixture.releaseTaildropBrowse();
+      await wait(100);
+      assert($("taildrop-browser-current").textContent === "/storage/emulated/0/Documents");
+      assert(!$("taildrop-choose").disabled && $("main").getAttribute("aria-busy") === "false");
     });
 
     for (const locale of locales) {

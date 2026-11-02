@@ -67,7 +67,7 @@
     networkDraft: { exitNode: null, routes: null, advertiseExitNode: null },
     networkRequestVersion: 0, exitIpv6Pending: null, magicDNSPending: null,
     exitNodes: null, exitNodesLoading: false, exitNodesError: null, exitNodesRequestVersion: 0,
-    taildropPath: "", taildropDraftDirty: false, taildropError: null, taildropBrowserPath: "", taildropDirectories: [],
+    taildropPath: "", taildropDraftDirty: false, taildropDraftVersion: 0, taildropError: null, taildropBrowserPath: "", taildropDirectories: [],
     taildropDirectoriesTruncated: false, taildropBrowserBusy: false, taildropBrowserRequestVersion: 0,
     taildropActionRequestVersion: 0,
   };
@@ -1213,9 +1213,9 @@
     ui.taildropBrowse.disabled = !state.available || state.busy || !state.pageActive;
     ui.taildropBrowser.hidden = !state.taildropBrowserPath;
     ui.taildropBrowserCurrent.textContent = state.taildropBrowserPath;
-    ui.taildropBrowserUp.disabled = state.taildropBrowserBusy || !state.taildropBrowserPath ||
+    ui.taildropBrowserUp.disabled = !state.available || state.busy || !state.pageActive || state.taildropBrowserBusy || !state.taildropBrowserPath ||
       ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
-    ui.taildropChoose.disabled = state.taildropBrowserBusy || !state.taildropBrowserPath ||
+    ui.taildropChoose.disabled = !state.available || state.busy || !state.pageActive || state.taildropBrowserBusy || !state.taildropBrowserPath ||
       ["/storage/emulated/0", "/sdcard"].includes(state.taildropBrowserPath);
     ui.taildropChoose.textContent = t("taildrop.choose");
     ui.taildropDirectoryList.replaceChildren();
@@ -1236,6 +1236,7 @@
         button.className = "taildrop-directory";
         button.textContent = directory.name;
         button.dataset.path = directory.path;
+        button.disabled = !state.available || state.busy || !state.pageActive;
         button.setAttribute("role", "option");
         ui.taildropDirectoryList.appendChild(button);
       }
@@ -1273,15 +1274,13 @@
     } finally {
       if (!state.pageActive || version !== state.taildropBrowserRequestVersion) return;
       state.taildropBrowserBusy = false;
-      state.busy = false;
-      state.busyAction = "";
-      updateControls();
-      renderTaildrop();
+      finishBusy();
     }
   }
 
   function chooseTaildropDirectory(path) {
-    if (typeof path !== "string" || !path) return;
+    if (state.busy || state.taildropBrowserBusy || !state.available || !state.pageActive || typeof path !== "string" || !path) return;
+    state.taildropDraftVersion++;
     state.taildropPath = path;
     state.taildropDraftDirty = true;
     ui.taildropPath.value = path;
@@ -1294,6 +1293,7 @@
   async function taildropAction(action) {
     if (state.busy || !state.available || !state.pageActive) return;
     const value = ui.taildropPath.value.trim();
+    const draftVersion = state.taildropDraftVersion;
     if (value.length > 512 || !value.startsWith("/")) {
       state.taildropError = { key: "taildrop.invalid" };
       renderTaildrop();
@@ -1308,11 +1308,13 @@
       const result = requireSuccess(await rpc({ action, path: value }));
       if (!state.pageActive || version !== state.taildropActionRequestVersion) return;
       if (typeof result.taildropPath === "string") {
-        state.taildropPath = result.taildropPath;
         if (state.status) state.status.taildropPath = result.taildropPath;
-        ui.taildropPath.value = result.taildropPath;
+        if (draftVersion === state.taildropDraftVersion) {
+          state.taildropPath = result.taildropPath;
+          ui.taildropPath.value = result.taildropPath;
+          state.taildropDraftDirty = false;
+        }
       }
-      state.taildropDraftDirty = false;
       state.taildropError = null;
       message(action === "taildrop-receive" ? "taildrop.received" : "taildrop.saved", "info");
       renderTaildrop();
@@ -1669,8 +1671,11 @@
   ui.taildropSave.addEventListener("click", () => taildropAction("taildrop-path"));
   ui.taildropReceive.addEventListener("click", () => taildropAction("taildrop-receive"));
   ui.taildropPath.addEventListener("input", () => {
+    state.taildropDraftVersion++;
+    state.taildropError = null;
     state.taildropDraftDirty = true;
     state.taildropPath = ui.taildropPath.value.slice(0, 512);
+    renderTaildrop();
   });
   ui.taildropBrowse.addEventListener("click", () => browseTaildrop(state.taildropPath || ""));
   ui.taildropBrowserUp.addEventListener("click", () => {
@@ -1771,6 +1776,7 @@
     state.exitNodesLoading = false;
     state.exitNodesError = null;
     state.taildropPath = "";
+    state.taildropDraftVersion++;
     state.taildropDraftDirty = false;
     state.taildropError = null;
     state.taildropBrowserPath = "";
