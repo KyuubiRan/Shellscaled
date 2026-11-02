@@ -13,6 +13,7 @@ import (
 	"slices"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestClassify(t *testing.T) {
@@ -199,6 +200,35 @@ func TestRefreshSweepsOnRoutingChange(t *testing.T) {
 	step() // allow-LAN without an exit node changes nothing
 	prefs = `{"ExitNodeID":"nExit"}`
 	step(false) // selecting an exit node is not a switch
+}
+
+func TestFlowRepairIsIndependentOfMagicDNSControl(t *testing.T) {
+	for _, invalidRequest := range []bool{false, true} {
+		t.Run(map[bool]string{false: "DNS-disabled", true: "invalid-DNS-request"}[invalidRequest], func(t *testing.T) {
+			p := dnsControlProxy(t)
+			if invalidRequest {
+				if err := os.WriteFile(magicDNSEnabledFile, []byte(`{"enabled":true}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := requestMagicDNS(context.Background(), false); err != nil {
+				t.Fatal(err)
+			}
+			sweeps := 0
+			p.sweep = func(bool) (int, error) {
+				sweeps++
+				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				defer cancel()
+				if err := withMagicDNSControl(ctx, func() error { return nil }); err != nil {
+					t.Errorf("flow repair retained the DNS request lock: %v", err)
+				}
+				return 0, nil
+			}
+			p.refresh(context.Background())
+			if sweeps != 1 {
+				t.Fatalf("DNS state prevented independent route observation: %d sweeps", sweeps)
+			}
+		})
+	}
 }
 
 // Native netlink keeps this policy regression runnable with Android stock ip.

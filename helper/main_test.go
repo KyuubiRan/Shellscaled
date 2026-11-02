@@ -782,7 +782,9 @@ func TestSetExitNodeIPv6(t *testing.T) {
 
 func TestStatusMagicDNSPending(t *testing.T) {
 	defer func(old string) { magicDNSStatePath = old }(magicDNSStatePath)
+	defer func(old string) { magicDNSEnabledFile = old }(magicDNSEnabledFile)
 	magicDNSStatePath = filepath.Join(t.TempDir(), "magicdns.json")
+	magicDNSEnabledFile = filepath.Join(t.TempDir(), "absent")
 	b := &backend{client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		body := `{"BackendState":"Running"}`
 		if r.URL.Path == "/localapi/v0/prefs" {

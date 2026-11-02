@@ -575,9 +575,12 @@
     const stale = dns && dns.running !== true && typeof dns.mode === "string" && dns.mode !== "off";
     const running = state.status && state.status.state === "Running";
     // The proxy has not caught up with a connect or exit-node change yet.
-    const pending = running && dns && dns.pending === true;
+    const pending = state.busyAction === "magicdns" || (running && dns && dns.pending === true);
+    const applyFailed = state.busyAction !== "magicdns" && dns && dns.applyFailed === true;
     if (pending && !dnsPendingTimer) dnsPendingTimer = setTimeout(() => { dnsPendingTimer = null; refresh(false); }, 2000);
-    const dnsLine = pending ? ["network.dnsPending", "muted"] :
+    if (!pending && dnsPendingTimer) { clearTimeout(dnsPendingTimer); dnsPendingTimer = null; }
+    const dnsLine = applyFailed ? ["network.dnsApplyFailed", "warning"] :
+      pending ? ["network.dnsPending", "muted"] :
       stale ? ["network.dnsRulesFailed", "warning"] :
       mode === "off" && dns && dns.noString === true ? ["network.dnsNoString", "warning"] :
       mode === "off" ? ["network.dnsInactive", "info"] :
@@ -591,10 +594,14 @@
     const dnsHint = dnsLine[1] === "info" && mode !== "off" && dns.privateDns === "opportunistic" ? (I18n.locale() === "en" ? " " : "") + t("network.dnsPrivateAuto") : "";
     const dnsOn = magicDNSOn();
     ui.magicDNSEnabled.checked = dnsOn;
+    const dnsRow = ui.magicDNSEnabled.closest(".setting-row");
+    dnsRow.dataset.pending = pending ? "true" : "false";
+    dnsRow.setAttribute("aria-busy", pending ? "true" : "false");
     // Off by default: nothing is redirected. Say so only when an exit node is
     // in use, since ordinary DNS then stays on the current network.
     const dnsOffLine = !dnsOn && !stale && state.status && state.status.exitNodeConfigured === true ? t("network.dnsOffExit") : "";
-    setLocalMessage(ui.magicDNSStatus, !running ? "" : dnsOn || stale ? t(dnsLine[0], { suffix }) + dnsHint : dnsOffLine, dnsOn || stale ? dnsLine[1] : "warning");
+    const showApplyState = dnsOn || stale || pending || applyFailed;
+    setLocalMessage(ui.magicDNSStatus, !running ? "" : showApplyState ? t(dnsLine[0], { suffix }) + dnsHint : dnsOffLine, showApplyState ? dnsLine[1] : "warning");
 
     const text = state.networkError ? t("network.failed") + " " + viewText(state.networkError) :
       state.busyAction === "exit-node" ? t("network.applying") :
