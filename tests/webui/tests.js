@@ -48,7 +48,9 @@
     $("language").value = value;
     $("language").dispatchEvent(new Event("change", { bubbles: true }));
     if (paused) {
-      await until(() => document.documentElement.lang === value, label + "-local-render");
+      // The system preference resolves to an actual display language.
+      await until(() => ShellscaledI18n.preference() === value &&
+        document.documentElement.lang === ShellscaledI18n.locale(), label + "-local-render");
       await idle(label + "-complete");
       assert(requests().length === before, label + "-taildrop-does-not-refresh");
       return;

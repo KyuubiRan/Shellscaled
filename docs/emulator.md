@@ -82,6 +82,27 @@ python3 scripts/test-webui.py --manager ksu
 Taildrop 的接收、恢复、文件校验及并发测试。已有 Go 版本不足时，通过
 `SHELLSCALED_GO` 指向满足 `tailscale/go.mod` 的已安装工具链。
 
+Tailscale v1.104.5 的相关回归也由该脚本交叉编译，仍只在模拟器执行：
+
+| 程序 | `-test.run` | 范围 |
+| --- | --- | --- |
+| `neterror.test` | 不过滤 | UDP 错误分类，包括 Android 的 EPERM 语义 |
+| `magicsock.test` | `^TestReceiveFuncReadFeedback$` | UDP 不可达反馈后的接收恢复 |
+| `netstack.test` | `^TestEnableRACKKnob$` | 默认关闭 RACK 与显式开关 |
+| `hostinfo.test` | `^TestEnvironWithoutSystemdServiceVars$` | 子进程环境变量过滤 |
+| `ipnlocal.test` | `^Test(ExitNodeIPv6Routes\|RouterConfigExitNodeIPv6\|PeerAPIDNSQueryLongName\|PeerAPIReplyToDNSQueriesAreObserved\|DNSConfigForNetmap)$` | 出口 IPv6 补丁、DNS 查询与配置 |
+| `localapi.test` | `^TestServeDebugReconfigPermissions$` | Android 重配置动作的权限边界 |
+
+真实 netlink 路由测试需要独立 network namespace，不能在 Android 初始
+namespace 中设置 `SHELLSCALED_NETLINK_TEST=1`：
+
+```sh
+python3 scripts/emulator.py shell '/data/adb/ksu/bin/busybox unshare -n env SHELLSCALED_NETLINK_TEST=1 TMPDIR=/data/local/tmp /data/local/tmp/shellscaled-tests/router.test -test.run "^TestAndroidNetlink" -test.v'
+```
+
+示例路径要求先通过 guard 推送对应测试程序并授予执行权限。该过滤器覆盖
+规则幂等安装、外部规则保留和真实路由选择，不依赖真实账号路由为空。
+
 `tests/control-lock.sh <payload-dir>`、`tests/cli-entry.sh <payload-dir>` 与
 `tests/install.sh <payload-dir>`
 使用临时目录验证锁和全局 CLI 行为。通过 guard 推送实际模块脚本及夹具；
