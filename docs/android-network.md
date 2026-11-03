@@ -211,6 +211,6 @@ ss -tn state established | wc -l               # 切换出口节点前后对比
 
 原模块当前 main 最后提交为 `dffc1aee6fa80dd435a95776a37f979e0204e590`，日期 2025-11-04；其 README 仍描述历史 userspace + hev 方案，而当时代码已采用 Android CLI。因此重构以实际源码为依据。
 
-本次核查官方 [stable 包索引](https://pkgs.tailscale.com/stable/) 和 Tailscale `v1.104.4` release 源码，选择相同版本作为模块版本。源码仓库保留官方 release 的历史，再独立维护 Android 补丁，避免把 Android 改动混入上游提交。没有 clone AOSP；仅下载必要的官方单文件。
+当前模块跟随官方 [Tailscale v1.104.5](https://github.com/tailscale/tailscale/releases/tag/v1.104.5) release 源码，选择相同版本作为模块版本。源码仓库保留官方 release 的历史，再独立维护 Android 补丁，避免把 Android 改动混入上游提交。没有 clone AOSP；仅下载必要的官方单文件。
 
 端口和 UID 策略的内核回归使用原生 netlink 配置合成规则，不依赖 Android `ip` 是否支持 `ipproto` / `dport` 参数。仅在 Medium_Phone 的独立 network namespace 中设置 `SHELLSCALED_NETLINK_TEST=1` 运行 helper 的 `TestRouteLookupPortRule`；测试拒绝 init network namespace，并精确清理自己的规则和接口。

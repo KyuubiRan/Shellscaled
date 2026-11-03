@@ -11,6 +11,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ["python3", str(ROOT / "scripts/emulator.py"), "shell"]
 HELPER = "/data/adb/modules/shellscaled/bin/shellscaled-web"
+COMMON_FIELDS = {"ok", "settings", "daemonRunning", "exitNodeConfigured", "exitCode",
+                 "exitNodeIPv6Takeover", "magicDNSEnabled", "advertiseExitNode"}
 
 
 def shell(command):
@@ -34,16 +36,20 @@ def success(action, **fields):
 
 def check_devices(result):
     # Validate in memory only. Never print or save names, addresses, IDs or last-seen times.
-    shared_fields = {"ok", "settings", "daemonRunning", "exitNodeConfigured", "exitCode", "devices", "truncated"}
+    shared_fields = COMMON_FIELDS | {"devices", "truncated"}
     assert set(result) <= shared_fields, "Unexpected device response fields"
+    for key in ("exitNodeIPv6Takeover", "magicDNSEnabled", "advertiseExitNode"):
+        assert type(result.get(key)) is bool, "Invalid shared preference flag"
     values = result.get("devices")
     assert isinstance(values, list) and len(values) <= 1000, "Invalid device collection"
     assert "truncated" not in result or type(result["truncated"]) is bool, "Invalid truncation flag"
     required = {"id", "name", "dnsName", "ips", "online", "os", "self"}
     for device in values:
-        assert isinstance(device, dict) and required <= set(device) <= required | {"lastSeen"}, "Unexpected device fields"
+        assert isinstance(device, dict) and required <= set(device) <= required | {"lastSeen", "exitNode", "exitNodeOption"}, "Unexpected device fields"
         assert all(isinstance(device[key], str) for key in ("id", "name", "dnsName", "os")), "Invalid device text"
         assert type(device["online"]) is bool and type(device["self"]) is bool, "Invalid device flags"
+        for key in ("exitNode", "exitNodeOption"):
+            assert key not in device or type(device[key]) is bool, "Invalid device exit-node flag"
         assert isinstance(device["ips"], list), "Invalid address collection"
         for address in device["ips"]:
             try:
@@ -67,7 +73,7 @@ def check_channel(value):
 
 def check_binary(result, expected_channel):
     # The check is read-only; never invoke a valid binary-update from this runner.
-    assert set(result) <= {"ok", "settings", "daemonRunning", "exitNodeConfigured", "exitCode", "binary", "updateChannel"}, "Unexpected binary-check response fields"
+    assert set(result) <= COMMON_FIELDS | {"binary", "updateChannel"}, "Unexpected binary-check response fields"
     binary = result.get("binary")
     required = {"currentVersion", "latestVersion", "updateAvailable", "checked", "supported"}
     assert isinstance(binary, dict) and required <= set(binary) <= required | {"reason", "channel"}, "Invalid binary-check projection"

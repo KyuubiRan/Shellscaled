@@ -7,19 +7,18 @@ then the parent reference. Preserve the owner's configured Git identity/signing.
 ## Source ancestry and updates
 
 The official GitHub fork retains the real Tailscale history through
-`v1.104.4` (`27047635f237d1f3e0b08c0f487674757f30d2f7`). The Android changes
-are separate commits directly above that release, rather than a disconnected
+`v1.104.5` (`73a48057aaf5f60e4f770b398e9b7af576b01dbe`). The Android changes
+are separate commits alongside that release, rather than a disconnected
 snapshot. The original 1.104.2 source is retained by the existing module tags so
 previous releases remain reproducible.
 
 Configure `upstream` as `https://github.com/tailscale/tailscale.git` when working
 from a fresh clone. `android-upstream` may reference the original
 `anasfanani/tailscale-android-cli` port. Fetch the intended official release and
-rebase the Android patch series onto it; review actual conflicts instead of
+merge it into `dev`, preserving published Android commits; review actual conflicts instead of
 copying the upstream tree into a new root commit. Check the resulting ancestry
 with `git merge-base --is-ancestor <upstream-release> dev`. Never rewrite an
-already published release tag. After an approved development-history rewrite,
-use an explicit lease bound to the previously fetched remote revision.
+already published release tag or rewrite shared development history for a routine update.
 
 ## Local build
 
