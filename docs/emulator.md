@@ -82,16 +82,22 @@ python3 scripts/test-webui.py --manager ksu
 Taildrop 的接收、恢复、文件校验及并发测试。已有 Go 版本不足时，通过
 `SHELLSCALED_GO` 指向满足 `tailscale/go.mod` 的已安装工具链。
 
-Tailscale v1.104.5 的相关回归也由该脚本交叉编译，仍只在模拟器执行：
+Tailscale v1.104.6 及已有 Android 补丁的相关回归也由该脚本交叉编译，仍只在模拟器执行：
 
 | 程序 | `-test.run` | 范围 |
 | --- | --- | --- |
 | `neterror.test` | 不过滤 | UDP 错误分类，包括 Android 的 EPERM 语义 |
-| `magicsock.test` | `^TestReceiveFuncReadFeedback$` | UDP 不可达反馈后的接收恢复 |
+| `magicsock.test` | `^TestReceiveFuncRetriesRecoverableErrors$` | UDP 不可达及 EADDRNOTAVAIL 后的接收恢复 |
 | `netstack.test` | `^TestEnableRACKKnob$` | 默认关闭 RACK 与显式开关 |
 | `hostinfo.test` | `^TestEnvironWithoutSystemdServiceVars$` | 子进程环境变量过滤 |
 | `ipnlocal.test` | `^Test(ExitNodeIPv6Routes\|RouterConfigExitNodeIPv6\|PeerAPIDNSQueryLongName\|PeerAPIReplyToDNSQueriesAreObserved\|DNSConfigForNetmap)$` | 出口 IPv6 补丁、DNS 查询与配置 |
-| `localapi.test` | `^TestServeDebugReconfigPermissions$` | Android 重配置动作的权限边界 |
+| `ipn.test` | `^TestValidateNotifyWatchOpt$` | 状态通知订阅选项的校验 |
+| `ipnlocal.test` | `^TestWatchNotifications` | 慢速订阅者暂停、恢复与既有订阅行为 |
+| `localapi.test` | `^Test(ServeDebugReconfigPermissions\|ResumeIPNBus\|ServeWatchIPNBus)$` | Android 重配置权限及状态通知的暂停/恢复 |
+| `wireguard-device.test` | `^Test(NoiseHandshake\|ScheduleHandshakeOnUserSend\|TwoDevicePing\|SessionStateHandshakeWhileEstablished)$` | 更新后的 WireGuard 握手、会话状态和双节点数据传输夹具 |
+
+`TestNotifyWatchOptString` 需要目标设备上的 Go 命令和源码包加载环境，
+不属于上述模拟器过滤器；不为运行它而安装工具链或改在主机执行运行测试。
 
 真实 netlink 路由测试需要独立 network namespace，不能在 Android 初始
 namespace 中设置 `SHELLSCALED_NETLINK_TEST=1`：

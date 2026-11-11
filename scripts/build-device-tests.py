@@ -23,8 +23,10 @@ if not args.web_only:
         ("./wgengine/magicsock", "magicsock.test"),
         ("./wgengine/netstack", "netstack.test"),
         ("./hostinfo", "hostinfo.test"),
+        ("./ipn", "ipn.test"),
         ("./ipn/ipnlocal", "ipnlocal.test"),
         ("./ipn/localapi", "localapi.test"),
+        ("github.com/tailscale/wireguard-go/device", "wireguard-device.test"),
     ]:
         subprocess.run([os.environ.get("SHELLSCALED_GO", "go"), "test", "-c", "-tags=ts_omit_ssh,ts_omit_clientupdate,ts_omit_linuxdnsfight", "-o", str(out / name), package], cwd=SOURCE, env=env, check=True)
 subprocess.run([os.environ.get("SHELLSCALED_GO", "go"), "test", "-c", "-o", str(out / "web-control.test"), "."], cwd=ROOT / "helper", env=env, check=True)

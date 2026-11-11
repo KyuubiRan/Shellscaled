@@ -7,7 +7,7 @@ then the parent reference. Preserve the owner's configured Git identity/signing.
 ## Source ancestry and updates
 
 The official GitHub fork retains the real Tailscale history through
-`v1.104.5` (`73a48057aaf5f60e4f770b398e9b7af576b01dbe`). The Android changes
+`v1.104.6` (`c54807352ae196919497b3f8fddc3cedf88368b9`). The Android changes
 are separate commits alongside that release, rather than a disconnected
 snapshot. The original 1.104.2 source is retained by the existing module tags so
 previous releases remain reproducible.
