@@ -5,5 +5,5 @@
   "sourceCommit": "fffe5490c2fb3baed14c83f784d41ecaca85d1a9",
   "cliReleaseTag": "android-v1.104.6-r12",
   "releaseChannel": "stable",
-  "pending": true
+  "pending": false
 }
