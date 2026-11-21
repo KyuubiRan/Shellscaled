@@ -1,9 +1,9 @@
 {
-  "tailscaleVersion": "1.104.6",
-  "moduleRevision": 1,
-  "versionCode": 110400601,
-  "sourceCommit": "fffe5490c2fb3baed14c83f784d41ecaca85d1a9",
-  "cliReleaseTag": "android-v1.104.6-r12",
+  "tailscaleVersion": "1.104.7",
+  "moduleRevision": 0,
+  "versionCode": 110400700,
+  "sourceCommit": "df7ac03175c54c84ccddfd227a274c6628b5c7b0",
+  "cliReleaseTag": "android-v1.104.7-r13",
   "releaseChannel": "stable",
-  "pending": false
+  "pending": true
 }
