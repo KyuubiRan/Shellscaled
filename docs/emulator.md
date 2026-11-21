@@ -82,10 +82,12 @@ python3 scripts/test-webui.py --manager ksu
 Taildrop 的接收、恢复、文件校验及并发测试。已有 Go 版本不足时，通过
 `SHELLSCALED_GO` 指向满足 `tailscale/go.mod` 的已安装工具链。
 
-Tailscale v1.104.6 及已有 Android 补丁的相关回归也由该脚本交叉编译，仍只在模拟器执行：
+该脚本也交叉编译 Tailscale v1.104.7、Go 1.27.4 和已有 Android 补丁的回归测试，运行目标为 `Medium_Phone`。
 
 | 程序 | `-test.run` | 范围 |
 | --- | --- | --- |
+| `tls.test` | `^TestSupportedSignatureAlgorithms(Cert\|MLDSAGating)$` | ClientHello 的证书签名算法列表及不同 TLS 版本下的 ML-DSA 通告 |
+| `controlhttp.test` | `^TestControlHTTP$` | 本地控制连接的直连、代理和 HTTPS 回退 |
 | `neterror.test` | 不过滤 | UDP 错误分类，包括 Android 的 EPERM 语义 |
 | `magicsock.test` | `^TestReceiveFuncRetriesRecoverableErrors$` | UDP 不可达及 EADDRNOTAVAIL 后的接收恢复 |
 | `netstack.test` | `^TestEnableRACKKnob$` | 默认关闭 RACK 与显式开关 |
