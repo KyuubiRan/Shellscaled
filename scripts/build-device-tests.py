@@ -18,6 +18,8 @@ if not args.web_only:
         ("./util/osuser", "osuser.test"),
         ("./net/netmon", "netmon.test"),
         ("./derp/derphttp", "derphttp.test"),
+        ("crypto/tls", "tls.test"),
+        ("./control/controlhttp", "controlhttp.test"),
         ("./feature/taildrop", "taildrop.test"),
         ("./net/neterror", "neterror.test"),
         ("./wgengine/magicsock", "magicsock.test"),
